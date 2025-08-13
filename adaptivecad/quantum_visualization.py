@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional
 from dataclasses import dataclass
 from scipy.special import sph_harm, assoc_laguerre, hermite
 
