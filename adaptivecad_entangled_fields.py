@@ -173,6 +173,11 @@ def main():
             alpha_vals = alpha_field[mask]
             lam_mean = float(lam_vals.mean())
             alpha_mean = float(alpha_vals.mean())
+            lam_alpha_corr = (
+                float(np.corrcoef(lam_vals, alpha_vals)[0, 1])
+                if lam_vals.size > 1
+                else 0.0
+            )
             r_wire = args.r_wire0 * (1.0 + args.gam_w * lam_mean)
             t = args.t0 * (1.0 + args.gam_a * alpha_mean)
             wm = wire_metrics(
@@ -189,6 +194,7 @@ def main():
                 'seed': seed,
                 'lam_mean': lam_mean,
                 'alpha_mean': alpha_mean,
+                'lam_alpha_corr': lam_alpha_corr,
                 'r_wire': r_wire,
                 't': t,
                 'density': wm['density'],
@@ -241,7 +247,7 @@ def main():
 
     # write metrics csv
     fieldnames = [
-        'rho','seed','lam_mean','alpha_mean','r_wire','t','density','A_eff','tau','deltaT_proxy'
+        'rho','seed','lam_mean','alpha_mean','lam_alpha_corr','r_wire','t','density','A_eff','tau','deltaT_proxy'
     ]
     with args.out.open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
