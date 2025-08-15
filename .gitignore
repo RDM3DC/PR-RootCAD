@@ -43,3 +43,7 @@ htmlcov/
 
 # Miniconda installer
 Miniconda*.exe
+
+# ARP Site
+adaptive-resistance-site/node_modules/
+adaptive-resistance-site/dist/

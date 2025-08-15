@@ -1,0 +1,38 @@
+---
+const { title = 'Adaptive Resistance Principle', description = 'Exploring the Adaptive Resistance Principle (ARP)', meta = [] } = Astro.props;
+const fullTitle = title === 'Adaptive Resistance Principle' ? title : `${title} • Adaptive Resistance Principle`;
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{fullTitle}</title>
+  <meta name="description" content={description} />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  {meta.map(m => <meta {...m} />)}
+  <link rel="stylesheet" href="/fonts.css" />
+  <link rel="stylesheet" href="/global.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <nav class="main-nav">
+        <a href="/" class="brand">ARP</a>
+        <div class="nav-links">
+          <a href="/concept">Concept</a>
+            <a href="/research">Research</a>
+          <a href="/blog">Blog</a>
+          <a href="https://github.com/RDM3DC/Adaptive-Resistance-Principle-ARP-" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+  <main class="container">
+    <slot />
+  </main>
+  <footer>
+    <p>&copy; {new Date().getFullYear()} Adaptive Resistance Principle (ARP). All rights reserved.</p>
+  </footer>
+</body>
+</html>
