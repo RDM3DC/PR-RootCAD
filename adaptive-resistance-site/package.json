@@ -1,0 +1,16 @@
+{
+  "name": "adaptive-resistance-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "lint": "echo 'add eslint if desired'"
+  },
+  "dependencies": {
+    "astro": "^4.0.0",
+    "@astrojs/mdx": "^3.0.0"
+  }
+}
