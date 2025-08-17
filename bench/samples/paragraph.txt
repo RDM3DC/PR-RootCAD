@@ -1,0 +1,1 @@
+Compression methods reduce redundancy. Our ATC scheme encodes letters in carriers and uses style bytes for spacing, punctuation, and capitalization. Range coding these styles cuts entropy to under 4 bits per character.

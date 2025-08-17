@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="300" viewBox="0 0 800 300">
+<defs>
+<path id="p0" d="M 20,150 L 93,190 L 96,190 L 100,190 L 242,110 L 245,110 L 249,110 L 253,110 L 394,190 L 398,190 L 402,190 L 406,190 L 547,110 L 551,110 L 555,110 L 558,110 L 700,190 L 704,190 L 707,190 L 780,150" fill="none" stroke="#ccc" stroke-width="1"/>
+</defs>
+<path d="M 20,150 L 93,190 L 96,190 L 100,190 L 242,110 L 245,110 L 249,110 L 253,110 L 394,190 L 398,190 L 402,190 L 406,190 L 547,110 L 551,110 L 555,110 L 558,110 L 700,190 L 704,190 L 707,190 L 780,150" fill="none" stroke="#e0e0e0" stroke-width="1"/>
+<text font-family="sans-serif" font-size="14.0px" letter-spacing="0.5px">
+  <textPath href="#p0" startOffset="0.0">Compression methods reduce redundancy. Our ATC scheme encodes letters in carriers and uses style bytes for spacing, punctuation, and capitalization. Range coding these styles cuts entropy to under 4 bits per character.</textPath>
+</text>
+</svg>

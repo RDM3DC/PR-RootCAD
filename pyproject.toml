@@ -3,17 +3,21 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "adaptivecad"
+name = "adaptive-compression-suite"
 version = "0.1.0"
-authors = [{name="AdaptiveCAD"}]
-description = "Starter modules for AdaptiveCAD"
-requires-python = ">=3.10"
-dependencies = [
-    "numpy>=1.22",
-    "openai>=1.24,<2.0",
-    "sympy>=1.13",
-]
-optional-dependencies = { gui = ["PySide6", "pythonocc-core"] }
+description = "Three complementary compression methods: ATC (text), CMC (curves), GPUC (arrays)"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{name = "RDM3DC"}]
 
 [project.scripts]
-export-slices = "export_slices:main"
+acs-atc-encode = "atc.cli:encode_main"
+acs-atc-decode = "atc.cli:decode_main"
+acs-cmc-encode-1d = "cmc.cli:encode_1d_main"
+acs-cmc-decode-1d = "cmc.cli:decode_1d_main"
+acs-cmc-encode-2d = "cmc.cli:encode_2d_main"
+acs-cmc-decode-2d = "cmc.cli:decode_2d_main"
+acs-gpuc-quantize = "gpuc.cli:quantize_main"
+acs-gpuc-dequantize = "gpuc.cli:dequantize_main"
+acs-gpuc-zerosuppress = "gpuc.cli:zerosuppress_main"
+acs-gpuc-unsuppress = "gpuc.cli:unsuppress_main"
