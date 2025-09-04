@@ -1,5 +1,7 @@
 # Adaptive Compression Suite (ACS)
 
+[![Sponsor RDM3DC](https://img.shields.io/badge/Sponsor-RDM3DC-ff69b4?logo=github-sponsors)](https://github.com/sponsors/RDM3DC)
+
 A single repo with **three** distinct compression methods we've developed:
 
 1. **ATC — Adaptive Text Compression** (lossless, text):  
