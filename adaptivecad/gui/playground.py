@@ -36,6 +36,7 @@ else:
     from OCC.Core.TopoDS import TopoDS_Face
     from OCC.Core.TopExp import TopExp_Explorer
     from OCC.Core.TopAbs import TopAbs_FACE
+    from adaptivecad.core.backends import MeshBackend, AnalyticBackend
     from adaptivecad.command_defs import (
         Feature,
         NewBoxCmd,
@@ -56,6 +57,12 @@ else:
         ShellCmd
     )
     from adaptivecad.commands.minimal_import import MinimalImportCmd
+
+# Ensure QDockWidget is always imported for all code paths
+try:
+    from PySide6.QtWidgets import QDockWidget
+except ImportError:
+    QDockWidget = None
 
 # Define SuperellipseFeature at module level regardless of GUI availability
 from adaptivecad.command_defs import Feature
@@ -80,6 +87,8 @@ class PiCurveShellFeature(Feature):
         import numpy as np
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCC.Core.gp import gp_Pnt
+        from OCC.Core.GeomAPI import GeomAPI_PointsToBSplineSurface
+        from OCC.Core.TColgp import TColgp_Array2OfPnt
         base_radius = params["base_radius"]
         height = params["height"]
         freq = params["freq"]
@@ -104,12 +113,13 @@ class PiCurveShellFeature(Feature):
                 row.append(gp_Pnt(x, y, z))
             pts.append(row)
         # Create faces between grid points
-        from OCC.Core.TColgp import TColgp_Array2OfPnt
         arr = TColgp_Array2OfPnt(1, n_u, 1, n_v)
         for i in range(n_u):
             for j in range(n_v):
                 arr.SetValue(i+1, j+1, pts[j][i])
-        face = BRepBuilderAPI_MakeFace(arr, 1e-6).Face()
+        
+        spline_surface = GeomAPI_PointsToBSplineSurface(arr).Surface()
+        face = BRepBuilderAPI_MakeFace(spline_surface, 1e-6).Face()
         return face
 
     def rebuild(self):
@@ -304,8 +314,11 @@ class SuperellipseFeature(Feature):
         # Create a wire from the points
         wire = BRepBuilderAPI_MakeWire()
         for i in range(segments):
-            edge = BRepBuilderAPI_MakeEdge(pts[i], pts[(i + 1) % segments]).Edge()
-            wire.Add(edge)
+            p1 = pts[i]
+            p2 = pts[(i + 1) % segments]
+            if p1.Distance(p2) > 1e-7:
+                edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                wire.Add(edge)
         
         # Create a face from the wire
         face = BRepBuilderAPI_MakeFace(wire.Wire()).Face()
@@ -577,6 +590,85 @@ class NewEllipsoidCmd:
         mw.view._display.FitAll()
         mw.win.statusBar().showMessage(f"Ellipsoid created: rx={rx}, ry={ry}, rz={rz}", 3000)
 
+# --- ANALYTIC (SDF/πₐ) BALL DOCK + COMMAND ---
+class SDFAnalyticBallDock(QDockWidget):
+    """Docked viewer that renders a triangle-free analytic ball (SDF) with optional πₐ scaling."""
+    def __init__(self, mw):
+        from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage, QPixmap
+        super().__init__("Analytic Ball (SDF/πₐ)", mw.win)
+        self.setObjectName("SDFAnalyticBallDock")
+        self.mw = mw
+        self._res = 512
+        self._r = 20.0
+        self._beta = 0.0
+
+        container = QWidget()
+        v = QVBoxLayout(container)
+        self.image_label = QLabel("(rendering…)")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        v.addWidget(self.image_label)
+
+        # Radius slider
+        row_r = QWidget(); hr = QHBoxLayout(row_r); hr.setContentsMargins(0,0,0,0)
+        hr.addWidget(QLabel("Radius r:"))
+        self.slider_r = QSlider(Qt.Horizontal); self.slider_r.setRange(1, 400); self.slider_r.setValue(int(self._r))
+        self.slider_r.valueChanged.connect(self._on_change)
+        hr.addWidget(self.slider_r); v.addWidget(row_r)
+
+        # πₐ beta slider
+        row_b = QWidget(); hb = QHBoxLayout(row_b); hb.setContentsMargins(0,0,0,0)
+        hb.addWidget(QLabel("πₐ β:"))
+        self.slider_b = QSlider(Qt.Horizontal); self.slider_b.setRange(0, 200); self.slider_b.setValue(int(self._beta*100))
+        self.slider_b.valueChanged.connect(self._on_change)
+        hb.addWidget(self.slider_b); v.addWidget(row_b)
+
+        self.setWidget(container)
+        self._render_and_set()
+
+    @staticmethod
+    def _pia_radius(r, beta):
+        # toy πₐ scaling: r_eff = r * (1 + 0.5 κ r^2) with κ ∝ β
+        kappa = 0.25 * beta
+        return float(r * (1.0 + 0.5 * kappa * r * r))
+
+    def _on_change(self, *_):
+        self._r = float(self.slider_r.value())
+        self._beta = float(self.slider_b.value())/100.0
+        self._render_and_set()
+
+    def _render_and_set(self):
+        import numpy as np
+        from PySide6.QtGui import QImage, QPixmap
+        res = self._res
+        r = max(1.0, self._r)
+        beta = max(0.0, self._beta)
+        re = self._pia_radius(r, beta)
+        span = 1.6 * re
+        xs = np.linspace(-span, span, res)
+        ys = np.linspace(-span, span, res)
+        X, Y = np.meshgrid(xs, ys)
+        D = np.sqrt(X*X + Y*Y) - re
+        band = np.clip(0.5 - D/(span/res*2.0), 0.0, 1.0)  # soft edge AA
+        img = (255*(1.0 - band)).astype(np.uint8)
+        qimg = QImage(img.data, res, res, QImage.Format_Grayscale8)
+        self.image_label.setPixmap(QPixmap.fromImage(qimg))
+
+class NewAnalyticBallCmd:
+    """Open/focus the Analytic Ball dock (triangle-free renderer)."""
+    def __init__(self): pass
+    def run(self, mw):
+        from PySide6.QtWidgets import QDockWidget
+        dock = None
+        for d in mw.win.findChildren(QDockWidget):
+            if d.objectName() == "SDFAnalyticBallDock":
+                dock = d; break
+        if dock is None:
+            dock = SDFAnalyticBallDock(mw)
+            mw.win.addDockWidget(Qt.RightDockWidgetArea, dock)
+        dock.show(); dock.raise_()
+
 # --- PROJECT MANAGEMENT COMMANDS ---
 class SaveProjectCmd:
     def __init__(self):
@@ -721,7 +813,7 @@ class OpenProjectCmd:
                         )
                     # For basic shapes, we'll need to import them from command_defs
                     else:
-                        # Try to create basic shapes using the existing command system
+                        # Try to create basic features using the existing command system
                         from adaptivecad.command_defs import Feature
                         
                         # Create a generic feature - this won't have the actual shape
@@ -804,7 +896,7 @@ class MainWindow:
         """Setup selection handling for objects in the 3D view."""
         try:
             # Connect selection changed signal
-            def on_selection_changed():
+            def on_selection_changed(shapes, *args):
                 self._on_object_selected()
             
             # Set up mouse click handling for selection
@@ -985,8 +1077,13 @@ class MainWindow:
         
         # Add Ball tool
         ball_action = QAction("Ball", self.win)
-        ball_action.triggered.connect(lambda: self._run_command(NewBallCmd()))
+        ball_action.triggered.connect(lambda: self._create_ball_via_backend(20.0))
         basic_menu.addAction(ball_action)
+
+        # Analytic (SDF/πₐ) Ball — triangle-free renderer
+        analytic_ball_action = QAction("Analytic Ball (SDF/πₐ)", self.win)
+        analytic_ball_action.triggered.connect(lambda: self._run_command(NewAnalyticBallCmd()))
+        basic_menu.addAction(analytic_ball_action)
         
         # Add Torus tool
         torus_action = QAction("Torus", self.win)
@@ -1098,6 +1195,19 @@ class MainWindow:
         dimension_action.triggered.connect(self._toggle_dimension_panel)
         view_menu.addAction(dimension_action)
         
+        analytic_view_action = QAction("Open Analytic Viewport (No Triangles)", self.win)
+        def _open_analytic():
+            try:
+                # Create a separate script to run the analytic viewport
+                # This avoids mixing PySide6 and PyQt6 in the same process
+                import subprocess
+                import sys
+                subprocess.Popen([sys.executable, 'test_analytic_viewport.py'])
+            except Exception as e:
+                QMessageBox.warning(self.win, "Error", f"Could not open Analytic Viewport: {str(e)}\n\nMake sure PyQt6 and PyOpenGL are installed.")
+        analytic_view_action.triggered.connect(_open_analytic)
+        view_menu.addAction(analytic_view_action)
+        
         view_menu.addSeparator()
 
         # Add View Cube toggle
@@ -1156,10 +1266,21 @@ class MainWindow:
         triedron_action.triggered.connect(lambda checked: self.view._display.display_triedron() if checked else self.view._display.hide_triedron())
         view_menu.addAction(triedron_action)
         
+        # Add Rendering Backend menu
+        backend_menu = settings_menu.addMenu("Rendering Backend")
+        use_analytic_action = QAction("Use Analytic/SDF for default shapes", self.win, checkable=True)
+        use_analytic_action.setChecked(settings.USE_ANALYTIC_BACKEND)
+        def toggle_backend(chk):
+            settings.USE_ANALYTIC_BACKEND = bool(chk)
+            self.win.statusBar().showMessage(f"Analytic backend: {'ON' if chk else 'OFF'}", 3000)
+        use_analytic_action.triggered.connect(toggle_backend)
+        backend_menu.addAction(use_analytic_action)
+        
         # Create a main toolbar with commonly used shapes
         self.toolbar = self.win.addToolBar("Common Shapes")
         self.toolbar.addAction(box_action)
         self.toolbar.addAction(cyl_action)
+        self.toolbar.addAction(analytic_ball_action)
         self.toolbar.addAction(super_action)
         self.toolbar.addAction(pi_shell_action)
         
@@ -1481,6 +1602,22 @@ that implement the πₐ (Adaptive Pi) geometry principles.</p>
     def _show_doc_message(self, title, message):
         QMessageBox.information(self.win, title, message)
     
+    def _create_ball_via_backend(self, r: float = 20.0):
+        from adaptivecad import settings
+        if settings.USE_ANALYTIC_BACKEND:
+            # open/focus the Analytic dock and set sliders to r / β
+            cmd = NewAnalyticBallCmd()
+            cmd.run(self)
+            try:
+                dock = [d for d in self.win.findChildren(QDockWidget) if d.objectName()=="SDFAnalyticBallDock"][0]
+                dock.slider_r.setValue(int(r))
+                dock.slider_b.setValue(int(settings.ANALYTIC_PIA_BETA * 100))
+            except Exception:
+                pass
+        else:
+            # fall back to OCC Ball command
+            NewBallCmd().run(self)
+
 def main() -> None:
     MainWindow().run()
 
