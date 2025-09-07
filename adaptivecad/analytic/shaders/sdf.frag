@@ -77,22 +77,30 @@ Hit map_scene(vec3 p){
     return h;
 }
 
-vec3 calc_normal(vec3 p){
-    float e = 8e-4;  // Smaller epsilon for sharper normals
+vec3 calc_normal(vec3 p, float t){
+    float e = max(6e-4, 3e-4 * t);   // larger when farther, tiny when close
     vec2 k = vec2(1.0,-1.0);
-    return normalize( k.xyy*map_scene(p + k.xyy*e).d +
-                      k.yyx*map_scene(p + k.yyx*e).d +
-                      k.yxy*map_scene(p + k.yxy*e).d +
-                      k.xxx*map_scene(p + k.xxx*e).d );
+    vec3 g =
+          k.xyy*map_scene(p + k.xyy*e).d +
+          k.yyx*map_scene(p + k.yyx*e).d +
+          k.yxy*map_scene(p + k.yxy*e).d +
+          k.xxx*map_scene(p + k.xxx*e).d;
+    vec3 n = normalize(g);
+    // one-step refinement for close-ups
+    float d0 = map_scene(p).d;
+    float d1 = map_scene(p + n*e*0.5).d;
+    if (abs(d1) < abs(d0)) p += n*e*0.5;
+    return n;
 }
 
 float softShadow(vec3 ro, vec3 rd, float tmin, float tmax){
     float res = 1.0, t=tmin;
-    for(int i=0;i<32;i++){
+    for(int i=0;i<40;i++){
         float h = map_scene(ro + rd*t).d;
         if(h<1e-4) return 0.0;
-        res = min(res, 8.0*h/t);  // Reduced from 16.0 to 8.0 for softer shadows
-        t += clamp(h, 0.01, 0.1);
+        // gentler penumbra for macro close-ups
+        res = min(res, 8.0*h/t);
+        t += clamp(h, 0.01, 0.12);
         if(t>tmax) break;
     }
     return clamp(res,0.0,1.0);
@@ -101,11 +109,11 @@ float softShadow(vec3 ro, vec3 rd, float tmin, float tmax){
 float ao(vec3 p, vec3 n){
     float occ = 0.0, sca=1.0;
     for(int i=0;i<5;i++){
-        float h = 0.01 + 0.12*float(i)/4.0;
+        float h = 0.008 + 0.12*float(i)/4.0; // slightly tighter near surface
         occ += sca * (h - map_scene(p + n*h).d);
         sca *= 0.75;
     }
-    return clamp(1.0 - 1.5*occ, 0.0, 1.0);
+    return clamp(1.0 - 1.35*occ, 0.0, 1.0);
 }
 
 void main(){
@@ -138,26 +146,24 @@ void main(){
     }
 
     // shading
-    vec3 n = calc_normal(pos);
+    vec3 n = calc_normal(pos, t);
     vec3 L = normalize(vec3(0.6,0.85,0.25));  // Light tint adjusted for better material separation
     float diff = max(dot(n,L),0.0);
     float sh = softShadow(pos + n*0.01, L, 0.02, 4.0);
     float amb = u_env * ao(pos, n);
     
-    // Add rim lighting for better shape definition at grazing angles
-    float rim = pow(1.0 - max(dot(n,-rd), 0.0), 2.0);
-    
-    // Add micro specular highlights
+    // lighting bits
     vec3 V = normalize(-rd);
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(n, H), 0.0), 32.0);
+    float spec = pow(max(dot(n,H),0.0), 32.0);
+    float rim  = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);
     
-    vec3 col = h.col * (amb + 0.9*diff*sh);
-    col += 0.12 * rim;  // Subtle rim light
-    col += 0.08 * spec; // Micro specular highlight
+    vec3 lit = h.col * (amb + 0.9*diff*sh) + 0.08*spec + 0.12*rim;
     
-    // Gamma correction for better tone mapping
-    col = pow(col, vec3(1.0/2.2));
+    // ACES-ish tone map + gamma
+    vec3 a = vec3(2.51), b = vec3(0.03), c = vec3(2.43), d = vec3(0.59), e = vec3(0.14);
+    vec3 tm = clamp((lit*(a*lit + b)) / (lit*(c*lit + d) + e), 0.0, 1.0);
+    vec3 col = pow(tm, vec3(1.0/2.2));
     
     FragColor = vec4(col,1.0);
 }

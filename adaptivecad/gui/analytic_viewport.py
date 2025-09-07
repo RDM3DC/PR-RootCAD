@@ -16,6 +16,7 @@ class AnalyticViewport(QOpenGLWidget):
         super().__init__(parent)
         fmt = QSurfaceFormat()
         fmt.setVersion(3,3); fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+        fmt.setSamples(4)  # 4x MSAA
         self.setFormat(fmt)
         self.scene = Scene()
         # camera
@@ -57,6 +58,7 @@ class AnalyticViewport(QOpenGLWidget):
     # --- OpenGL lifecycle ---
     def initializeGL(self):
         glDisable(GL_DEPTH_TEST)
+        glEnable(GL_MULTISAMPLE)  # Enable MSAA
         shader_dir = Path(__file__).parent.parent / "analytic" / "shaders"
         vs = load_text(shader_dir / "sdf.vert")
         fs = load_text(shader_dir / "sdf.frag")
