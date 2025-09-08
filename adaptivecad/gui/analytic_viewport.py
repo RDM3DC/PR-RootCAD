@@ -315,17 +315,19 @@ class AnalyticViewport(QOpenGLWidget):
         self._last_buttons = event.buttons()
         # Plain LMB (no modifiers) -> pick
         if event.button() == Qt.MouseButton.LeftButton and event.modifiers() == Qt.KeyboardModifier.NoModifier:
-            pid = self._pick_id_at(int(event.position().x()), int(event.position().y()))
-            if pid >= 0:
-                self.selected_index = pid
-                try:
-                    if hasattr(self.parent(), '_select_prim'):
-                        self.parent()._select_prim(pid)
-                except Exception:
-                    pass
-            else:
-                self.selected_index = -1
-            self.update()
+            # Use full-resolution FBO picking for accurate coordinate-based selection.
+            try:
+                self._perform_pick(int(event.position().x()), int(event.position().y()))
+                pid = self.selected_index
+                if pid >= 0:
+                    try:
+                        if hasattr(self.parent(), '_select_prim'):
+                            self.parent()._select_prim(pid)
+                    except Exception:
+                        pass
+                self.update()
+            except Exception as e:
+                log.debug(f"mousePressEvent pick failed: {e}")
         # Shift + LMB -> begin move-drag if a primitive selected
         if (event.button() == Qt.MouseButton.LeftButton and \
             (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and \
@@ -879,7 +881,7 @@ def _load_settings(self):
 
 def _save_settings(self):
     try:
-        data={
+        data_update={
             'debug_mode': self.debug_mode,
             'use_analytic_aa': self.use_analytic_aa,
             'use_toon': self.use_toon,
@@ -891,8 +893,17 @@ def _save_settings(self):
             'beta_scale': self.beta_scale,
             'beta_cmap': self.beta_cmap
         }
+        # Preserve unrelated preference keys (e.g., 'analytic_as_main') by merging
+        existing = {}
+        if os.path.exists(self._settings_path):
+            try:
+                with open(self._settings_path,'r',encoding='utf-8') as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+        existing.update(data_update)
         with open(self._settings_path,'w',encoding='utf-8') as f:
-            json.dump(data,f,indent=2)
+            json.dump(existing,f,indent=2)
     except Exception as e:
         print(f"(analytic settings) save failed: {e}")
 
