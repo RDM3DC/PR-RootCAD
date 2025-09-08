@@ -83,9 +83,9 @@ class AnalyticViewport(QOpenGLWidget):
         self._depth_rb = None
         # micro pick FBO
         self._pick_fbo = None
-    # translation drag state
-    self._drag_move_active = False
-    self._drag_last_pos = None
+        # translation drag state
+        self._drag_move_active = False
+        self._drag_last_pos = None
 
     def _on_scene_changed(self):
         self._scene_dirty = True
