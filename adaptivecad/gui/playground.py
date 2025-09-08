@@ -2,26 +2,36 @@
 
 This playground implements advanced parametric shapes including Pi Curve Shell,
 Superellipse, Helix, Tapered Cylinder, Capsule and Ellipsoid that demonstrate the
-Adaptive Pi Geometry (πₐ) principles. 
+Adaptive Pi Geometry (πₐ) principles.
 
-For the formal mathematical foundation, see the ADAPTIVE_PI_AXIOMS.md document.
+Now supports an OCC-free fallback mode: if `pythonocc-core` is unavailable, the
+application will still start using a minimal placeholder viewer and analytic viewport.
 """
 
-try:
+HAS_QT = False
+HAS_OCC = False
+
+# Detect PySide6
+try:  # pragma: no cover - runtime environment dependent
     import PySide6  # type: ignore
-    from OCC.Display import backend  # type: ignore
-    # Initialize the backend explicitly
-    backend.load_backend('pyside6')  # Load PySide6 backend for OCC
-except Exception:  # pragma: no cover - optional GUI deps missing
-    HAS_GUI = False
-else:
-    HAS_GUI = True  # Ensure HAS_GUI is set to True here
+    HAS_QT = True
+except Exception:
+    HAS_QT = False
+
+# If Qt present, attempt OCC
+if HAS_QT:
+    try:  # pragma: no cover - runtime environment dependent
+        from OCC.Display import backend  # type: ignore
+        backend.load_backend('pyside6')  # ensure PySide6 backend
+        HAS_OCC = True
+    except Exception:
+        HAS_OCC = False
+
+# Common imports when Qt exists
+if HAS_QT:
     from math import pi, cos, sin
-    import os
-    import sys
-    import json  # Add json import at module level
+    import os, sys, json, traceback
     import numpy as np
-    import traceback
     from adaptivecad import settings
     from adaptivecad.gui.viewcube_widget import ViewCubeWidget
     # Optional ND Chess widget
@@ -30,37 +40,52 @@ else:
     except Exception:  # pragma: no cover - missing deps
         NDChessWidget = None
     from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QInputDialog, QMessageBox, QCheckBox, 
-        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QComboBox, 
+        QApplication, QMainWindow, QInputDialog, QMessageBox, QCheckBox,
+        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QComboBox,
         QPushButton, QDockWidget, QLineEdit, QToolBar, QToolButton, QMenu,
         QDialogButtonBox, QFormLayout, QDoubleSpinBox, QSpinBox, QDialog
     )
     from PySide6.QtGui import QAction, QIcon, QCursor, QPixmap
     from PySide6.QtCore import Qt, QObject, QEvent
-    from OCC.Core.AIS import AIS_Shape
-    from OCC.Core.TopoDS import TopoDS_Face
-    from OCC.Core.TopExp import TopExp_Explorer
-    from OCC.Core.TopAbs import TopAbs_FACE
+    from adaptivecad.analytic.conversion import (
+        ConvertMeshToAnalyticCmd, ConvertAnalyticToMeshCmd
+    )
     from adaptivecad.command_defs import (
         Feature,
-        NewBoxCmd,
-        NewCylCmd,
-        ExportStlCmd,
-        ExportAmaCmd,
-        ExportGCodeCmd,
-        ExportGCodeDirectCmd,
-        MoveCmd,
-        UnionCmd,
-        CutCmd,
-        IntersectCmd,
-        ScaleCmd,
-        MirrorCmd,
-        NewBallCmd,
-        NewTorusCmd,
-        NewConeCmd,
-        ShellCmd
+        NewBoxCmd, NewCylCmd,
+        ExportStlCmd, ExportAmaCmd,
+        ExportGCodeCmd, ExportGCodeDirectCmd,
+        MoveCmd, UnionCmd, CutCmd, IntersectCmd, ScaleCmd, MirrorCmd,
+        NewBallCmd, NewTorusCmd, NewConeCmd, ShellCmd
     )
-    from adaptivecad.commands.minimal_import import MinimalImportCmd
+    # Guard OCC-dependent minimal import command so app can start without OCC
+    try:  # pragma: no cover
+        from adaptivecad.commands.minimal_import import MinimalImportCmd
+    except Exception:
+        class MinimalImportCmd:  # fallback stub
+            def run(self, mw):  # mw = MainWindow instance
+                msg = "OCC not available; STL/STEP import disabled in this session."
+                print(msg)
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(mw.win, "Import", msg)
+                except Exception:
+                    pass
+    if HAS_OCC:
+        from OCC.Core.AIS import AIS_Shape  # type: ignore
+        from OCC.Core.TopoDS import TopoDS_Face  # type: ignore
+        from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+        from adaptivecad.core.backends import MeshBackend, AnalyticBackend
+
+# Backwards compatibility flag
+HAS_GUI = HAS_QT
+
+# Ensure QDockWidget is always imported for all code paths
+try:
+    from PySide6.QtWidgets import QDockWidget
+except ImportError:
+    QDockWidget = None
 
 # Define SuperellipseFeature at module level regardless of GUI availability
 from adaptivecad.command_defs import Feature
@@ -83,8 +108,12 @@ class PiCurveShellFeature(Feature):
     @staticmethod
     def _make_shape(params):
         import numpy as np
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
-        from OCC.Core.gp import gp_Pnt
+        if not HAS_OCC:
+            return None  # Fallback: no geometry
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace  # type: ignore
+        from OCC.Core.gp import gp_Pnt  # type: ignore
+        from OCC.Core.GeomAPI import GeomAPI_PointsToBSplineSurface  # type: ignore
+        from OCC.Core.TColgp import TColgp_Array2OfPnt  # type: ignore
         base_radius = params["base_radius"]
         height = params["height"]
         freq = params["freq"]
@@ -109,12 +138,13 @@ class PiCurveShellFeature(Feature):
                 row.append(gp_Pnt(x, y, z))
             pts.append(row)
         # Create faces between grid points
-        from OCC.Core.TColgp import TColgp_Array2OfPnt
         arr = TColgp_Array2OfPnt(1, n_u, 1, n_v)
         for i in range(n_u):
             for j in range(n_v):
                 arr.SetValue(i+1, j+1, pts[j][i])
-        face = BRepBuilderAPI_MakeFace(arr, 1e-6).Face()
+        
+        spline_surface = GeomAPI_PointsToBSplineSurface(arr).Surface()
+        face = BRepBuilderAPI_MakeFace(spline_surface, 1e-6).Face()
         return face
 
     def rebuild(self):
@@ -197,8 +227,10 @@ class HelixFeature(Feature):
     @staticmethod
     def _make_shape(params):
         import numpy as np
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
-        from OCC.Core.gp import gp_Pnt
+        if not HAS_OCC:
+            return None
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire  # type: ignore
+        from OCC.Core.gp import gp_Pnt  # type: ignore
         radius = params["radius"]
         pitch = params["pitch"]
         height = params["height"]
@@ -274,8 +306,10 @@ class SuperellipseFeature(Feature):
     @staticmethod
     def _make_shape(params):
         import numpy as np
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace
-        from OCC.Core.gp import gp_Pnt
+        if not HAS_OCC:
+            return None
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace  # type: ignore
+        from OCC.Core.gp import gp_Pnt  # type: ignore
         
         rx = params["rx"]
         ry = params["ry"]
@@ -309,8 +343,11 @@ class SuperellipseFeature(Feature):
         # Create a wire from the points
         wire = BRepBuilderAPI_MakeWire()
         for i in range(segments):
-            edge = BRepBuilderAPI_MakeEdge(pts[i], pts[(i + 1) % segments]).Edge()
-            wire.Add(edge)
+            p1 = pts[i]
+            p2 = pts[(i + 1) % segments]
+            if p1.Distance(p2) > 1e-7:
+                edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                wire.Add(edge)
         
         # Create a face from the wire
         face = BRepBuilderAPI_MakeFace(wire.Wire()).Face()
@@ -389,7 +426,9 @@ class TaperedCylinderFeature(Feature):
 
     @staticmethod
     def _make_shape(params):
-        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCone
+        if not HAS_OCC:
+            return None
+        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCone  # type: ignore
         height = params["height"]
         radius1 = params["radius1"]
         radius2 = params["radius2"]
@@ -454,9 +493,11 @@ class CapsuleFeature(Feature):
 
     @staticmethod
     def _make_shape(params):
-        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
-        from OCC.Core.gp import gp_Pnt
-        from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        if not HAS_OCC:
+            return None
+        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere  # type: ignore
+        from OCC.Core.gp import gp_Pnt  # type: ignore
+        from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse  # type: ignore
         height = params["height"]
         radius = params["radius"]
         cyl_height = max(0.0, height - 2 * radius)
@@ -520,10 +561,12 @@ class EllipsoidFeature(Feature):
 
     @staticmethod
     def _make_shape(params):
-        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
-        from OCC.Core.gp import gp_Pnt
-        from OCC.Core.gp import gp_Trsf
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+        if not HAS_OCC:
+            return None
+        from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere  # type: ignore
+        from OCC.Core.gp import gp_Pnt  # type: ignore
+        from OCC.Core.gp import gp_Trsf  # type: ignore
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform  # type: ignore
         rx = params["rx"]
         ry = params["ry"]
         rz = params["rz"]
@@ -581,6 +624,249 @@ class NewEllipsoidCmd:
         mw.view._display.DisplayShape(feat.shape, update=True)
         mw.view._display.FitAll()
         mw.win.statusBar().showMessage(f"Ellipsoid created: rx={rx}, ry={ry}, rz={rz}", 3000)
+
+# --- ANALYTIC (SDF/πₐ) BALL DOCK + COMMAND ---
+if HAS_QT and QDockWidget:
+    class SDFAnalyticBallDock(QDockWidget):
+        """Docked viewer that renders a triangle-free analytic ball (SDF) with optional πₐ scaling."""
+        def __init__(self, mw):
+            from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QImage, QPixmap
+            super().__init__("Analytic Ball (SDF/πₐ)", mw.win)
+            self.setObjectName("SDFAnalyticBallDock")
+            self.mw = mw
+            self._res = 512
+            self._r = 20.0
+            self._beta = 0.0
+
+            container = QWidget()
+            v = QVBoxLayout(container)
+            self.image_label = QLabel("(rendering…)")
+            self.image_label.setAlignment(Qt.AlignCenter)
+            v.addWidget(self.image_label)
+
+            row_r = QWidget(); hr = QHBoxLayout(row_r); hr.setContentsMargins(0,0,0,0)
+            hr.addWidget(QLabel("Radius r:"))
+            self.slider_r = QSlider(Qt.Horizontal); self.slider_r.setRange(1, 400); self.slider_r.setValue(int(self._r))
+            self.slider_r.valueChanged.connect(self._on_change)
+            hr.addWidget(self.slider_r); v.addWidget(row_r)
+
+            row_b = QWidget(); hb = QHBoxLayout(row_b); hb.setContentsMargins(0,0,0,0)
+            hb.addWidget(QLabel("πₐ β:"))
+            self.slider_b = QSlider(Qt.Horizontal); self.slider_b.setRange(0, 200); self.slider_b.setValue(int(self._beta*100))
+            self.slider_b.valueChanged.connect(self._on_change)
+            hb.addWidget(self.slider_b); v.addWidget(row_b)
+
+            self.setWidget(container)
+            self._render_and_set()
+
+        @staticmethod
+        def _pia_radius(r, beta):
+            kappa = 0.25 * beta
+            return float(r * (1.0 + 0.5 * kappa * r * r))
+
+        def _on_change(self, *_):
+            self._r = float(self.slider_r.value())
+            self._beta = float(self.slider_b.value())/100.0
+            self._render_and_set()
+
+        def _render_and_set(self):
+            import numpy as np
+            from PySide6.QtGui import QImage, QPixmap
+            res = self._res
+            r = max(1.0, self._r)
+            beta = max(0.0, self._beta)
+            re = self._pia_radius(r, beta)
+            span = 1.6 * re
+            xs = np.linspace(-span, span, res)
+            ys = np.linspace(-span, span, res)
+            X, Y = np.meshgrid(xs, ys)
+            D = np.sqrt(X*X + Y*Y) - re
+            band = np.clip(0.5 - D/(span/res*2.0), 0.0, 1.0)
+            img = (255*(1.0 - band)).astype(np.uint8)
+            qimg = QImage(img.data, res, res, QImage.Format_Grayscale8)
+            self.image_label.setPixmap(QPixmap.fromImage(qimg))
+else:
+    SDFAnalyticBallDock = None  # type: ignore
+
+class NewAnalyticBallCmd:
+    """Open/focus the Analytic Ball dock (triangle-free renderer)."""
+    def __init__(self): pass
+    def run(self, mw):
+        from PySide6.QtWidgets import QDockWidget
+        dock = None
+        for d in mw.win.findChildren(QDockWidget):
+            if d.objectName() == "SDFAnalyticBallDock":
+                dock = d; break
+        if dock is None:
+            dock = SDFAnalyticBallDock(mw)
+            mw.win.addDockWidget(Qt.RightDockWidgetArea, dock)
+        dock.show(); dock.raise_()
+
+# --- ANALYTIC VIEWPORT COMMANDS ---
+class NewAnalyticViewportCmd:
+    """Creates a new analytic viewport using OpenGL/PyGLM-based renderer."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            # Import the necessary modules
+            from adaptivecad.analytic.viewport import AnalyticViewport
+            from adaptivecad.analytic.scene import Scene
+            
+            # Create the analytic viewport
+            viewport = AnalyticViewport()
+            viewport.scene = Scene()
+            
+            # Set some default properties for the scene
+            viewport.scene.env_light = 0.25
+            viewport.scene.bg_color = (0.08, 0.08, 0.1)
+            
+            # Store reference and show
+            mw._analytic_viewport = viewport
+            viewport.show()
+            
+            # Register sync callback for document updates
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+                # Set up timer for periodic sync
+                try:
+                    from PySide6.QtCore import QTimer
+                    timer = QTimer()
+                    timer.timeout.connect(mw._sync_analytic_scene)
+                    timer.start(500)  # sync every 500ms
+                    mw._analytic_sync_timer = timer
+                except Exception as e:
+                    print(f"Failed to set up sync timer: {e}")
+            
+        except Exception as e:
+            print(f"Failed to create analytic viewport: {e}")
+            import traceback
+            traceback.print_exc()
+
+class NewAnalyticViewportPanelCmd:
+    """Creates a new analytic viewport with control panel (panel version)."""
+    def __init__(self): pass
+    def run(self, mw):
+        try:
+            from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
+            panel = AnalyticViewportPanel()
+            panel.show()
+            mw._analytic_viewport_panel = panel
+            # optional sync if scene sync method exists
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+        except Exception as e:
+            print(f"Failed to create analytic viewport panel: {e}")
+            import traceback; traceback.print_exc()
+
+class NewAnalyticSphereCmd:
+    """Creates a new analytic sphere in the scene."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            from adaptivecad.analytic.primitives import AnalyticSphere
+            from adaptivecad.command_defs import DOCUMENT
+            
+            # Create sphere with default parameters
+            sphere = AnalyticSphere(radius=1.0, position=(0,0,0))
+            DOCUMENT.append(sphere)
+            
+            # Sync to viewport if available
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+        except Exception as e:
+            print(f"Failed to create analytic sphere: {e}")
+
+class NewAnalyticBoxCmd:
+    """Creates a new analytic box in the scene."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            from adaptivecad.analytic.primitives import AnalyticBox
+            from adaptivecad.command_defs import DOCUMENT
+            
+            # Create box with default parameters
+            box = AnalyticBox(size=(1.0, 1.0, 1.0), position=(0,0,0))
+            DOCUMENT.append(box)
+            
+            # Sync to viewport if available
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+        except Exception as e:
+            print(f"Failed to create analytic box: {e}")
+
+class NewAnalyticCylinderCmd:
+    """Creates a new analytic cylinder in the scene."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            from adaptivecad.analytic.primitives import AnalyticCylinder
+            from adaptivecad.command_defs import DOCUMENT
+            
+            # Create cylinder with default parameters
+            cylinder = AnalyticCylinder(radius=0.5, height=2.0, position=(0,0,0))
+            DOCUMENT.append(cylinder)
+            
+            # Sync to viewport if available
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+        except Exception as e:
+            print(f"Failed to create analytic cylinder: {e}")
+
+class NewAnalyticCapsuleCmd:
+    """Creates a new analytic capsule in the scene."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            from adaptivecad.analytic.primitives import AnalyticCapsule
+            from adaptivecad.command_defs import DOCUMENT
+            
+            # Create capsule with default parameters
+            capsule = AnalyticCapsule(radius=0.5, height=2.0, position=(0,0,0))
+            DOCUMENT.append(capsule)
+            
+            # Sync to viewport if available
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+        except Exception as e:
+            print(f"Failed to create analytic capsule: {e}")
+
+class NewAnalyticTorusCmd:
+    """Creates a new analytic torus in the scene."""
+    
+    def __init__(self): pass
+    
+    def run(self, mw):
+        try:
+            from adaptivecad.analytic.primitives import AnalyticTorus
+            from adaptivecad.command_defs import DOCUMENT
+            
+            # Create torus with default parameters
+            torus = AnalyticTorus(major_radius=1.0, minor_radius=0.25, position=(0,0,0))
+            DOCUMENT.append(torus)
+            
+            # Sync to viewport if available
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
+                
+        except Exception as e:
+            print(f"Failed to create analytic torus: {e}")
 
 # --- PROJECT MANAGEMENT COMMANDS ---
 class SaveProjectCmd:
@@ -726,7 +1012,7 @@ class OpenProjectCmd:
                         )
                     # For basic shapes, we'll need to import them from command_defs
                     else:
-                        # Try to create basic shapes using the existing command system
+                        # Try to create basic features using the existing command system
                         from adaptivecad.command_defs import Feature
                         
                         # Create a generic feature - this won't have the actual shape
@@ -761,7 +1047,7 @@ class MainWindow:
     def __init__(self):
         print("[DEBUG] MainWindow.__init__() called")
         if not HAS_GUI:
-            print("GUI dependencies not available. Cannot create MainWindow.")
+            print("Qt not available. Cannot create MainWindow.")
             return
             
         print("[DEBUG] GUI dependencies available, initializing...")
@@ -781,12 +1067,31 @@ class MainWindow:
         self.win.resize(1024, 768)
         print("[DEBUG] Main window created")
         
-        # Create central widget with the OpenCascade viewer
-        from OCC.Display.qtDisplay import qtViewer3d
+        # Create central widget with OCC viewer or fallback
         central = QWidget()
         layout = QVBoxLayout(central)
-        self.view = qtViewer3d(central)
-        layout.addWidget(self.view)
+        if HAS_OCC:
+            try:
+                from OCC.Display.qtDisplay import qtViewer3d  # type: ignore
+                self.view = qtViewer3d(central)
+                layout.addWidget(self.view)
+                # Initialize OCC view
+                self.view._display.set_bg_gradient_color([50, 50, 50], [10, 10, 10])
+                try:
+                    self.view._display.display_triedron()
+                except Exception:
+                    pass
+                try:
+                    self.view._display.View.SetProj(1, 1, 1)
+                    self.view._display.View.SetScale(300)
+                except Exception:
+                    pass
+            except Exception as e:
+                print("Failed to initialize OCC viewer, using fallback:", e)
+                HAS_OCC_LOCAL = False
+                self.view = self._make_fallback_view(central, layout)
+        else:
+            self.view = self._make_fallback_view(central, layout)
         self.win.setCentralWidget(central)
         # Explicitly enable shape selection mode (fix for lost selection after repo update)
         if hasattr(self.view, '_display') and hasattr(self.view._display, 'SetSelectionMode'):
@@ -795,37 +1100,48 @@ class MainWindow:
         else:
             print("[DEBUG] Selection mode method not found on display object")
         
-        # Initialize view
-        self.view._display.set_bg_gradient_color([50, 50, 50], [10, 10, 10])
-        self.view._display.display_triedron()
-        self.view._display.View.SetProj(1, 1, 1)
-        self.view._display.View.SetScale(300)
-        # --- Ensure selection mode is enabled for shapes ---
-        try:
-            # For OCC Display, enable selection mode for faces and shapes
-            if hasattr(self.view._display, 'EnableSelection'):
-                print("[DEBUG] Calling EnableSelection() on display")
-                self.view._display.EnableSelection()
-            elif hasattr(self.view._display, 'SetSelectionModeFace'):
-                print("[DEBUG] Calling SetSelectionModeFace() on display")
-                self.view._display.SetSelectionModeFace()
-            elif hasattr(self.view._display, 'Context') and hasattr(self.view._display.Context, 'ActivateStandardMode'):
-                print("[DEBUG] Calling ActivateStandardMode(0) on display.Context")
-                self.view._display.Context.ActivateStandardMode(0)  # 0 = selection mode
-            else:
-                print("[DEBUG] No known selection mode method found on display")
-        except Exception as e:
-            print(f"[DEBUG] Warning: Could not enable selection mode: {e}")
-        
+        # Extra initialization safety (idempotent)
+        if HAS_OCC and hasattr(self.view, '_display'):
+            try:
+                self.view._display.set_bg_gradient_color([50, 50, 50], [10, 10, 10])
+                self.view._display.display_triedron()
+                self.view._display.View.SetProj(1, 1, 1)
+                self.view._display.View.SetScale(300)
+            except Exception:
+                pass
+            # Ensure selection mode enabled for shapes
+            try:
+                if hasattr(self.view._display, 'EnableSelection'):
+                    self.view._display.EnableSelection()
+                elif hasattr(self.view._display, 'SetSelectionModeFace'):
+                    self.view._display.SetSelectionModeFace()
+                elif hasattr(self.view._display, 'Context') and hasattr(self.view._display.Context, 'ActivateStandardMode'):
+                    self.view._display.Context.ActivateStandardMode(0)
+            except Exception as e:
+                print(f"[DEBUG] Warning: Could not enable selection mode: {e}")
         # Initialize ViewCube
-        self.viewcube = ViewCubeWidget(self.view._display, self.view)
-        self._position_viewcube()
-        self.viewcube.show()
-        self.setup_view_events()
+        if HAS_OCC and hasattr(self.view, '_display'):
+            self.viewcube = ViewCubeWidget(self.view._display, self.view)
+            self._position_viewcube()
+            self.viewcube.show()
+            self.setup_view_events()
+        else:
+            self.viewcube = None
         
         # Setup selection handling
         self._setup_selection_handling()
         
+        # Shared AACore analytic scene
+        try:
+            from adaptivecad.aacore.sdf import Scene as _AACoreScene, Prim as _Prim, KIND_SPHERE, KIND_TORUS, KIND_CAPSULE
+            self.aacore_scene = _AACoreScene()
+            # seed demo prims
+            self.aacore_scene.add(_Prim(KIND_SPHERE, [1.0,0,0,0], beta=0.08, color=(0.9,0.4,0.3)))
+            self.aacore_scene.add(_Prim(KIND_TORUS, [1.4,0.35,0,0], beta=0.05, color=(0.4,0.8,0.6)))
+            self.aacore_scene.add(_Prim(KIND_CAPSULE,[0.35,1.4,0,0], beta=0.0,  color=(0.3,0.6,0.9)))
+        except Exception:
+            self.aacore_scene = None
+
         # Setup UI
         self._create_menus_and_toolbar()
         
@@ -833,34 +1149,21 @@ class MainWindow:
         
     def _setup_selection_handling(self):
         """Setup selection handling for objects in the 3D view."""
+        if not HAS_OCC or not hasattr(self.view, '_display'):
+            return
         try:
-            print("[DEBUG] Setting up selection handling (register_select_callback)")
-            # Connect selection changed signal
-            def on_selection_changed(*args, **kwargs):
-                print(f"[DEBUG] Selection callback triggered: args={args}, kwargs={kwargs}")
+            # Unified selection callback setup
+            def on_selection_changed(*_args, **_kwargs):
                 self._on_object_selected()
-
-            # Set up mouse click handling for selection
             if hasattr(self.view._display, 'register_select_callback'):
                 self.view._display.register_select_callback(on_selection_changed)
-                print("[DEBUG] register_select_callback connected successfully")
-            else:
-                print("[DEBUG] register_select_callback not found on display")
-                
-            # Try additional selection setup methods
-            if hasattr(self.view._display, 'SetSelectionModeVertex'):
-                print("[DEBUG] Attempting SetSelectionModeVertex")
-                try:
-                    self.view._display.SetSelectionModeVertex()
-                except Exception as e:
-                    print(f"[DEBUG] SetSelectionModeVertex failed: {e}")
-                    
-            if hasattr(self.view._display, 'SetSelectionModeShape'):
-                print("[DEBUG] Attempting SetSelectionModeShape")
-                try:
-                    self.view._display.SetSelectionModeShape()
-                except Exception as e:
-                    print(f"[DEBUG] SetSelectionModeShape failed: {e}")                    
+            # Attempt enabling various selection modes (best-effort)
+            for attr in ('SetSelectionModeVertex', 'SetSelectionModeShape'):
+                if hasattr(self.view._display, attr):
+                    try:
+                        getattr(self.view._display, attr)()
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"[DEBUG] Warning: Could not setup selection handling: {e}")
     
@@ -1026,6 +1329,32 @@ class MainWindow:
         export_gcode_direct_action = QAction("Export G-Code (Direct)", self.win)
         export_gcode_direct_action.triggered.connect(lambda: self._run_command(ExportGCodeDirectCmd()))
         export_menu.addAction(export_gcode_direct_action)
+
+        # Analytic SDF -> STL exporter
+        class ExportAnalyticSTLCmd:
+            def __init__(self, get_scene):
+                self._get_scene = get_scene
+            def run(self_inner, mw):
+                from PySide6.QtWidgets import QFileDialog, QMessageBox
+                from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
+                sc = self_inner._get_scene()
+                if sc is None or len(sc.prims)==0:
+                    QMessageBox.information(mw.win, "Export", "No analytic primitives to export."); return
+                path, _ = QFileDialog.getSaveFileName(mw.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
+                if not path: return
+                try:
+                    export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=160)
+                    mw.win.statusBar().showMessage(f"Exported analytic STL: {path}", 5000)
+                except ImportError:
+                    QMessageBox.critical(mw.win, "Missing deps", "Install required: pip install scikit-image numpy-stl")
+                except Exception as e:
+                    QMessageBox.critical(mw.win, "Export Error", str(e))
+
+        export_analytic_stl_action = QAction("Export Analytic (SDF→STL)", self.win)
+        export_analytic_stl_action.triggered.connect(
+            lambda: self._run_command(ExportAnalyticSTLCmd(lambda: self.aacore_scene))
+        )
+        export_menu.addAction(export_analytic_stl_action)
         
         # Add separator
         file_menu.addSeparator()
@@ -1061,8 +1390,13 @@ class MainWindow:
         
         # Add Ball tool
         ball_action = QAction("Ball", self.win)
-        ball_action.triggered.connect(lambda: self._run_command(NewBallCmd()))
+        ball_action.triggered.connect(lambda: self._create_ball_via_backend(20.0))
         basic_menu.addAction(ball_action)
+
+        # Analytic (SDF/πₐ) Ball — triangle-free renderer
+        analytic_ball_action = QAction("Analytic Ball (SDF/πₐ)", self.win)
+        analytic_ball_action.triggered.connect(lambda: self._run_command(NewAnalyticBallCmd()))
+        basic_menu.addAction(analytic_ball_action)
         
         # Add Torus tool
         torus_action = QAction("Torus", self.win)
@@ -1175,6 +1509,75 @@ class MainWindow:
             except Exception:
                 pass
         
+        # Create Analytic Shapes menu
+        analytic_menu = menubar.addMenu("Analytic Shapes")
+        
+        # Add Viewport section
+        viewport_submenu = analytic_menu.addMenu("Viewport")
+        
+        # Add Analytic Viewport tool
+        analytic_viewport_action = QAction("New Analytic Viewport", self.win)
+        analytic_viewport_action.triggered.connect(lambda: self._run_command(NewAnalyticViewportCmd()))
+        viewport_submenu.addAction(analytic_viewport_action)
+        
+        # Toggle auto-sync
+        sync_action = QAction("Auto-Sync with Main Viewport", self.win, checkable=True)
+        sync_action.setChecked(True)
+        
+        def toggle_sync(checked):
+            if hasattr(self, "_analytic_sync_timer"):
+                if checked:
+                    self._analytic_sync_timer.start()
+                else:
+                    self._analytic_sync_timer.stop()
+        
+        sync_action.triggered.connect(toggle_sync)
+        viewport_submenu.addAction(sync_action)
+        
+        # Add separator
+        analytic_menu.addSeparator()
+        
+        # Create primitive shapes submenu
+        primitives_submenu = analytic_menu.addMenu("Add Primitives")
+        
+        # Add Analytic Sphere tool
+        analytic_sphere_action = QAction("Sphere", self.win)
+        analytic_sphere_action.triggered.connect(lambda: self._run_command(NewAnalyticSphereCmd()))
+        primitives_submenu.addAction(analytic_sphere_action)
+        
+        # Add Analytic Box tool
+        analytic_box_action = QAction("Box", self.win)
+        analytic_box_action.triggered.connect(lambda: self._run_command(NewAnalyticBoxCmd()))
+        primitives_submenu.addAction(analytic_box_action)
+        
+        # Add Analytic Cylinder tool
+        analytic_cylinder_action = QAction("Cylinder", self.win)
+        analytic_cylinder_action.triggered.connect(lambda: self._run_command(NewAnalyticCylinderCmd()))
+        primitives_submenu.addAction(analytic_cylinder_action)
+        
+        # Add Analytic Capsule tool
+        analytic_capsule_action = QAction("Capsule", self.win)
+        analytic_capsule_action.triggered.connect(lambda: self._run_command(NewAnalyticCapsuleCmd()))
+        primitives_submenu.addAction(analytic_capsule_action)
+        
+        # Add Analytic Torus tool
+        analytic_torus_action = QAction("Torus", self.win)
+        analytic_torus_action.triggered.connect(lambda: self._run_command(NewAnalyticTorusCmd()))
+        primitives_submenu.addAction(analytic_torus_action)
+        
+        # Add utilities submenu
+        utils_submenu = analytic_menu.addMenu("Utilities")
+        
+        # Add mesh to analytic conversion
+        mesh_to_analytic_action = QAction("Convert Mesh to Analytic", self.win)
+        mesh_to_analytic_action.triggered.connect(lambda: self._run_command(ConvertMeshToAnalyticCmd()))
+        utils_submenu.addAction(mesh_to_analytic_action)
+        
+        # Add analytic to mesh conversion
+        analytic_to_mesh_action = QAction("Convert Analytic to Mesh", self.win)
+        analytic_to_mesh_action.triggered.connect(lambda: self._run_command(ConvertAnalyticToMeshCmd()))
+        utils_submenu.addAction(analytic_to_mesh_action)
+        
         # Create Modeling Tools menu
         modeling_menu = menubar.addMenu("Modeling Tools")
         
@@ -1242,6 +1645,30 @@ class MainWindow:
         dimension_action.triggered.connect(self._toggle_dimension_panel)
         view_menu.addAction(dimension_action)
         
+        analytic_view_action = QAction("Open Analytic Viewport (No Triangles)", self.win)
+        def _open_analytic():
+            try:
+                # Create a separate script to run the analytic viewport
+                # This avoids mixing PySide6 and PyQt6 in the same process
+                import subprocess
+                import sys
+                subprocess.Popen([sys.executable, 'test_analytic_viewport.py'])
+                
+                # Store a reference to the analytic viewport
+                from adaptivecad.gui.analytic_viewport import AnalyticViewport
+                self._analytic_viewport = AnalyticViewport(None)  # For sync purposes
+                
+                # Sync the document with the analytic scene
+                self._sync_analytic_scene()
+            except Exception as e:
+                QMessageBox.warning(self.win, "Error", f"Could not open Analytic Viewport: {str(e)}\n\nMake sure PyQt6 and PyOpenGL are installed.")
+        analytic_view_action.triggered.connect(_open_analytic)
+        view_menu.addAction(analytic_view_action)
+        
+        # Analytic viewport link from view menu
+        view_menu.addAction(QAction("Show Analytic Viewport", self.win, triggered=lambda: self._run_command(NewAnalyticViewportCmd())))
+        view_menu.addAction(QAction("Show Analytic Viewport (Panel)", self.win, triggered=lambda: self._run_command(NewAnalyticViewportPanelCmd())))
+        
         view_menu.addSeparator()
 
         # Add View Cube toggle
@@ -1300,10 +1727,21 @@ class MainWindow:
         triedron_action.triggered.connect(lambda checked: self.view._display.display_triedron() if checked else self.view._display.hide_triedron())
         view_menu.addAction(triedron_action)
         
+        # Add Rendering Backend menu
+        backend_menu = settings_menu.addMenu("Rendering Backend")
+        use_analytic_action = QAction("Use Analytic/SDF for default shapes", self.win, checkable=True)
+        use_analytic_action.setChecked(settings.USE_ANALYTIC_BACKEND)
+        def toggle_backend(chk):
+            settings.USE_ANALYTIC_BACKEND = bool(chk)
+            self.win.statusBar().showMessage(f"Analytic backend: {'ON' if chk else 'OFF'}", 3000)
+        use_analytic_action.triggered.connect(toggle_backend)
+        backend_menu.addAction(use_analytic_action)
+        
         # Create a main toolbar with commonly used shapes
         self.toolbar = self.win.addToolBar("Common Shapes")
         self.toolbar.addAction(box_action)
         self.toolbar.addAction(cyl_action)
+        self.toolbar.addAction(analytic_ball_action)
         self.toolbar.addAction(super_action)
         self.toolbar.addAction(pi_shell_action)
         
@@ -1357,8 +1795,9 @@ class MainWindow:
             # Clear the reference after some delay to allow signals to complete
             # Don't clear immediately as async operations might still be running
             if hasattr(self, '_current_command'):
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(1000, lambda: setattr(self, '_current_command', None))
+                if HAS_QT:
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(1000, lambda: setattr(self, '_current_command', None))
     
     def _delete_selected(self):
         """Delete the currently selected feature."""
@@ -1558,6 +1997,44 @@ class MainWindow:
         else:
             self._hide_dimension_panel()
     
+    def _sync_analytic_scene(self):
+        # Called whenever DOCUMENT changes or transforms update
+        try:
+            from adaptivecad.command_defs import DOCUMENT
+            from adaptivecad.analytic.feature import AnalyticFeature
+            from adaptivecad.analytic.primitives import (
+                AnalyticSphere, AnalyticBox, AnalyticCylinder, AnalyticCapsule, AnalyticTorus
+            )
+            
+            # Find open analytic viewport(s)
+            if hasattr(self, "_analytic_viewport") and self._analytic_viewport:
+                vp = self._analytic_viewport
+                
+                # Rebuild scene from analytic features
+                from adaptivecad.analytic.scene import Scene
+                scene = Scene()
+                
+                # First, add explicit analytic primitives
+                for feat in DOCUMENT:
+                    if hasattr(feat, "to_scene_primitive"):
+                        scene.primitives.append(feat.to_scene_primitive())
+                
+                # Preserve camera/env if you want
+                scene.env_light = getattr(vp.scene, "env_light", 0.25)
+                scene.bg_color = getattr(vp.scene, "bg_color", (0.08,0.08,0.1))
+                scene.pia_global_beta = getattr(vp.scene, "pia_global_beta", 0.0)
+                
+                # Update the viewport
+                vp.scene = scene
+                vp.update()
+                
+                # Print status (silenced to avoid spam)
+                # print(f"[SYNC] Synced analytic scene with {len(scene.primitives)} primitives")
+        except Exception as e:
+            print("[SYNC] Analytic scene sync failed:", e)
+            import traceback
+            traceback.print_exc()
+    
     def _create_dimension_panel(self):
         """Create and show the dimension selector panel."""
         if self.dimension_panel is not None:
@@ -1731,7 +2208,7 @@ class MainWindow:
     
     def run(self):
         if not HAS_GUI:
-            print("Error: Cannot run GUI without PySide6 and OCC.Display dependencies.")
+            print("Error: Cannot run GUI without Qt.")
             return 1
             
         # Show the window and run the application
@@ -1739,16 +2216,36 @@ class MainWindow:
         return self.app.exec()
         
     def _position_viewcube(self):
-        if hasattr(self, 'viewcube') and self.viewcube.parent() is self.view:
+        if self.viewcube and self.viewcube.parent() is self.view:
             self.viewcube.move(self.view.width() - self.viewcube.width() - 10, 10)
             
     def setup_view_events(self):
-        # Connect view resize event to reposition viewcube
+        if not self.viewcube:
+            return
         original_resize = self.view.resizeEvent
         def new_resize(event):
             original_resize(event)
             self._position_viewcube()
         self.view.resizeEvent = new_resize
+
+    def _make_fallback_view(self, parent, layout):
+        """Create a minimal placeholder viewer when OCC is unavailable."""
+        placeholder = QWidget(parent)
+        v = QVBoxLayout(placeholder)
+        lbl = QLabel("OCC backend not available. Using fallback view.\n"\
+                      "You can still use Analytic Viewport & panel.")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet("color: #CCC; background:#222; padding:16px;")
+        v.addWidget(lbl)
+        placeholder._display = type('DummyDisplay', (), {
+            'EraseAll': lambda self=None: None,
+            'DisplayShape': lambda *a, **k: None,
+            'FitAll': lambda *a, **k: None,
+            'set_bg_gradient_color': lambda *a, **k: None,
+            'View': type('V', (), {'SetProj': lambda *a, **k: None, 'SetScale': lambda *a, **k: None})()
+        })()
+        layout.addWidget(placeholder)
+        return placeholder
             
     def _show_about(self):
         QMessageBox.about(self.win, "About AdaptiveCAD",
@@ -1762,6 +2259,22 @@ that implement the πₐ (Adaptive Pi) geometry principles.</p>
     def _show_doc_message(self, title, message):
         QMessageBox.information(self.win, title, message)
     
+    def _create_ball_via_backend(self, r: float = 20.0):
+        from adaptivecad import settings
+        if settings.USE_ANALYTIC_BACKEND:
+            # open/focus the Analytic dock and set sliders to r / β
+            cmd = NewAnalyticBallCmd()
+            cmd.run(self)
+            try:
+                dock = [d for d in self.win.findChildren(QDockWidget) if d.objectName()=="SDFAnalyticBallDock"][0]
+                dock.slider_r.setValue(int(r))
+                dock.slider_b.setValue(int(settings.ANALYTIC_PIA_BETA * 100))
+            except Exception:
+                pass
+        else:
+            # fall back to OCC Ball command
+            NewBallCmd().run(self)
+
 def main() -> None:
     MainWindow().run()
 

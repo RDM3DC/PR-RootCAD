@@ -24,28 +24,28 @@ if ($env:CONDA_DEFAULT_ENV -eq "adaptivecad") {
     Write-Host "Successfully activated adaptivecad environment" -ForegroundColor Green
     Write-Host "Python path: $(Get-Command python | Select-Object -ExpandProperty Source)" -ForegroundColor Green
     
-    # Check dependencies
+    # Check dependencies (use here-string to avoid quoting issues)
     Write-Host "Checking for key dependencies:" -ForegroundColor Cyan
-    python -c "
-import sys
-try:
-    import numpy
-    print(f'  ✓ numpy: {numpy.__version__}')
-except ImportError:
-    print('  ✗ numpy: Not installed')
+    $pyBlock = @"
+import importlib, sys
+def chk(name, label=None):
+    label = label or name
+    try:
+        m = importlib.import_module(name)
+        ver = getattr(m, '__version__', 'present')
+        print(f'  \u2713 {label}: {ver}')
+    except Exception:
+        print(f'  \u2717 {label}: Not installed')
 
+chk('numpy','numpy')
+chk('PySide6','PySide6')
 try:
-    import PySide6
-    print(f'  ✓ PySide6: {PySide6.__version__}')
-except ImportError:
-    print('  ✗ PySide6: Not installed')
-
-try:
-    from OCC.Core.TopoDS import TopoDS_Shape
-    print('  ✓ pythonocc-core: Installed')
-except ImportError:
-    print('  ✗ pythonocc-core: Not installed')
-"
+    import OCC.Core  # noqa
+    print('  \u2713 pythonocc-core: Installed')
+except Exception:
+    print('  \u2717 pythonocc-core: Not installed')
+"@
+    $pyBlock | & python -
 } else {
     Write-Host "Failed to activate adaptivecad environment. Current environment: $env:CONDA_DEFAULT_ENV" -ForegroundColor Red
 }

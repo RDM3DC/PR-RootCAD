@@ -6,3 +6,7 @@ MESH_ANGLE = 0.05       # radians, lower = smoother
 
 # Enable optional GPU acceleration if supported
 USE_GPU = False
+
+# Rendering backends
+USE_ANALYTIC_BACKEND = False   # set True to make Ball/Torus/etc use analytic/SDF path by default
+ANALYTIC_PIA_BETA = 0.0        # default πₐ β for analytic scaling
