@@ -1393,9 +1393,24 @@ class MainWindow:
                     QMessageBox.critical(mw.win, "Export Error", str(e))
 
         export_analytic_stl_action = QAction("Export Analytic (SDF→STL)", self.win)
-        export_analytic_stl_action.triggered.connect(
-            lambda: self._run_command(ExportAnalyticSTLCmd(lambda: self.aacore_scene))
-        )
+        def _export_analytic():
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
+            sc = getattr(self, 'aacore_scene', None)
+            if sc is None or not getattr(sc, 'prims', []):
+                QMessageBox.information(self.win, "Export", "No analytic primitives to export.")
+                return
+            path, _ = QFileDialog.getSaveFileName(self.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
+            if not path:
+                return
+            export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=180)
+            self.win.statusBar().showMessage(f"Exported analytic STL: {path}", 5000)
+        export_analytic_stl_action.triggered.connect(lambda: require(
+            exporter_available,
+            _export_analytic,
+            self,
+            "Exporter needs: pip install scikit-image numpy-stl"
+        ))
         export_menu.addAction(export_analytic_stl_action)
         
         # Add separator
@@ -1689,22 +1704,22 @@ class MainWindow:
         
         analytic_view_action = QAction("Open Analytic Viewport (No Triangles)", self.win)
         def _open_analytic():
-            try:
-                # Create a separate script to run the analytic viewport
-                # This avoids mixing PySide6 and PyQt6 in the same process
-                import subprocess
-                import sys
-                subprocess.Popen([sys.executable, 'test_analytic_viewport.py'])
-                
-                # Store a reference to the analytic viewport
-                from adaptivecad.gui.analytic_viewport import AnalyticViewport
-                self._analytic_viewport = AnalyticViewport(None)  # For sync purposes
-                
-                # Sync the document with the analytic scene
+            from adaptivecad.gui.analytic_viewport import AnalyticViewport
+            self._analytic_viewport = AnalyticViewport(parent=self.win)
+            if hasattr(self, 'aacore_scene') and self.aacore_scene is not None:
+                try:
+                    self._analytic_viewport.scene = self.aacore_scene
+                except Exception:
+                    pass
+            self._analytic_viewport.show()
+            if hasattr(self, '_sync_analytic_scene'):
                 self._sync_analytic_scene()
-            except Exception as e:
-                QMessageBox.warning(self.win, "Error", f"Could not open Analytic Viewport: {str(e)}\n\nMake sure PyQt6 and PyOpenGL are installed.")
-        analytic_view_action.triggered.connect(_open_analytic)
+        analytic_view_action.triggered.connect(lambda: require(
+            analytic_available,
+            _open_analytic,
+            self,
+            "Analytic renderer not available. Install OpenGL + analytic modules."
+        ))
         view_menu.addAction(analytic_view_action)
         
         # Analytic viewport link from view menu
@@ -1810,6 +1825,14 @@ class MainWindow:
         about_action = QAction("About AdaptiveCAD", self.win)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+        toggle_log_action = QAction("Enable Debug Logs", self.win, checkable=True)
+        def _toggle_logs(checked):
+            logging.getLogger("adaptivecad").setLevel(logging.DEBUG if checked else logging.WARNING)
+            lvl = 'DEBUG' if checked else 'WARNING'
+            self.win.statusBar().showMessage(f"Log level: {lvl}", 2000)
+        toggle_log_action.triggered.connect(_toggle_logs)
+        help_menu.addAction(toggle_log_action)
         
         # Add Documentation links
         docs_menu = help_menu.addMenu("Documentation")
