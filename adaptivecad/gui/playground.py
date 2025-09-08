@@ -1157,6 +1157,15 @@ class MainWindow:
                 from PySide6.QtCore import QTimer
                 def _apply():
                     if hasattr(self, "_analytic_main_action"):
+                        # Ensure panel exists before swapping
+                        if getattr(self, '_analytic_panel', None) is None:
+                            try:
+                                from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
+                                shared_scene = getattr(self, 'aacore_scene', None)
+                                self._analytic_panel = AnalyticViewportPanel(aacore_scene=shared_scene)
+                            except Exception as e:
+                                log.debug(f"Failed to instantiate analytic panel on startup: {e}")
+                                return
                         self._analytic_main_action.setChecked(True)
                         self._toggle_analytic_main(True)
                 QTimer.singleShot(0, _apply)
