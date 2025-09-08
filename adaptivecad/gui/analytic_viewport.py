@@ -29,6 +29,39 @@ try:
 except Exception:
     _HAVE_PIL = False
 
+# --- Gizmo helper functions (move/rotate/scale snapping) ---
+import math
+def _deg2rad(d): return d * math.pi / 180.0
+def _snap_angle(deg, step_deg):
+    if step_deg <= 0: return deg
+    return round(deg / step_deg) * step_deg
+def _snap_scale(v, step):
+    if step <= 0: return v
+    return round(v / step) * step
+def _make_rot(axis, deg):
+    a = _deg2rad(deg)
+    c, s = math.cos(a), math.sin(a)
+    R = np.eye(4, dtype=np.float32)
+    if axis == 'x':
+        R[1,1]=c; R[1,2]=-s; R[2,1]=s; R[2,2]=c
+    elif axis == 'y':
+        R[0,0]=c; R[0,2]=s; R[2,0]=-s; R[2,2]=c
+    else: # 'z'
+        R[0,0]=c; R[0,1]=-s; R[1,0]=s; R[1,1]=c
+    return R
+def _make_scale(axis, k):
+    S = np.eye(4, dtype=np.float32)
+    if axis == 'x': S[0,0] = k
+    elif axis == 'y': S[1,1] = k
+    elif axis == 'z': S[2,2] = k
+    else: S[0,0] = S[1,1] = S[2,2] = k
+    return S
+def _get_local_axes_from_xform(M):
+    rx = M[:3,0]; ry = M[:3,1]; rz = M[:3,2]
+    def _norm(v):
+        n = np.linalg.norm(v); return v if n < 1e-9 else v / n
+    return _norm(rx), _norm(ry), _norm(rz)
+
 def load_text(p):
     return Path(p).read_text(encoding="utf-8")
 
@@ -287,6 +320,27 @@ class AnalyticViewport(QOpenGLWidget):
         if changed:
             self._update_title(); self.update(); self._save_settings()
         else:
+            # Gizmo mode shortcuts (override before movement keys)
+            try:
+                panel = self.parent()
+            except Exception:
+                panel = None
+            if panel is not None:
+                if k == Qt.Key_R:
+                    panel._gizmo_mode = 'rotate'; self.update(); return
+                elif k == Qt.Key_S and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    # 'S' repurposed for Scale mode; (Ctrl+S still free for save if future)
+                    panel._gizmo_mode = 'scale'; self.update(); return
+                elif k == Qt.Key_M:
+                    panel._gizmo_mode = 'move'; self.update(); return
+                elif k == Qt.Key_X:
+                    panel._axis_lock = 'x'; return
+                elif k == Qt.Key_Y:
+                    panel._axis_lock = 'y'; return
+                elif k == Qt.Key_Z:
+                    panel._axis_lock = 'z'; return
+                elif k == Qt.Key_Escape:
+                    panel._axis_lock = None; return
             # --- Keyboard nudges (view-aligned + world-aligned) ---
             pr = self._current_prim()
             if pr is not None:
@@ -350,6 +404,51 @@ class AnalyticViewport(QOpenGLWidget):
             self._last_mouse = event.position()
         dx = event.position().x() - self._last_mouse.x()
         dy = event.position().y() - self._last_mouse.y()
+        # Gizmo rotate / scale (invisible gizmo) using horizontal drag
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        if panel is not None and hasattr(panel, '_gizmo_mode') and panel._gizmo_mode in ("rotate","scale") and panel._current_sel >= 0:
+            if event.buttons() & Qt.MouseButton.LeftButton:  # require LMB drag
+                pr = self.scene.prims[panel._current_sel]
+                axis = panel._axis_lock or 'z'
+                local_space = bool(getattr(panel, '_space_local', True))
+                if panel._gizmo_mode == 'rotate':
+                    sens_rot = 0.25  # degrees per pixel
+                    raw_deg = dx * sens_rot
+                    use_snap = not (event.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    deg = _snap_angle(raw_deg, panel._snap_angle_deg) if use_snap else raw_deg
+                    R = _make_rot(axis, deg)
+                    if local_space:
+                        pr.xform.M = pr.xform.M @ R
+                    else:
+                        T = np.eye(4, dtype=np.float32); T[:3,3] = pr.xform.M[:3,3]
+                        Tinv = np.eye(4, dtype=np.float32); Tinv[:3,3] = -pr.xform.M[:3,3]
+                        pr.xform.M = T @ R @ Tinv @ pr.xform.M
+                    try: self.scene._notify()
+                    except Exception: pass
+                    try: panel._select_prim(panel._current_sel)
+                    except Exception: pass
+                    self.update(); self._last_mouse = event.position(); return
+                elif panel._gizmo_mode == 'scale':
+                    sens_scl = 0.005  # scale factor per pixel
+                    raw = 1.0 + dx * sens_scl
+                    raw = max(0.01, raw)
+                    use_snap = not (event.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    k = _snap_scale(raw, panel._snap_scale_step) if use_snap else raw
+                    S = _make_scale(axis, k)
+                    if local_space:
+                        pr.xform.M = pr.xform.M @ S
+                    else:
+                        T = np.eye(4, dtype=np.float32); T[:3,3] = pr.xform.M[:3,3]
+                        Tinv = np.eye(4, dtype=np.float32); Tinv[:3,3] = -pr.xform.M[:3,3]
+                        pr.xform.M = T @ S @ Tinv @ pr.xform.M
+                    try: self.scene._notify()
+                    except Exception: pass
+                    try: panel._select_prim(panel._current_sel)
+                    except Exception: pass
+                    self.update(); self._last_mouse = event.position(); return
         # Screen-plane translate when active
         if self._drag_move_active and self._drag_last_pos is not None:
             dx2 = event.position().x() - self._drag_last_pos.x()
@@ -587,6 +686,12 @@ class AnalyticViewportPanel(QWidget):
     def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
+        # Gizmo / transform state
+        self._gizmo_mode = 'move'   # 'move' | 'rotate' | 'scale'
+        self._axis_lock = None      # 'x' | 'y' | 'z' | None
+        self._space_local = True    # True local, False world
+        self._snap_angle_deg = 5.0
+        self._snap_scale_step = 0.1
         self._build_ui()
         self.setWindowTitle("Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -626,6 +731,57 @@ class AnalyticViewportPanel(QWidget):
         fs.addRow("β Scale", self.slider_beta_scale)
         fs.addRow("β Colormap", self.cmap_box)
         side.addWidget(gb_sliders)
+
+        # --- Gizmo / Transform Controls ---
+        gb_gizmo = QGroupBox("Gizmo / Transform"); fg = QFormLayout(); gb_gizmo.setLayout(fg)
+        # Mode buttons
+        row_modes = QWidget(); hm = QHBoxLayout(row_modes); hm.setContentsMargins(0,0,0,0)
+        btn_move = QPushButton("Move"); btn_rot = QPushButton("Rotate [R]"); btn_scl = QPushButton("Scale [S]")
+        for b in (btn_move, btn_rot, btn_scl): b.setCheckable(True)
+        btn_move.setChecked(True)
+        def _set_mode(m):
+            def f():
+                btn_move.setChecked(m=='move'); btn_rot.setChecked(m=='rotate'); btn_scl.setChecked(m=='scale')
+                self._gizmo_mode = m
+            return f
+        btn_move.clicked.connect(_set_mode('move'))
+        btn_rot.clicked.connect(_set_mode('rotate'))
+        btn_scl.clicked.connect(_set_mode('scale'))
+        hm.addWidget(btn_move); hm.addWidget(btn_rot); hm.addWidget(btn_scl)
+        fg.addRow("Mode", row_modes)
+        # Axis lock buttons
+        row_axes = QWidget(); ha = QHBoxLayout(row_axes); ha.setContentsMargins(0,0,0,0)
+        ax_x = QPushButton("X"); ax_y = QPushButton("Y"); ax_z = QPushButton("Z"); ax_clr = QPushButton("Free")
+        for b in (ax_x, ax_y, ax_z, ax_clr): b.setCheckable(True)
+        ax_clr.setChecked(True)
+        def _lock_axis(a):
+            def f():
+                for b,a2 in ((ax_x,'x'),(ax_y,'y'),(ax_z,'z')):
+                    b.setChecked(a==a2)
+                ax_clr.setChecked(a is None)
+                self._axis_lock = a
+            return f
+        ax_x.clicked.connect(_lock_axis('x'))
+        ax_y.clicked.connect(_lock_axis('y'))
+        ax_z.clicked.connect(_lock_axis('z'))
+        ax_clr.clicked.connect(_lock_axis(None))
+        for b in (ax_x, ax_y, ax_z, ax_clr): ha.addWidget(b)
+        fg.addRow("Axis", row_axes)
+        # Space toggle
+        cb_space = QCheckBox("Local Space"); cb_space.setChecked(True)
+        def _space_toggle(_v): self._space_local = cb_space.isChecked()
+        cb_space.stateChanged.connect(_space_toggle)
+        fg.addRow("Space", cb_space)
+        # Snap controls
+        spin_ang = QDoubleSpinBox(); spin_ang.setRange(0.5,45.0); spin_ang.setSingleStep(0.5); spin_ang.setValue(self._snap_angle_deg); spin_ang.setSuffix(" °")
+        spin_scl = QDoubleSpinBox(); spin_scl.setRange(0.01,10.0); spin_scl.setDecimals(3); spin_scl.setSingleStep(0.05); spin_scl.setValue(self._snap_scale_step)
+        def _upd_ang(_v): self._snap_angle_deg = float(spin_ang.value())
+        def _upd_scl(_v): self._snap_scale_step = float(spin_scl.value())
+        spin_ang.valueChanged.connect(_upd_ang)
+        spin_scl.valueChanged.connect(_upd_scl)
+        fg.addRow("Angle Snap", spin_ang)
+        fg.addRow("Scale Snap", spin_scl)
+        side.addWidget(gb_gizmo)
 
         # --- Actions ---
         gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
