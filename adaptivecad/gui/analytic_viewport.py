@@ -405,6 +405,14 @@ class AnalyticViewport(QOpenGLWidget):
                     panel._sp_move[i].blockSignals(False)
                 if hasattr(panel, '_apply_edit'):
                     panel._apply_edit()
+                # Surface position feedback (if main window status bar exists)
+                try:
+                    mw = panel.window()
+                    if hasattr(mw, 'statusBar') and mw.statusBar():
+                        mw.statusBar().showMessage(f"Moved prim {getattr(panel,'_current_sel',-1)} to ("+
+                            ", ".join(f"{panel._sp_move[i].value():.3f}" for i in range(3))+")", 1500)
+                except Exception:
+                    pass
         except Exception:
             pass
 
