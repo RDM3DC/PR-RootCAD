@@ -48,12 +48,14 @@ if HAS_QT:
     # Capability probe (may or may not exist yet when partially installed)
     try:
         from adaptivecad.analytic.capabilities import (
-            analytic_available, exporter_available, conversion_available
+            analytic_available, exporter_available, conversion_available, summary as caps_summary
         )
     except Exception:  # capability module optional
         def analytic_available(): return False
         def exporter_available(): return False
         def conversion_available(): return False
+        def caps_summary():
+            return {"analytic": False, "exporter": False, "conversion": False}
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QInputDialog, QMessageBox, QCheckBox,
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QComboBox,
@@ -75,7 +77,7 @@ if HAS_QT:
                     from PySide6.QtWidgets import QMessageBox
                     QMessageBox.information(mw.win, self._name, f"Module 'adaptivecad.analytic' not available; {self._name} disabled.")
                 except Exception:
-                    print(f"[INFO] {self._name}: analytic module not available.")
+                    log.info("%s: analytic module not available.", self._name)
         ConvertMeshToAnalyticCmd = lambda : _StubCmd("Convert Mesh → Analytic")
         ConvertAnalyticToMeshCmd = lambda : _StubCmd("Convert Analytic → Mesh")
     from adaptivecad.command_defs import (
@@ -784,12 +786,10 @@ class NewAnalyticViewportCmd:
                     timer.start(500)  # sync every 500ms
                     mw._analytic_sync_timer = timer
                 except Exception as e:
-                    print(f"Failed to set up sync timer: {e}")
+                    log.debug("Failed to set up sync timer: %s", e)
             
         except Exception as e:
-            print(f"Failed to create analytic viewport: {e}")
-            import traceback
-            traceback.print_exc()
+            log.exception("Failed to create analytic viewport: %s", e)
 
 class NewAnalyticViewportPanelCmd:
     """Creates a new analytic viewport with control panel (panel version)."""
@@ -804,8 +804,7 @@ class NewAnalyticViewportPanelCmd:
             if hasattr(mw, "_sync_analytic_scene"):
                 mw._sync_analytic_scene()
         except Exception as e:
-            print(f"Failed to create analytic viewport panel: {e}")
-            import traceback; traceback.print_exc()
+            log.exception("Failed to create analytic viewport panel: %s", e)
 
 class NewAnalyticSphereCmd:
     """Creates a new analytic sphere in the scene."""
@@ -826,7 +825,7 @@ class NewAnalyticSphereCmd:
                 mw._sync_analytic_scene()
                 
         except Exception as e:
-            print(f"Failed to create analytic sphere: {e}")
+            log.error("Failed to create analytic sphere: %s", e)
 
 class NewAnalyticBoxCmd:
     """Creates a new analytic box in the scene."""
@@ -847,7 +846,7 @@ class NewAnalyticBoxCmd:
                 mw._sync_analytic_scene()
                 
         except Exception as e:
-            print(f"Failed to create analytic box: {e}")
+            log.error("Failed to create analytic box: %s", e)
 
 class NewAnalyticCylinderCmd:
     """Creates a new analytic cylinder in the scene."""
@@ -868,7 +867,7 @@ class NewAnalyticCylinderCmd:
                 mw._sync_analytic_scene()
                 
         except Exception as e:
-            print(f"Failed to create analytic cylinder: {e}")
+            log.error("Failed to create analytic cylinder: %s", e)
 
 class NewAnalyticCapsuleCmd:
     """Creates a new analytic capsule in the scene."""
@@ -889,7 +888,7 @@ class NewAnalyticCapsuleCmd:
                 mw._sync_analytic_scene()
                 
         except Exception as e:
-            print(f"Failed to create analytic capsule: {e}")
+            log.error("Failed to create analytic capsule: %s", e)
 
 class NewAnalyticTorusCmd:
     """Creates a new analytic torus in the scene."""
@@ -910,7 +909,7 @@ class NewAnalyticTorusCmd:
                 mw._sync_analytic_scene()
                 
         except Exception as e:
-            print(f"Failed to create analytic torus: {e}")
+            log.error("Failed to create analytic torus: %s", e)
 
 # --- PROJECT MANAGEMENT COMMANDS ---
 class SaveProjectCmd:
@@ -1372,46 +1371,7 @@ class MainWindow:
         export_gcode_direct_action.triggered.connect(lambda: self._run_command(ExportGCodeDirectCmd()))
         export_menu.addAction(export_gcode_direct_action)
 
-        # Analytic SDF -> STL exporter
-        class ExportAnalyticSTLCmd:
-            def __init__(self, get_scene):
-                self._get_scene = get_scene
-            def run(self_inner, mw):
-                from PySide6.QtWidgets import QFileDialog, QMessageBox
-                from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
-                sc = self_inner._get_scene()
-                if sc is None or len(sc.prims)==0:
-                    QMessageBox.information(mw.win, "Export", "No analytic primitives to export."); return
-                path, _ = QFileDialog.getSaveFileName(mw.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
-                if not path: return
-                try:
-                    export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=160)
-                    mw.win.statusBar().showMessage(f"Exported analytic STL: {path}", 5000)
-                except ImportError:
-                    QMessageBox.critical(mw.win, "Missing deps", "Install required: pip install scikit-image numpy-stl")
-                except Exception as e:
-                    QMessageBox.critical(mw.win, "Export Error", str(e))
-
-        export_analytic_stl_action = QAction("Export Analytic (SDF→STL)", self.win)
-        def _export_analytic():
-            from PySide6.QtWidgets import QFileDialog, QMessageBox
-            from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
-            sc = getattr(self, 'aacore_scene', None)
-            if sc is None or not getattr(sc, 'prims', []):
-                QMessageBox.information(self.win, "Export", "No analytic primitives to export.")
-                return
-            path, _ = QFileDialog.getSaveFileName(self.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
-            if not path:
-                return
-            export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=180)
-            self.win.statusBar().showMessage(f"Exported analytic STL: {path}", 5000)
-        export_analytic_stl_action.triggered.connect(lambda: require(
-            exporter_available,
-            _export_analytic,
-            self,
-            "Exporter needs: pip install scikit-image numpy-stl"
-        ))
-        export_menu.addAction(export_analytic_stl_action)
+        # (Legacy analytic STL exporter removed; new capability-gated version added later.)
         
         # Add separator
         file_menu.addSeparator()
@@ -1702,25 +1662,7 @@ class MainWindow:
         dimension_action.triggered.connect(self._toggle_dimension_panel)
         view_menu.addAction(dimension_action)
         
-        analytic_view_action = QAction("Open Analytic Viewport (No Triangles)", self.win)
-        def _open_analytic():
-            from adaptivecad.gui.analytic_viewport import AnalyticViewport
-            self._analytic_viewport = AnalyticViewport(parent=self.win)
-            if hasattr(self, 'aacore_scene') and self.aacore_scene is not None:
-                try:
-                    self._analytic_viewport.scene = self.aacore_scene
-                except Exception:
-                    pass
-            self._analytic_viewport.show()
-            if hasattr(self, '_sync_analytic_scene'):
-                self._sync_analytic_scene()
-        analytic_view_action.triggered.connect(lambda: require(
-            analytic_available,
-            _open_analytic,
-            self,
-            "Analytic renderer not available. Install OpenGL + analytic modules."
-        ))
-        view_menu.addAction(analytic_view_action)
+        # (Legacy analytic viewport action removed; rewired version added later.)
         
         # Analytic viewport link from view menu
         view_menu.addAction(QAction("Show Analytic Viewport", self.win, triggered=lambda: self._run_command(NewAnalyticViewportCmd())))
@@ -1826,13 +1768,99 @@ class MainWindow:
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
 
+        # Rewired capability-gated helpers
+        def _require(cap_fn, ok_fn, msg: str):
+            if cap_fn():
+                return ok_fn()
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self.win, "Feature Unavailable", msg)
+
+        # Analytic viewport action (rewired)
+        analytic_view_action2 = QAction("Open Analytic Viewport (No Triangles)", self.win)
+        def _open_analytic2():
+            from adaptivecad.analytic.analytic_viewport import AnalyticViewport
+            if not hasattr(self, "aacore_scene"):
+                try:
+                    from adaptivecad.aacore.sdf import Scene as _Scene
+                    self.aacore_scene = _Scene()
+                except Exception:
+                    self.aacore_scene = None
+            self.analytic_view = AnalyticViewport(parent=self.win, aacore_scene=getattr(self, 'aacore_scene', None))
+            self.analytic_view.show()
+        analytic_view_action2.triggered.connect(lambda: _require(
+            analytic_available,
+            _open_analytic2,
+            "Analytic renderer not available.\nInstall OpenGL + analytic modules."
+        ))
+        help_menu.addAction(analytic_view_action2)
+
+        # Capability-gated analytic SDF->STL exporter
+        export_analytic_stl_action2 = QAction("Export Analytic (SDF→STL)", self.win)
+        def _export_analytic2():
+            from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            sc = getattr(self, 'aacore_scene', None)
+            if sc is None or not getattr(sc, 'prims', []):
+                QMessageBox.information(self.win, "Export", "No analytic objects in the scene.")
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                self.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)"
+            )
+            if not path:
+                return
+            export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=180)
+            self.win.statusBar().showMessage(f"Exported: {path}", 4000)
+        export_analytic_stl_action2.triggered.connect(lambda: _require(
+            exporter_available,
+            _export_analytic2,
+            "Exporter needs: pip install scikit-image numpy-stl"
+        ))
+        help_menu.addAction(export_analytic_stl_action2)
+
+        # Debug log toggle (updated)
         toggle_log_action = QAction("Enable Debug Logs", self.win, checkable=True)
         def _toggle_logs(checked):
-            logging.getLogger("adaptivecad").setLevel(logging.DEBUG if checked else logging.WARNING)
-            lvl = 'DEBUG' if checked else 'WARNING'
-            self.win.statusBar().showMessage(f"Log level: {lvl}", 2000)
+            import logging as _lg
+            lvl = _lg.DEBUG if checked else _lg.WARNING
+            _lg.getLogger("adaptivecad").setLevel(lvl)
+            _lg.getLogger("adaptivecad.gui").setLevel(lvl)
+            self.win.statusBar().showMessage(f"Log level: {'DEBUG' if checked else 'WARNING'}", 2000)
         toggle_log_action.triggered.connect(_toggle_logs)
         help_menu.addAction(toggle_log_action)
+
+        # Diagnostics action
+        diag_action = QAction("Diagnostics…", self.win)
+        def _show_diag():
+            from PySide6.QtWidgets import QMessageBox
+            caps = caps_summary()
+            msg = (
+                "Capabilities:\n"
+                f"• Analytic renderer: {'Yes' if caps.get('analytic') else 'No'}\n"
+                f"• Exporter (SDF→STL): {'Yes' if caps.get('exporter') else 'No'}\n"
+                f"• OCC→Analytic Conversion: {'Yes' if caps.get('conversion') else 'No'}\n"
+            )
+            QMessageBox.information(self.win, "AdaptiveCAD Diagnostics", msg)
+        diag_action.triggered.connect(_show_diag)
+        help_menu.addAction(diag_action)
+
+        # Conversion menu
+        conversion_menu = menubar.addMenu("Conversion")
+        convert_action = QAction("Convert OCC → Analytic", self.win)
+        def _do_convert():
+            try:
+                from adaptivecad.analytic.conversion import OccToAnalyticCmd  # type: ignore
+                self._run_command(OccToAnalyticCmd())
+            except Exception:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self.win, "Conversion", "Conversion module not available.")
+        convert_action.triggered.connect(lambda: _require(
+            conversion_available,
+            _do_convert,
+            "Conversion module not available."
+        ))
+        conversion_menu.addAction(convert_action)
+
+        # (Original debug log toggle replaced above)
         
         # Add Documentation links
         docs_menu = help_menu.addMenu("Documentation")
