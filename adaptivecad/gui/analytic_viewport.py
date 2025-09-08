@@ -839,7 +839,10 @@ class AnalyticViewportPanel(QWidget):
             for i in range(3): M[i,3] = pos[i]
             pr.xform.M = M
         # notify & refresh
-        self.view.scene._notify()
+        try:
+            self.view.scene._notify()
+        except Exception:
+            pass
         self.view.update()
 
     # Convenience passthroughs

@@ -58,6 +58,17 @@ class Prim:
         self.xform.M = M
         self.euler[:] = euler
         self.scale[:] = scale
+        try:
+            import logging
+            logging.getLogger("adaptivecad.gui").debug(
+                f"Prim transform updated kind={self.kind} pos={pos} euler={euler} scale={scale}\nM=\n{M}")
+        except Exception:
+            pass
+        # Optional: precompute inverse for shader (future optimization)
+        try:
+            self.xform.M_inv = np.linalg.inv(self.xform.M)
+        except Exception:
+            self.xform.M_inv = None
 
 class Scene:
     def __init__(self):
