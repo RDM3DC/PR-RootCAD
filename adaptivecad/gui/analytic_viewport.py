@@ -1,8 +1,17 @@
-# adaptivecad/gui/analytic_viewport.py
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent
-from PyQt6.QtCore import Qt, QSize
+"""Analytic SDF OpenGL viewport & control panel (PySide6 version).
+
+Refactored to standardize on PySide6 (no PyQt6 mixing) and allow
+injection of a shared AACore analytic scene so multiple view components
+can operate on the same underlying primitive set.
+"""
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
+    QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox
+)
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent
+from PySide6.QtCore import Qt, QSize
 from OpenGL.GL import *
 import numpy as np
 from pathlib import Path
@@ -10,12 +19,10 @@ from adaptivecad.aacore.sdf import (
     Scene as AACoreScene, Prim, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS,
     OP_SOLID, OP_SUBTRACT, MAX_PRIMS
 )
-from PyQt6.QtWidgets import (
-    QWidget as _QWidgetAlias, QVBoxLayout as _QVBoxLayoutAlias, QHBoxLayout as _QHBoxLayoutAlias,
-    QLabel as _QLabelAlias, QComboBox, QCheckBox, QPushButton, QSlider, QGroupBox, QFormLayout, QSpinBox
-)
 import time, os
 import json
+import logging
+log = logging.getLogger("adaptivecad.gui")
 try:
     from PIL import Image
     _HAVE_PIL = True
@@ -26,15 +33,15 @@ def load_text(p):
     return Path(p).read_text(encoding="utf-8")
 
 class AnalyticViewport(QOpenGLWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
         fmt = QSurfaceFormat()
         fmt.setVersion(3,3); fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
         fmt.setSamples(4)  # 4x MSAA
         self.setFormat(fmt)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        # Shared AACore scene (will be injected later or created fresh)
-        self.scene = AACoreScene()
+        # Shared AACore scene (may be injected)
+        self.scene = aacore_scene if aacore_scene is not None else AACoreScene()
         # camera
         self.cam_target = np.array([0.0,0.0,0.0], np.float32)
         self.distance = 6.0
@@ -63,9 +70,19 @@ class AnalyticViewport(QOpenGLWidget):
         self.use_curv_lut = 1
         # listen for scene edits (debounced via timer-less simple flag)
         self._scene_dirty = True
-        self.scene.on_changed(self._on_scene_changed)
-        # build a tiny demo scene (aacore prims)
-        self._demo_scene()
+        try:
+            self.scene.on_changed(self._on_scene_changed)
+        except Exception:
+            pass
+        if aacore_scene is None and len(self.scene.prims) == 0:
+            self._demo_scene()
+        # selection
+        self.selected_index = -1
+        self._picking_fbo = None
+        self._pick_tex = None
+        self._depth_rb = None
+        # micro pick FBO
+        self._pick_fbo = None
 
     def _on_scene_changed(self):
         self._scene_dirty = True
@@ -99,6 +116,55 @@ class AnalyticViewport(QOpenGLWidget):
         self._vbo = glGenBuffers(1); glBindBuffer(GL_ARRAY_BUFFER, self._vbo)
         glBufferData(GL_ARRAY_BUFFER, v.nbytes, v, GL_STATIC_DRAW)
         glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
+        # create simple FBO for ID picking
+        self._init_picking()
+        # --- 1x1 FBO for micro picking ---
+        try:
+            self._pick_fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, self._pick_fbo)
+            self._pick_tex_micro = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, self._pick_tex_micro)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._pick_tex_micro, 0)
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        except Exception as e:
+            log.debug(f"Micro pick FBO init failed: {e}")
+
+    def _init_picking(self):
+        try:
+            if self._picking_fbo:
+                return
+            self._picking_fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, self._picking_fbo)
+            self._pick_tex = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, self._pick_tex)
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,self.width(),self.height(),0,GL_RGBA,GL_UNSIGNED_BYTE,None)
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST)
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,self._pick_tex,0)
+            self._depth_rb = glGenRenderbuffers(1)
+            glBindRenderbuffer(GL_RENDERBUFFER,self._depth_rb)
+            glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,self.width(),self.height())
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,self._depth_rb)
+            if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+                log.debug("Picking FBO incomplete")
+            glBindFramebuffer(GL_FRAMEBUFFER,0)
+        except Exception as e:
+            log.debug(f"Picking FBO init failed: {e}")
+
+    def resizeGL(self, w, h):
+        # resize picking attachments
+        try:
+            if self._pick_tex:
+                glBindTexture(GL_TEXTURE_2D, self._pick_tex)
+                glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,None)
+            if self._depth_rb:
+                glBindRenderbuffer(GL_RENDERBUFFER,self._depth_rb)
+                glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,w,h)
+        except Exception:
+            pass
 
     def _cam_basis(self):
         cy, sy = np.cos(self.yaw), np.sin(self.yaw)
@@ -119,45 +185,52 @@ class AnalyticViewport(QOpenGLWidget):
         self.update()
 
     def paintGL(self):
-        self._draw_frame(debug_override=None)
-
-    def _draw_frame(self, debug_override=None):
         glViewport(0,0,self.width(), self.height())
-        glClearColor(*self.scene.bg_color, 1.0); glClear(GL_COLOR_BUFFER_BIT)
+        glClearColor(*self.scene.bg_color, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._render_scene_internal(debug_override=None)
+
+    def _render_scene_internal(self, debug_override=None):
+        if not self.prog:
+            return
         glUseProgram(self.prog)
-        # uniforms
         glUniform3f(glGetUniformLocation(self.prog,"u_cam_pos"), *self.cam_pos)
         R = self._cam_basis(); glUniformMatrix3fv(glGetUniformLocation(self.prog,"u_cam_rot"), 1, GL_FALSE, R.T)
         glUniform2f(glGetUniformLocation(self.prog,"u_res"), float(self.width()), float(self.height()))
         glUniform3f(glGetUniformLocation(self.prog,"u_env"), *self.scene.env_light)
         glUniform3f(glGetUniformLocation(self.prog,"u_bg"), *self.scene.bg_color)
-        # upload scene
         pack = self.scene.to_gpu_structs(max_prims=MAX_PRIMS)
         n = int(pack['count'])
-        glUniform1i(glGetUniformLocation(self.prog,"u_count"), n)
-        def U(name): return glGetUniformLocation(self.prog, name)
+        U = lambda name: glGetUniformLocation(self.prog, name)
+        glUniform1i(U("u_count"), n)
         glUniform1iv(U("u_kind"), n, pack['kind'])
-        glUniform1iv(U("u_op"),   n, pack['op'])
+        glUniform1iv(U("u_op"), n, pack['op'])
         glUniform1fv(U("u_beta"), n, pack['beta'])
         glUniform3fv(U("u_color"), n, pack['color'])
         glUniform4fv(U("u_params"), n, pack['params'])
         glUniformMatrix4fv(U("u_xform"), n, GL_FALSE, pack['xform'])
-        # draw (beauty)
-        glUniform1i(glGetUniformLocation(self.prog,"u_mode"), 0)
-        # new uniforms
+        glUniform1i(U("u_mode"), 0)
         mode_val = self.debug_mode if debug_override is None else debug_override
-        glUniform1i(glGetUniformLocation(self.prog, "u_debug"), int(mode_val))
-        glUniform1f(glGetUniformLocation(self.prog, "u_far"), float(self.far_plane))
-        glUniform1i(glGetUniformLocation(self.prog, "u_use_analytic_aa"), int(self.use_analytic_aa))
-        glUniform1i(glGetUniformLocation(self.prog, "u_use_toon"), int(self.use_toon))
-        glUniform1f(glGetUniformLocation(self.prog, "u_toon_levels"), float(self.toon_levels))
-        glUniform1f(glGetUniformLocation(self.prog, "u_curv_strength"), float(self.curv_strength))
-        glUniform1i(glGetUniformLocation(self.prog, "u_use_foveated"), int(self.use_foveated))
-        glUniform1i(glGetUniformLocation(self.prog, "u_show_beta_overlay"), int(self.show_beta_overlay))
-        glUniform1f(glGetUniformLocation(self.prog, "u_beta_overlay_intensity"), float(self.beta_overlay_intensity))
-        glUniform1f(glGetUniformLocation(self.prog, "u_beta_scale"), float(self.beta_scale))
-        glUniform1i(glGetUniformLocation(self.prog, "u_beta_cmap"), int(self.beta_cmap))
-        glBindVertexArray(self._vao); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        glUniform1i(U("u_debug"), int(mode_val))
+        glUniform1f(U("u_far"), float(self.far_plane))
+        glUniform1i(U("u_use_analytic_aa"), int(self.use_analytic_aa))
+        glUniform1i(U("u_use_toon"), int(self.use_toon))
+        glUniform1f(U("u_toon_levels"), float(self.toon_levels))
+        glUniform1f(U("u_curv_strength"), float(self.curv_strength))
+        glUniform1i(U("u_use_foveated"), int(self.use_foveated))
+        glUniform1i(U("u_show_beta_overlay"), int(self.show_beta_overlay))
+        glUniform1f(U("u_beta_overlay_intensity"), float(self.beta_overlay_intensity))
+        glUniform1f(U("u_beta_scale"), float(self.beta_scale))
+        glUniform1i(U("u_beta_cmap"), int(self.beta_cmap))
+        glUniform1i(U("u_selected"), int(self.selected_index))
+        glBindVertexArray(self._vao)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+
+    def _draw_frame(self, debug_override=None):  # retained for other callers
+        glViewport(0,0,self.width(), self.height())
+        glClearColor(*self.scene.bg_color, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._render_scene_internal(debug_override)
 
     def keyPressEvent(self, event):
         k = event.key()
@@ -184,7 +257,7 @@ class AnalyticViewport(QOpenGLWidget):
             changed=True
         elif k == Qt.Key_G: self.save_gbuffers(); return
         elif k == Qt.Key_H:
-            print(self._shortcuts_help())
+            log.info(self._shortcuts_help())
         elif k == Qt.Key_B:
             self.show_beta_overlay ^=1; changed=True
         elif k == Qt.Key_Period: # increase beta overlay intensity
@@ -208,6 +281,19 @@ class AnalyticViewport(QOpenGLWidget):
     def mousePressEvent(self, event: QMouseEvent):
         self._last_mouse = event.position()
         self._last_buttons = event.buttons()
+        if event.button() == Qt.MouseButton.LeftButton and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            pid = self._pick_id_at(int(event.position().x()), int(event.position().y()))
+            if pid >= 0:
+                self.selected_index = pid
+                # notify possible panel parent
+                try:
+                    if hasattr(self.parent(), '_select_prim'):
+                        self.parent()._select_prim(pid)
+                except Exception:
+                    pass
+            else:
+                self.selected_index = -1
+            self.update()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -239,6 +325,82 @@ class AnalyticViewport(QOpenGLWidget):
         self._last_mouse = event.position()
         if not updated:
             super().mouseMoveEvent(event)
+
+    def _perform_pick(self, x:int, y:int):
+        if not self.prog or self._picking_fbo is None:
+            return
+        try:
+            dpr = self.devicePixelRatio() if hasattr(self, 'devicePixelRatio') else 1
+            sx = int(x * dpr); sy = int(y * dpr)
+            glBindFramebuffer(GL_FRAMEBUFFER, self._picking_fbo)
+            glViewport(0,0,self.width(), self.height())
+            glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+            glUseProgram(self.prog)
+            # draw IDs
+            glUniform3f(glGetUniformLocation(self.prog,"u_cam_pos"), *self.cam_pos)
+            R = self._cam_basis(); glUniformMatrix3fv(glGetUniformLocation(self.prog,"u_cam_rot"), 1, GL_FALSE, R.T)
+            glUniform2f(glGetUniformLocation(self.prog,"u_res"), float(self.width()), float(self.height()))
+            glUniform3f(glGetUniformLocation(self.prog,"u_env"), *self.scene.env_light)
+            glUniform3f(glGetUniformLocation(self.prog,"u_bg"), 0,0,0)
+            pack = self.scene.to_gpu_structs(max_prims=MAX_PRIMS)
+            n = int(pack['count'])
+            glUniform1i(glGetUniformLocation(self.prog,"u_count"), n)
+            def U(name): return glGetUniformLocation(self.prog, name)
+            glUniform1iv(U("u_kind"), n, pack['kind'])
+            glUniform1iv(U("u_op"),   n, pack['op'])
+            glUniform1fv(U("u_beta"), n, pack['beta'])
+            glUniform3fv(U("u_color"), n, pack['color'])
+            glUniform4fv(U("u_params"), n, pack['params'])
+            glUniformMatrix4fv(U("u_xform"), n, GL_FALSE, pack['xform'])
+            glUniform1i(glGetUniformLocation(self.prog, "u_mode"), 0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_debug"), 2)  # ID mode
+            glUniform1i(glGetUniformLocation(self.prog, "u_use_analytic_aa"), 0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_use_toon"), 0)
+            glUniform1f(glGetUniformLocation(self.prog, "u_toon_levels"), 1.0)
+            glUniform1f(glGetUniformLocation(self.prog, "u_curv_strength"), 0.0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_use_foveated"), 0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_show_beta_overlay"), 0)
+            glUniform1f(glGetUniformLocation(self.prog, "u_beta_overlay_intensity"), 0.0)
+            glUniform1f(glGetUniformLocation(self.prog, "u_beta_scale"), 1.0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_beta_cmap"), 0)
+            glUniform1i(glGetUniformLocation(self.prog, "u_selected"), -1)
+            glBindVertexArray(self._vao); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+            px = np.zeros((1,1,4), dtype=np.uint8)
+            ry = self.height() - 1 - (sy if dpr!=1 else y)
+            glReadPixels(sx if dpr!=1 else x, ry, 1,1, GL_RGBA, GL_UNSIGNED_BYTE, px)
+            enc = int(px[0,0,0]) | (int(px[0,0,1])<<8) | (int(px[0,0,2])<<16)
+            if enc==0:
+                self.selected_index = -1
+            else:
+                self.selected_index = enc-1
+            glBindFramebuffer(GL_FRAMEBUFFER,0)
+            self.update()
+            log.debug(f"pick raw={px[0,0].tolist()} enc={enc} sel={self.selected_index} at ({x},{y}) dpr={dpr}")
+        except Exception as e:
+            log.debug(f"pick failed: {e}")
+
+    def _pick_id_at(self, x:int, y:int) -> int:
+        if not self.prog or self._pick_fbo is None:
+            return -1
+        try:
+            # simplistic: render full scene in ID mode into 1x1 buffer (center ray)
+            glBindFramebuffer(GL_FRAMEBUFFER, self._pick_fbo)
+            glViewport(0,0,1,1)
+            glClearColor(0,0,0,1)
+            glClear(GL_COLOR_BUFFER_BIT)
+            self._render_scene_internal(debug_override=2)
+            data = glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE)
+            import numpy as _np
+            px = _np.frombuffer(data, dtype=_np.uint8)
+            enc = int(px[0])
+            pid = enc-1
+            glBindFramebuffer(GL_FRAMEBUFFER,0)
+            return pid if 0 <= pid < len(self.scene.prims) else -1
+        except Exception as e:
+            log.debug(f"micro pick failed: {e}")
+            try: glBindFramebuffer(GL_FRAMEBUFFER,0)
+            except Exception: pass
+            return -1
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y() / 120.0  # 1 per notch
@@ -272,6 +434,7 @@ class AnalyticViewport(QOpenGLWidget):
             "+ / - : toon levels up/down\n"
             "C : cycle curvature strength (0,0.5,1.0,0)\n"
             "G : save G-buffers (beauty + normals/id/depth/thickness)\n"
+            "Click : select primitive (highlight)\n"
             "H : print this help"
         )
 
@@ -303,26 +466,25 @@ class AnalyticViewport(QOpenGLWidget):
             else:
                 # fallback raw dump
                 img.tofile(path + '.raw')
-            print(f"Saved {label} -> {path}")
+            log.info(f"Saved {label} -> {path}")
         self.debug_mode = prev_mode
         self.update()
 
 
-class AnalyticViewportPanel(_QWidgetAlias):
+class AnalyticViewportPanel(QWidget):
     """Composite widget: analytic SDF viewport + control panel."""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
-        self.view = AnalyticViewport(self)
+        self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         self._build_ui()
         self.setWindowTitle("Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _build_ui(self):
-        root = _QHBoxLayoutAlias(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(4,4,4,4)
         root.addWidget(self.view, 1)
-
-        side = _QVBoxLayoutAlias(); side.setSpacing(6)
+        side = QVBoxLayout(); side.setSpacing(6)
 
         # --- Debug Modes ---
         gb_modes = QGroupBox("Debug / Modes"); fm = QFormLayout(); gb_modes.setLayout(fm)
@@ -357,7 +519,7 @@ class AnalyticViewportPanel(_QWidgetAlias):
         # --- Actions ---
         gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
         btn_save = QPushButton("Save G-Buffers [G]"); btn_save.setEnabled(False)
-        btn_help = QPushButton("Print Shortcuts [H]"); btn_help.clicked.connect(lambda: print(self.view._shortcuts_help()))
+        btn_help = QPushButton("Print Shortcuts [H]"); btn_help.clicked.connect(lambda: log.info(self.view._shortcuts_help()))
         va.addWidget(btn_save); va.addWidget(btn_help); side.addWidget(gb_act)
 
         # --- Environment ---
@@ -368,7 +530,7 @@ class AnalyticViewportPanel(_QWidgetAlias):
             fe.addRow(f"BG {ch}", s); self._bg_sliders.append(s)
         self._env_sliders = []
         for i, ch in enumerate(['X','Y','Z']):
-            s = QSlider(Qt.Orientation.Horizontal); s.setRange(-200,200); s.setValue(int(self.view.scene.env_light[i]*100)); s.valueChanged.connect(self._on_env_changed)
+            s = QSlider(Qt.Orientation.Horizontal); s.setRange(-150,150); s.setValue(int(self.view.scene.env_light[i]*100)); s.valueChanged.connect(self._on_env_changed)
             fe.addRow(f"Light {ch}", s); self._env_sliders.append(s)
         side.addWidget(gb_env)
 
@@ -386,7 +548,7 @@ class AnalyticViewportPanel(_QWidgetAlias):
         vb_holder = QWidget(); vb_holder.setLayout(self._prim_buttons_box); vp.addWidget(vb_holder)
         # Edit group
         self._edit_group = QGroupBox("Edit Selected"); fe2 = QFormLayout(); self._edit_group.setLayout(fe2)
-        from PyQt6.QtWidgets import QDoubleSpinBox, QComboBox as _QCB2, QColorDialog
+        from PySide6.QtWidgets import QDoubleSpinBox, QComboBox as _QCB2, QColorDialog
         def dspin(r=(-10,10), step=0.01, val=0.0):
             sp = QDoubleSpinBox(); sp.setRange(r[0], r[1]); sp.setSingleStep(step); sp.setDecimals(4); sp.setValue(val); return sp
         self._sp_pos = [dspin() for _ in range(3)]
@@ -399,12 +561,23 @@ class AnalyticViewportPanel(_QWidgetAlias):
         fe2.addRow("Beta", self._sp_beta)
         fe2.addRow("Color", self._btn_color)
         fe2.addRow("Op", self._op_box)
+        # Rotation & Scale controls
+        def rspin():
+            s = QDoubleSpinBox(); s.setRange(-180.0,180.0); s.setSingleStep(1.0); s.setDecimals(2); s.setValue(0.0); return s
+        def sspin():
+            s = QDoubleSpinBox(); s.setRange(0.01,100.0); s.setSingleStep(0.05); s.setDecimals(3); s.setValue(1.0); return s
+        self._sp_rot = [rspin() for _ in range(3)]
+        self._sp_scl = [sspin() for _ in range(3)]
+        fe2.addRow("Rot ° X/Y/Z", self._make_row(self._sp_rot))
+        fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
         self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
         for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)
         for sp in self._sp_param: sp.valueChanged.connect(self._apply_edit)
         self._sp_beta.valueChanged.connect(self._apply_edit); self._op_box.currentIndexChanged.connect(self._apply_edit)
+        for s in self._sp_rot + self._sp_scl:
+            s.valueChanged.connect(self._apply_edit)
         def pick_color():
-            from PyQt6.QtGui import QColor
+            from PySide6.QtGui import QColor
             c = QColorDialog.getColor(QColor(200,180,160), self, "Primitive Color")
             if c.isValid():
                 self._current_color = (c.red()/255.0, c.green()/255.0, c.blue()/255.0)
@@ -524,16 +697,21 @@ class AnalyticViewportPanel(_QWidgetAlias):
         self._sp_beta.blockSignals(True); self._sp_beta.setValue(pr.beta); self._sp_beta.blockSignals(False)
         self._op_box.blockSignals(True); self._op_box.setCurrentIndex(0 if pr.op=='solid' else 1); self._op_box.blockSignals(False)
         self._current_color = tuple(pr.color[:3])
+        # rotation / scale sync
+        if hasattr(pr, 'euler'):
+            for i in range(3):
+                self._sp_rot[i].blockSignals(True); self._sp_rot[i].setValue(float(pr.euler[i])); self._sp_rot[i].blockSignals(False)
+        if hasattr(pr, 'scale'):
+            for i in range(3):
+                self._sp_scl[i].blockSignals(True); self._sp_scl[i].setValue(float(pr.scale[i])); self._sp_scl[i].blockSignals(False)
         self._edit_group.setEnabled(True)
 
     def _apply_edit(self):
         if self._current_sel < 0 or self._current_sel >= len(self.view.scene.prims):
             return
         pr = self.view.scene.prims[self._current_sel]
-        # apply position
+        # existing matrix before rebuilding
         M = pr.xform.M.copy()
-        for i in range(3): M[i,3] = self._sp_pos[i].value()
-        pr.xform.M = M
         # apply params
         pr.params[0] = self._sp_param[0].value()
         if pr.kind != KIND_SPHERE:
@@ -541,6 +719,16 @@ class AnalyticViewportPanel(_QWidgetAlias):
         pr.beta = self._sp_beta.value()
         pr.op = 'solid' if self._op_box.currentIndex()==0 else 'subtract'
         pr.color[:3] = np.array(self._current_color[:3])
+        # position, rotation, scale
+        pos = [self._sp_pos[i].value() for i in range(3)]
+        rx, ry, rz = [self._sp_rot[i].value() for i in range(3)]
+        sx, sy, sz = [self._sp_scl[i].value() for i in range(3)]
+        if hasattr(pr, 'set_transform'):
+            pr.set_transform(pos=pos, euler=[rx,ry,rz], scale=[sx,sy,sz])
+        else:
+            # fallback: just translate
+            for i in range(3): M[i,3] = pos[i]
+            pr.xform.M = M
         # notify & refresh
         self.view.scene._notify()
         self.view.update()
@@ -548,8 +736,8 @@ class AnalyticViewportPanel(_QWidgetAlias):
     # Convenience passthroughs
     def viewport(self) -> AnalyticViewport: return self.view
 
-def create_analytic_viewport_with_panel(parent=None):
-    return AnalyticViewportPanel(parent)
+def create_analytic_viewport_with_panel(parent=None, aacore_scene: AACoreScene | None = None):
+    return AnalyticViewportPanel(parent, aacore_scene=aacore_scene)
 
 # --- persistence helpers on AnalyticViewport ---
 def _analytic_settings_defaults():

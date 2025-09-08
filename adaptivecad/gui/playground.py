@@ -758,36 +758,13 @@ class NewAnalyticViewportCmd:
     
     def run(self, mw):
         try:
-            # Import the necessary modules
-            from adaptivecad.analytic.viewport import AnalyticViewport
-            from adaptivecad.analytic.scene import Scene
-            
-            # Create the analytic viewport
-            viewport = AnalyticViewport()
-            viewport.scene = Scene()
-            
-            # Set some default properties for the scene
-            viewport.scene.env_light = 0.25
-            viewport.scene.bg_color = (0.08, 0.08, 0.1)
-            
-            # Store reference and show
+            from adaptivecad.gui.analytic_viewport import AnalyticViewport
+            from adaptivecad.aacore.sdf import Scene as AACoreScene
+            shared_scene = getattr(mw, 'aacore_scene', None) or AACoreScene()
+            mw.aacore_scene = shared_scene
+            viewport = AnalyticViewport(aacore_scene=shared_scene)
             mw._analytic_viewport = viewport
             viewport.show()
-            
-            # Register sync callback for document updates
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
-                # Set up timer for periodic sync
-                try:
-                    from PySide6.QtCore import QTimer
-                    timer = QTimer()
-                    timer.timeout.connect(mw._sync_analytic_scene)
-                    timer.start(500)  # sync every 500ms
-                    mw._analytic_sync_timer = timer
-                except Exception as e:
-                    log.debug("Failed to set up sync timer: %s", e)
-            
         except Exception as e:
             log.exception("Failed to create analytic viewport: %s", e)
 
@@ -797,7 +774,8 @@ class NewAnalyticViewportPanelCmd:
     def run(self, mw):
         try:
             from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
-            panel = AnalyticViewportPanel()
+            shared_scene = getattr(mw, 'aacore_scene', None)
+            panel = AnalyticViewportPanel(aacore_scene=shared_scene)
             panel.show()
             mw._analytic_viewport_panel = panel
             # optional sync if scene sync method exists
@@ -813,17 +791,12 @@ class NewAnalyticSphereCmd:
     
     def run(self, mw):
         try:
-            from adaptivecad.analytic.primitives import AnalyticSphere
-            from adaptivecad.command_defs import DOCUMENT
-            
-            # Create sphere with default parameters
-            sphere = AnalyticSphere(radius=1.0, position=(0,0,0))
-            DOCUMENT.append(sphere)
-            
-            # Sync to viewport if available
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
+            from adaptivecad.aacore.sdf import Prim, KIND_SPHERE
+            sc = getattr(mw, 'aacore_scene', None)
+            if sc is None:
+                from adaptivecad.aacore.sdf import Scene as _Scene
+                sc = _Scene(); mw.aacore_scene = sc
+            sc.add(Prim(KIND_SPHERE, [0.6,0,0,0], beta=0.05, color=(0.9,0.5,0.4)))
         except Exception as e:
             log.error("Failed to create analytic sphere: %s", e)
 
@@ -834,17 +807,12 @@ class NewAnalyticBoxCmd:
     
     def run(self, mw):
         try:
-            from adaptivecad.analytic.primitives import AnalyticBox
-            from adaptivecad.command_defs import DOCUMENT
-            
-            # Create box with default parameters
-            box = AnalyticBox(size=(1.0, 1.0, 1.0), position=(0,0,0))
-            DOCUMENT.append(box)
-            
-            # Sync to viewport if available
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
+            from adaptivecad.aacore.sdf import Prim, KIND_BOX
+            sc = getattr(mw, 'aacore_scene', None)
+            if sc is None:
+                from adaptivecad.aacore.sdf import Scene as _Scene
+                sc = _Scene(); mw.aacore_scene = sc
+            sc.add(Prim(KIND_BOX, [0.5,0.5,0.5,0], beta=0.0, color=(0.4,0.7,0.9)))
         except Exception as e:
             log.error("Failed to create analytic box: %s", e)
 
@@ -855,17 +823,12 @@ class NewAnalyticCylinderCmd:
     
     def run(self, mw):
         try:
-            from adaptivecad.analytic.primitives import AnalyticCylinder
-            from adaptivecad.command_defs import DOCUMENT
-            
-            # Create cylinder with default parameters
-            cylinder = AnalyticCylinder(radius=0.5, height=2.0, position=(0,0,0))
-            DOCUMENT.append(cylinder)
-            
-            # Sync to viewport if available
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
+            from adaptivecad.aacore.sdf import Prim, KIND_CAPSULE
+            sc = getattr(mw, 'aacore_scene', None)
+            if sc is None:
+                from adaptivecad.aacore.sdf import Scene as _Scene
+                sc = _Scene(); mw.aacore_scene = sc
+            sc.add(Prim(KIND_CAPSULE, [0.3,1.5,0,0], beta=0.02, color=(0.6,0.9,0.5)))
         except Exception as e:
             log.error("Failed to create analytic cylinder: %s", e)
 
@@ -876,17 +839,12 @@ class NewAnalyticCapsuleCmd:
     
     def run(self, mw):
         try:
-            from adaptivecad.analytic.primitives import AnalyticCapsule
-            from adaptivecad.command_defs import DOCUMENT
-            
-            # Create capsule with default parameters
-            capsule = AnalyticCapsule(radius=0.5, height=2.0, position=(0,0,0))
-            DOCUMENT.append(capsule)
-            
-            # Sync to viewport if available
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
+            from adaptivecad.aacore.sdf import Prim, KIND_CAPSULE
+            sc = getattr(mw, 'aacore_scene', None)
+            if sc is None:
+                from adaptivecad.aacore.sdf import Scene as _Scene
+                sc = _Scene(); mw.aacore_scene = sc
+            sc.add(Prim(KIND_CAPSULE, [0.3,1.5,0,0], beta=0.02, color=(0.6,0.9,0.5)))
         except Exception as e:
             log.error("Failed to create analytic capsule: %s", e)
 
@@ -897,17 +855,12 @@ class NewAnalyticTorusCmd:
     
     def run(self, mw):
         try:
-            from adaptivecad.analytic.primitives import AnalyticTorus
-            from adaptivecad.command_defs import DOCUMENT
-            
-            # Create torus with default parameters
-            torus = AnalyticTorus(major_radius=1.0, minor_radius=0.25, position=(0,0,0))
-            DOCUMENT.append(torus)
-            
-            # Sync to viewport if available
-            if hasattr(mw, "_sync_analytic_scene"):
-                mw._sync_analytic_scene()
-                
+            from adaptivecad.aacore.sdf import Prim, KIND_TORUS
+            sc = getattr(mw, 'aacore_scene', None)
+            if sc is None:
+                from adaptivecad.aacore.sdf import Scene as _Scene
+                sc = _Scene(); mw.aacore_scene = sc
+            sc.add(Prim(KIND_TORUS, [0.9,0.25,0,0], beta=0.03, color=(0.8,0.6,0.4)))
         except Exception as e:
             log.error("Failed to create analytic torus: %s", e)
 
@@ -1102,6 +1055,10 @@ class MainWindow:
         self.property_panel = None
         self.dimension_panel = None
         self.chess_dock = None
+        # Analytic viewport integration state
+        self._analytic_panel = None  # AnalyticViewportPanel instance (when used as main)
+        self._occ_central = None     # Original OCC/fallback central widget
+        self._analytic_as_main = False  # Persistence flag
         log.debug("State variables initialized")
         
         # Create the main window
@@ -1136,6 +1093,8 @@ class MainWindow:
         else:
             self.view = self._make_fallback_view(central, layout)
         self.win.setCentralWidget(central)
+        # Keep reference to original central widget for swapping
+        self._occ_central = central
         # Explicitly enable shape selection mode (fix for lost selection after repo update)
         if hasattr(self.view, '_display') and hasattr(self.view._display, 'SetSelectionMode'):
             log.debug("Setting selection mode to 1 (shape selection mode)")
@@ -1189,6 +1148,20 @@ class MainWindow:
         self._create_menus_and_toolbar()
         
         # Create status bar        self.win.statusBar().showMessage("AdaptiveCAD Advanced Shapes & Modeling Tools Ready")
+
+        # Load persisted analytic-main preference and apply if enabled
+        try:
+            prefs = self._load_analytic_prefs()
+            if prefs.get("analytic_as_main"):
+                # Defer toggle until event loop idle to ensure menu/action objects exist fully
+                from PySide6.QtCore import QTimer
+                def _apply():
+                    if hasattr(self, "_analytic_main_action"):
+                        self._analytic_main_action.setChecked(True)
+                        self._toggle_analytic_main(True)
+                QTimer.singleShot(0, _apply)
+        except Exception as e:
+            log.debug(f"Could not apply persisted analytic preference: {e}")
         
     def _setup_selection_handling(self):
         """Setup selection handling for objects in the 3D view."""
@@ -1669,6 +1642,11 @@ class MainWindow:
         view_menu.addAction(QAction("Show Analytic Viewport (Panel)", self.win, triggered=lambda: self._run_command(NewAnalyticViewportPanelCmd())))
         
         view_menu.addSeparator()
+        # Analytic-as-main toggle (persistent)
+        self._analytic_main_action = QAction("Use Analytic Viewport as Main", self.win, checkable=True)
+        self._analytic_main_action.setChecked(False)
+        self._analytic_main_action.triggered.connect(self._toggle_analytic_main)
+        view_menu.addAction(self._analytic_main_action)
 
         # Add View Cube toggle
         viewcube_action = QAction("Show View Cube", self.win, checkable=True)
@@ -1719,13 +1697,24 @@ class MainWindow:
         low_quality = QAction("Low Quality (Faster)", self.win)
         low_quality.triggered.connect(lambda: set_tessellation(0.05, 0.1))
         tessellation_menu.addAction(low_quality)
-        
         # Add option to toggle triedron visibility
         triedron_action = QAction("Show Axes Indicator", self.win, checkable=True)
         triedron_action.setChecked(True)
-        triedron_action.triggered.connect(lambda checked: self.view._display.display_triedron() if checked else self.view._display.hide_triedron())
+        def _toggle_triedron(checked):
+            disp = getattr(self.view, '_display', None)
+            if not disp:
+                return
+            show_fn = getattr(disp, 'display_triedron', None)
+            hide_fn = getattr(disp, 'hide_triedron', None)
+            if checked and callable(show_fn):
+                try: show_fn()
+                except Exception: pass
+            elif not checked and callable(hide_fn):
+                try: hide_fn()
+                except Exception: pass
+        triedron_action.triggered.connect(_toggle_triedron)
         view_menu.addAction(triedron_action)
-        
+
         # Add Rendering Backend menu
         backend_menu = settings_menu.addMenu("Rendering Backend")
         use_analytic_action = QAction("Use Analytic/SDF for default shapes", self.win, checkable=True)
@@ -1735,7 +1724,7 @@ class MainWindow:
             self.win.statusBar().showMessage(f"Analytic backend: {'ON' if chk else 'OFF'}", 3000)
         use_analytic_action.triggered.connect(toggle_backend)
         backend_menu.addAction(use_analytic_action)
-        
+
         # Create a main toolbar with commonly used shapes
         self.toolbar = self.win.addToolBar("Common Shapes")
         self.toolbar.addAction(box_action)
@@ -1743,10 +1732,10 @@ class MainWindow:
         self.toolbar.addAction(analytic_ball_action)
         self.toolbar.addAction(super_action)
         self.toolbar.addAction(pi_shell_action)
-        
+
         # Add separator
         self.toolbar.addSeparator()
-        
+
         # Add common modeling tools to toolbar
         self.toolbar.addAction(move_action)
         self.toolbar.addAction(mirror_action)
@@ -1762,7 +1751,7 @@ class MainWindow:
 
         # Create Help menu
         help_menu = menubar.addMenu("Help")
-        
+
         # Add About action
         about_action = QAction("About AdaptiveCAD", self.win)
         about_action.triggered.connect(self._show_about)
@@ -1778,7 +1767,7 @@ class MainWindow:
         # Analytic viewport action (rewired)
         analytic_view_action2 = QAction("Open Analytic Viewport (No Triangles)", self.win)
         def _open_analytic2():
-            from adaptivecad.analytic.analytic_viewport import AnalyticViewport
+            from adaptivecad.gui.analytic_viewport import AnalyticViewport
             if not hasattr(self, "aacore_scene"):
                 try:
                     from adaptivecad.aacore.sdf import Scene as _Scene
@@ -1874,6 +1863,80 @@ class MainWindow:
         modeling_tools_action.triggered.connect(lambda: self._show_doc_message("Modeling Tools", 
             "Please see MODELING_TOOLS.md in the project root directory for details on all available modeling tools."))
         docs_menu.addAction(modeling_tools_action)
+
+    # ---------------- Analytic Viewport Persistence & Toggle Helpers ----------------
+    def _prefs_path(self):
+        try:
+            import os
+            return os.path.join(os.path.expanduser("~"), ".adaptivecad_analytic.json")
+        except Exception:
+            return ".adaptivecad_analytic.json"
+
+    def _load_analytic_prefs(self):
+        import json, os
+        p = self._prefs_path()
+        if not os.path.exists(p):
+            return {}
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+
+    def _save_analytic_prefs(self, updates: dict):
+        import json, os
+        p = self._prefs_path()
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data.update(updates)
+        try:
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            log.debug(f"Failed saving analytic prefs: {e}")
+
+    def _ensure_analytic_panel(self):
+        if self._analytic_panel is not None:
+            return self._analytic_panel
+        try:
+            from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
+            shared_scene = getattr(self, 'aacore_scene', None)
+            panel = AnalyticViewportPanel(aacore_scene=shared_scene)
+            self._analytic_panel = panel
+            return panel
+        except Exception as e:
+            log.debug(f"Analytic panel creation failed: {e}")
+            return None
+
+    def _toggle_analytic_main(self, checked):
+        # QAction passes bool; startup call may pass True directly
+        if not isinstance(checked, bool) and hasattr(self, '_analytic_main_action'):
+            checked = self._analytic_main_action.isChecked()
+        if checked:
+            panel = self._ensure_analytic_panel()
+            if panel is None:
+                if hasattr(self, '_analytic_main_action'):
+                    self._analytic_main_action.setChecked(False)
+                return
+            panel.setMinimumSize(400, 300)
+            if self._occ_central is None:
+                self._occ_central = self.win.centralWidget()
+            self.win.setCentralWidget(panel)
+            if getattr(self, 'viewcube', None):
+                self.viewcube.hide()
+            self._analytic_as_main = True
+        else:
+            if self._occ_central is not None:
+                self.win.setCentralWidget(self._occ_central)
+                if getattr(self, 'viewcube', None):
+                    self.viewcube.show()
+            self._analytic_as_main = False
+        self._save_analytic_prefs({'analytic_as_main': self._analytic_as_main})
     
     def _run_command(self, cmd):
         try:
@@ -2093,40 +2156,12 @@ class MainWindow:
     def _sync_analytic_scene(self):
         # Called whenever DOCUMENT changes or transforms update
         try:
-            from adaptivecad.command_defs import DOCUMENT
-            from adaptivecad.analytic.feature import AnalyticFeature
-            from adaptivecad.analytic.primitives import (
-                AnalyticSphere, AnalyticBox, AnalyticCylinder, AnalyticCapsule, AnalyticTorus
-            )
-            
-            # Find open analytic viewport(s)
-            if hasattr(self, "_analytic_viewport") and self._analytic_viewport:
-                vp = self._analytic_viewport
-                
-                # Rebuild scene from analytic features
-                from adaptivecad.analytic.scene import Scene
-                scene = Scene()
-                
-                # First, add explicit analytic primitives
-                for feat in DOCUMENT:
-                    if hasattr(feat, "to_scene_primitive"):
-                        scene.primitives.append(feat.to_scene_primitive())
-                
-                # Preserve camera/env if you want
-                scene.env_light = getattr(vp.scene, "env_light", 0.25)
-                scene.bg_color = getattr(vp.scene, "bg_color", (0.08,0.08,0.1))
-                scene.pia_global_beta = getattr(vp.scene, "pia_global_beta", 0.0)
-                
-                # Update the viewport
-                vp.scene = scene
+            # For now AACore scene is shared live; nothing to do.
+            vp = getattr(self, '_analytic_viewport', None)
+            if vp:
                 vp.update()
-                
-                # Print status (silenced to avoid spam)
-                # print(f"[SYNC] Synced analytic scene with {len(scene.primitives)} primitives")
-        except Exception as e:
-            print("[SYNC] Analytic scene sync failed:", e)
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            pass
     
     def _create_dimension_panel(self):
         """Create and show the dimension selector panel."""

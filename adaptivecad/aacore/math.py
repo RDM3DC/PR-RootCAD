@@ -45,6 +45,30 @@ class Xform:
     def inverse(self) -> 'Xform':
         return Xform(np.linalg.inv(self.M))
 
+# --- Rotation / Scale convenience (added) ---
+def rot_x(deg: float) -> np.ndarray:
+    t = np.deg2rad(deg); c, s = np.cos(t), np.sin(t)
+    M = np.eye(4, dtype=np.float32)
+    M[1,1], M[1,2], M[2,1], M[2,2] = c, -s, s, c
+    return M
+
+def rot_y(deg: float) -> np.ndarray:
+    t = np.deg2rad(deg); c, s = np.cos(t), np.sin(t)
+    M = np.eye(4, dtype=np.float32)
+    M[0,0], M[0,2], M[2,0], M[2,2] = c, s, -s, c
+    return M
+
+def rot_z(deg: float) -> np.ndarray:
+    t = np.deg2rad(deg); c, s = np.cos(t), np.sin(t)
+    M = np.eye(4, dtype=np.float32)
+    M[0,0], M[0,1], M[1,0], M[1,1] = c, -s, s, c
+    return M
+
+def scale3(sx: float, sy: float, sz: float) -> np.ndarray:
+    M = np.eye(4, dtype=np.float32)
+    M[0,0], M[1,1], M[2,2] = sx, sy, sz
+    return M
+
 class Interval:
     __slots__ = ('lo','hi')
     def __init__(self, lo: float, hi: float):

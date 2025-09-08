@@ -39,6 +39,25 @@ class Prim:
         self.pid   = int(pid)
         self.op    = op  # 'solid' | 'subtract'
         self.color = np.asarray(color, dtype=np.float64)
+        # Added Euler + non-uniform scale tracking
+        self.euler = np.array([0.0,0.0,0.0], dtype=np.float32)  # degrees (rx, ry, rz)
+        self.scale = np.array([1.0,1.0,1.0], dtype=np.float32)
+
+    def set_transform(self, pos=None, euler=None, scale=None):
+        from .math import rot_x, rot_y, rot_z, scale3
+        if pos is None:
+            pos = self.xform.M[:3,3]
+        if euler is None:
+            euler = self.euler
+        if scale is None:
+            scale = self.scale
+        S = scale3(float(scale[0]), float(scale[1]), float(scale[2]))
+        Rx = rot_x(float(euler[0])); Ry = rot_y(float(euler[1])); Rz = rot_z(float(euler[2]))
+        M = (S @ Rz @ Ry @ Rx).astype(np.float32)
+        M[:3,3] = np.array(pos, dtype=np.float32)
+        self.xform.M = M
+        self.euler[:] = euler
+        self.scale[:] = scale
 
 class Scene:
     def __init__(self):

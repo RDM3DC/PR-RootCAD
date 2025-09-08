@@ -16,6 +16,8 @@ uniform vec3 u_cam_pos;
 uniform mat3 u_cam_rot;
 uniform vec3 u_bg;   // background color
 uniform vec3 u_env;  // environment light direction (length may encode intensity)
+uniform int  u_debug;      // 0 beauty,1 normals,2 id,3 depth,4 thickness
+uniform int  u_selected;   // selected primitive index (-1 none)
 
 const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4;
 const int OP_SOLID=0, OP_SUB=1;
@@ -26,8 +28,8 @@ float sd_box(vec3 p, vec3 b){ vec3 q = abs(p)-b; return length(max(q,0.0)) + min
 float sd_capsule_y(vec3 p, float r, float h){ vec3 a=vec3(0,-0.5*h,0); vec3 b=vec3(0,0.5*h,0); vec3 pa=p-a, ba=b-a; float t=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*t)-r; }
 float sd_torus_y(vec3 p, float R, float r){ float qx=length(p.xz)-R; return length(vec2(qx,p.y))-r; }
 
-float map_scene(vec3 pw, out vec3 outColor){
-    float d = 1e9; vec3 col = vec3(0.1);
+float map_scene(vec3 pw, out vec3 outColor, out int outId){
+    float d = 1e9; vec3 col = vec3(0.1); int hitId = -1;
     for(int i=0;i<u_count;i++){
         mat4 Mi = inverse(u_xform[i]);
         vec3 pl = (Mi * vec4(pw,1.0)).xyz;
@@ -36,18 +38,18 @@ float map_scene(vec3 pw, out vec3 outColor){
         else if(u_kind[i]==KIND_BOX){ di = sd_box(pl, u_params[i].xyz); }
         else if(u_kind[i]==KIND_CAPSULE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_capsule_y(pl, r, u_params[i].y); }
         else if(u_kind[i]==KIND_TORUS){ float R=u_params[i].x; float r=pia_scale(u_params[i].y, u_beta[i]); di=sd_torus_y(pl,R,r); }
-        if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4) col = u_color[i]; d = nd; }
-        else { if(di < d){ d=di; col=u_color[i]; } }
+        if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4){ col = u_color[i]; hitId=i; } d = nd; }
+        else { if(di < d){ d=di; col=u_color[i]; hitId=i; } }
     }
-    outColor = col; return d;
+    outColor = col; outId = hitId; return d;
 }
 
 vec3 calc_normal(vec3 p){
-    float e = 1e-3; vec2 h = vec2(1.0,-1.0)*0.5773; vec3 c;
-    return normalize( h.xyy*map_scene(p + h.xyy*e,c) +
-                      h.yyx*map_scene(p + h.yyx*e,c) +
-                      h.yxy*map_scene(p + h.yxy*e,c) +
-                      h.xxx*map_scene(p + h.xxx*e,c) );
+    float e = 1e-3; vec2 h = vec2(1.0,-1.0)*0.5773; vec3 c; int _id;
+    return normalize( h.xyy*map_scene(p + h.xyy*e,c,_id) +
+                      h.yyx*map_scene(p + h.yyx*e,c,_id) +
+                      h.yxy*map_scene(p + h.yxy*e,c,_id) +
+                      h.xxx*map_scene(p + h.xxx*e,c,_id) );
 }
 
 void main(){
@@ -55,13 +57,39 @@ void main(){
     float fov = radians(45.0);
     vec3 rd = normalize(u_cam_rot * vec3(uv.x, uv.y, -1.0 / tan(0.5*fov)));
     vec3 ro = u_cam_pos;
-    float t=0.0; bool hit=false; vec3 p,n; vec3 col=vec3(0.1);
+    float t=0.0; bool hit=false; vec3 p,n; vec3 col=vec3(0.1); int pid=-1; int cid;
     for(int i=0;i<256;i++){
-        vec3 c; float d = map_scene(ro + rd*t, c);
+        vec3 c; float d = map_scene(ro + rd*t, c, cid);
         if(d < 0.001){ hit=true; p=ro+rd*t; col=c; n=calc_normal(p); break; }
         t += max(d, 0.002); if(t>200.0) break; }
     if(!hit){ FragColor=vec4(u_bg,1); return; }
+    // Re-evaluate id at hit point (cheap) to capture pid
+    vec3 _c2; pid = -1; float _d2 = map_scene(p, _c2, pid);
     vec3 L = normalize(u_env); float ndl=max(dot(n,L),0.0);
     vec3 base = mix(col*0.5, col, 0.5+0.5*ndl);
+
+    if(u_debug==1){ // normals
+        FragColor = vec4(n*0.5+0.5,1.0); return; }
+    if(u_debug==2){ // id encode (pid+1 so -1 -> 0)
+        int enc = (pid < 0) ? 0 : (pid+1);
+        int r =  enc       & 255;
+        int g = (enc >> 8) & 255;
+        int b = (enc >>16) & 255;
+        FragColor = vec4(r/255.0, g/255.0, b/255.0, 1.0); return; }
+    if(u_debug==3){ // depth
+        float depth = clamp(t/200.0, 0.0, 1.0);
+        FragColor = vec4(vec3(depth),1.0); return; }
+    if(u_debug==4){ // thickness placeholder (use curvature-ish via normal variation)
+        float th = pow(1.0 - abs(dot(n, rd)), 2.0);
+        FragColor = vec4(vec3(th),1.0); return; }
+
+    // Beauty + selection highlight (strong gold tint + rim)
+    if(u_selected >=0 && pid==u_selected){
+        float rim = pow(1.0 - max(dot(n,-rd),0.0), 2.0);
+        vec3 gold = vec3(1.0,0.85,0.25);
+        base = mix(gold, base, 0.25);
+        base += rim*0.5;
+        base = clamp(base, 0.0, 1.0);
+    }
     FragColor = vec4(base,1.0);
 }
