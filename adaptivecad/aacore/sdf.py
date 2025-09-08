@@ -139,6 +139,7 @@ class Scene:
         color = np.zeros((max_prims,3), dtype=np.float32)
         params= np.zeros((max_prims,4), dtype=np.float32)
         xform = np.zeros((max_prims,16), dtype=np.float32)
+        xform_inv = np.zeros((max_prims,16), dtype=np.float32)
 
         for i, pr in enumerate(self.prims[:n]):
             if pr.kind in (KIND_SPHERE, 'sphere'):
@@ -159,12 +160,21 @@ class Scene:
             op[i]     = OP_SUBTRACT if pr.op == 'subtract' else OP_SOLID
             beta[i]   = np.float32(pr.beta + self.global_beta)
             color[i]  = pr.color[:3].astype(np.float32)
-            xform[i]  = pr.xform.M.astype(np.float32).reshape(16)
+            # Forward (column-major) and inverse for GPU (avoid per-fragment inverse())
+            fwd = pr.xform.M.astype(np.float32)
+            inv = None
+            try:
+                inv = np.linalg.inv(fwd)
+            except Exception:
+                inv = np.eye(4, dtype=np.float32)
+            xform[i]     = fwd.T.reshape(16)
+            xform_inv[i] = inv.T.reshape(16)
 
         return {
             "count": np.int32(n),
             "kind": kind, "op": op, "beta": beta,
-            "color": color, "params": params, "xform": xform,
+            "color": color, "params": params,
+            "xform": xform, "xform_inv": xform_inv,
             "bg": self.bg_color.astype(np.float32),
             "env": self.env_light.astype(np.float32)
         }

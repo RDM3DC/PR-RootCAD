@@ -204,6 +204,13 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform3f(glGetUniformLocation(self.prog,"u_bg"), *self.scene.bg_color)
         pack = self.scene.to_gpu_structs(max_prims=MAX_PRIMS)
         n = int(pack['count'])
+        if n>0:
+            try:
+                import logging
+                logging.getLogger("adaptivecad.gui").debug(
+                    f"GPU upload prim0 xform (col-major packed) translation={pack['xform'][0][12:15].tolist()} raw_first16={pack['xform'][0].tolist()}")
+            except Exception:
+                pass
         U = lambda name: glGetUniformLocation(self.prog, name)
         glUniform1i(U("u_count"), n)
         glUniform1iv(U("u_kind"), n, pack['kind'])
@@ -212,6 +219,8 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform3fv(U("u_color"), n, pack['color'])
         glUniform4fv(U("u_params"), n, pack['params'])
         glUniformMatrix4fv(U("u_xform"), n, GL_FALSE, pack['xform'])
+        if 'xform_inv' in pack:
+            glUniformMatrix4fv(U("u_xform_inv"), n, GL_FALSE, pack['xform_inv'])
         glUniform1i(U("u_mode"), 0)
         mode_val = self.debug_mode if debug_override is None else debug_override
         glUniform1i(U("u_debug"), int(mode_val))
@@ -447,6 +456,8 @@ class AnalyticViewport(QOpenGLWidget):
             glUniform3fv(U("u_color"), n, pack['color'])
             glUniform4fv(U("u_params"), n, pack['params'])
             glUniformMatrix4fv(U("u_xform"), n, GL_FALSE, pack['xform'])
+            if 'xform_inv' in pack:
+                glUniformMatrix4fv(U("u_xform_inv"), n, GL_FALSE, pack['xform_inv'])
             glUniform1i(glGetUniformLocation(self.prog, "u_mode"), 0)
             glUniform1i(glGetUniformLocation(self.prog, "u_debug"), 2)  # ID mode
             glUniform1i(glGetUniformLocation(self.prog, "u_use_analytic_aa"), 0)

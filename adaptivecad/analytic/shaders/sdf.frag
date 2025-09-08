@@ -10,6 +10,7 @@ uniform float u_beta[MAX_PRIMS];
 uniform vec3  u_color[MAX_PRIMS];
 uniform vec4  u_params[MAX_PRIMS]; // sphere:(r,0,0,0) box:(sx,sy,sz,0) capsule:(r,h,0,0) torus:(R,r,0,0)
 uniform mat4  u_xform[MAX_PRIMS];
+uniform mat4  u_xform_inv[MAX_PRIMS]; // precomputed inverse (CPU)
 
 uniform vec2 u_res;
 uniform vec3 u_cam_pos;
@@ -31,7 +32,7 @@ float sd_torus_y(vec3 p, float R, float r){ float qx=length(p.xz)-R; return leng
 float map_scene(vec3 pw, out vec3 outColor, out int outId){
     float d = 1e9; vec3 col = vec3(0.1); int hitId = -1;
     for(int i=0;i<u_count;i++){
-        mat4 Mi = inverse(u_xform[i]);
+        mat4 Mi = u_xform_inv[i];
         vec3 pl = (Mi * vec4(pw,1.0)).xyz;
         float di = 1e9;
         if(u_kind[i]==KIND_SPHERE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_sphere(pl,r); }
