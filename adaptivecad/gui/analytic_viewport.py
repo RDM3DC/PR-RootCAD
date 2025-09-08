@@ -32,12 +32,16 @@ class AnalyticViewport(QOpenGLWidget):
         fmt.setVersion(3,3); fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
         fmt.setSamples(4)  # 4x MSAA
         self.setFormat(fmt)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Shared AACore scene (will be injected later or created fresh)
         self.scene = AACoreScene()
         # camera
-        self.cam_pos = np.array([0.0, 0.0, 6.0], np.float32)
+        self.cam_target = np.array([0.0,0.0,0.0], np.float32)
+        self.distance = 6.0
         self.yaw=0.0; self.pitch=0.0
-        self.last = None
+        self.cam_pos = np.array([0.0,0.0,self.distance], np.float32)
+        self._last_mouse = None
+        self._last_buttons = Qt.MouseButton.NoButton
         # shader handles
         self.prog = None
         # debug / feature toggles (could later expose via UI)
@@ -105,6 +109,14 @@ class AnalyticViewport(QOpenGLWidget):
         u = np.cross(r, f)
         R = np.stack([r,u,-f], axis=1).astype(np.float32)  # columns
         return R
+
+    def _update_camera(self):
+        # forward vector points from cam to target, so place camera at target - f*distance
+        cy, sy = np.cos(self.yaw), np.sin(self.yaw)
+        cp, sp = np.cos(self.pitch), np.sin(self.pitch)
+        f = np.array([sy*cp, sp, -cy*cp], np.float32)
+        self.cam_pos = self.cam_target - f * self.distance
+        self.update()
 
     def paintGL(self):
         self._draw_frame(debug_override=None)
@@ -191,6 +203,51 @@ class AnalyticViewport(QOpenGLWidget):
             self._update_title(); self.update(); self._save_settings()
         else:
             super().keyPressEvent(event)
+
+    # --- Mouse Interaction ---
+    def mousePressEvent(self, event: QMouseEvent):
+        self._last_mouse = event.position()
+        self._last_buttons = event.buttons()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._last_mouse is None:
+            self._last_mouse = event.position()
+        dx = event.position().x() - self._last_mouse.x()
+        dy = event.position().y() - self._last_mouse.y()
+        buttons = event.buttons() or self._last_buttons
+        updated = False
+        # Orbit (LMB)
+        if buttons & Qt.MouseButton.LeftButton:
+            sens = 0.005
+            self.yaw   += dx * sens
+            self.pitch += dy * sens
+            # clamp pitch to avoid gimbal flip
+            self.pitch = float(np.clip(self.pitch, -1.45, 1.45))
+            self._update_camera()
+            updated = True
+        # Pan (RMB)
+        if buttons & Qt.MouseButton.RightButton:
+            # derive right/up from current basis
+            R = self._cam_basis()
+            right = R[:,0]; up = R[:,1]
+            pan_sens = self.distance * 0.0015
+            self.cam_target -= right * dx * pan_sens
+            self.cam_target += up * dy * pan_sens
+            self._update_camera()
+            updated = True
+        self._last_mouse = event.position()
+        if not updated:
+            super().mouseMoveEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent):
+        delta = event.angleDelta().y() / 120.0  # 1 per notch
+        zoom_factor = 1.0 - delta * 0.1
+        zoom_factor = max(0.1, min(2.0, zoom_factor))
+        self.distance *= zoom_factor
+        self.distance = float(np.clip(self.distance, 0.5, 200.0))
+        self._update_camera()
+        super().wheelEvent(event)
 
     def _update_title(self):
         try:
