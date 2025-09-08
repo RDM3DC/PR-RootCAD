@@ -47,9 +47,22 @@ if HAS_QT:
     )
     from PySide6.QtGui import QAction, QIcon, QCursor, QPixmap
     from PySide6.QtCore import Qt, QObject, QEvent
-    from adaptivecad.analytic.conversion import (
-        ConvertMeshToAnalyticCmd, ConvertAnalyticToMeshCmd
-    )
+    # Analytic conversion commands (guarded so app still launches if package absent)
+    try:
+        from adaptivecad.analytic.conversion import (
+            ConvertMeshToAnalyticCmd, ConvertAnalyticToMeshCmd
+        )
+    except Exception:  # pragma: no cover - optional module
+        class _StubCmd:
+            def __init__(self, name): self._name = name
+            def run(self, mw):
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(mw.win, self._name, f"Module 'adaptivecad.analytic' not available; {self._name} disabled.")
+                except Exception:
+                    print(f"[INFO] {self._name}: analytic module not available.")
+        ConvertMeshToAnalyticCmd = lambda : _StubCmd("Convert Mesh → Analytic")
+        ConvertAnalyticToMeshCmd = lambda : _StubCmd("Convert Analytic → Mesh")
     from adaptivecad.command_defs import (
         Feature,
         NewBoxCmd, NewCylCmd,
