@@ -8,6 +8,12 @@ Now supports an OCC-free fallback mode: if `pythonocc-core` is unavailable, the
 application will still start using a minimal placeholder viewer and analytic viewport.
 """
 
+import logging
+
+log = logging.getLogger("adaptivecad.gui")
+if not logging.getLogger().hasHandlers():  # lightweight default config
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+
 HAS_QT = False
 HAS_OCC = False
 
@@ -39,6 +45,15 @@ if HAS_QT:
         from adaptivecad.gui.nd_chess_widget import NDChessWidget
     except Exception:  # pragma: no cover - missing deps
         NDChessWidget = None
+    # Capability probe (may or may not exist yet when partially installed)
+    try:
+        from adaptivecad.analytic.capabilities import (
+            analytic_available, exporter_available, conversion_available
+        )
+    except Exception:  # capability module optional
+        def analytic_available(): return False
+        def exporter_available(): return False
+        def conversion_available(): return False
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QInputDialog, QMessageBox, QCheckBox,
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QComboBox,
@@ -78,7 +93,7 @@ if HAS_QT:
         class MinimalImportCmd:  # fallback stub
             def run(self, mw):  # mw = MainWindow instance
                 msg = "OCC not available; STL/STEP import disabled in this session."
-                print(msg)
+                log.info(msg)
                 try:
                     from PySide6.QtWidgets import QMessageBox
                     QMessageBox.information(mw.win, "Import", msg)
@@ -102,6 +117,22 @@ except ImportError:
 
 # Define SuperellipseFeature at module level regardless of GUI availability
 from adaptivecad.command_defs import Feature
+
+# Helper to gate optional features cleanly
+def require(cap_fn, ok_fn, mw, msg: str):
+    try:
+        if cap_fn():
+            return ok_fn()
+    except Exception as e:  # capability function itself failed
+        log.debug(f"Capability function error: {e}")
+    try:
+        if HAS_QT:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(mw.win, "Feature Unavailable", msg)
+        else:
+            log.warning(f"Feature unavailable: {msg}")
+    except Exception:
+        log.warning(f"Feature unavailable (no UI): {msg}")
 
 # --- PI CURVE SHELL SHAPE TOOL (Parametric πₐ-based surface) ---
 class PiCurveShellFeature(Feature):
@@ -1058,12 +1089,12 @@ class OpenProjectCmd:
 # --- MAIN WINDOW AND APPLICATION ---
 class MainWindow:
     def __init__(self):
-        print("[DEBUG] MainWindow.__init__() called")
+        log.debug("MainWindow.__init__() called")
         if not HAS_GUI:
-            print("Qt not available. Cannot create MainWindow.")
+            log.warning("Qt not available. Cannot create MainWindow.")
             return
-            
-        print("[DEBUG] GUI dependencies available, initializing...")
+
+        log.debug("GUI dependencies available, initializing...")
         # Initialize the application
         self.app = QApplication.instance() or QApplication([])
         
@@ -1072,13 +1103,13 @@ class MainWindow:
         self.property_panel = None
         self.dimension_panel = None
         self.chess_dock = None
-        print("[DEBUG] State variables initialized")
+        log.debug("State variables initialized")
         
         # Create the main window
         self.win = QMainWindow()
         self.win.setWindowTitle("AdaptiveCAD - Advanced Shapes & Modeling Tools")
         self.win.resize(1024, 768)
-        print("[DEBUG] Main window created")
+        log.debug("Main window created")
         
         # Create central widget with OCC viewer or fallback
         central = QWidget()
@@ -1100,7 +1131,7 @@ class MainWindow:
                 except Exception:
                     pass
             except Exception as e:
-                print("Failed to initialize OCC viewer, using fallback:", e)
+                log.warning(f"Failed to initialize OCC viewer, using fallback: {e}")
                 HAS_OCC_LOCAL = False
                 self.view = self._make_fallback_view(central, layout)
         else:
@@ -1108,10 +1139,10 @@ class MainWindow:
         self.win.setCentralWidget(central)
         # Explicitly enable shape selection mode (fix for lost selection after repo update)
         if hasattr(self.view, '_display') and hasattr(self.view._display, 'SetSelectionMode'):
-            print("[DEBUG] Setting selection mode to 1 (shape selection mode)")
+            log.debug("Setting selection mode to 1 (shape selection mode)")
             self.view._display.SetSelectionMode(1)  # 1 = shape selection mode
         else:
-            print("[DEBUG] Selection mode method not found on display object")
+            log.debug("Selection mode method not found on display object")
         
         # Extra initialization safety (idempotent)
         if HAS_OCC and hasattr(self.view, '_display'):
@@ -1131,7 +1162,7 @@ class MainWindow:
                 elif hasattr(self.view._display, 'Context') and hasattr(self.view._display.Context, 'ActivateStandardMode'):
                     self.view._display.Context.ActivateStandardMode(0)
             except Exception as e:
-                print(f"[DEBUG] Warning: Could not enable selection mode: {e}")
+                log.debug(f"Could not enable selection mode: {e}")
         # Initialize ViewCube
         if HAS_OCC and hasattr(self.view, '_display'):
             self.viewcube = ViewCubeWidget(self.view._display, self.view)
@@ -1178,37 +1209,35 @@ class MainWindow:
                     except Exception:
                         pass
         except Exception as e:
-            print(f"[DEBUG] Warning: Could not setup selection handling: {e}")
+            log.debug(f"Could not setup selection handling: {e}")
     
     def _on_object_selected(self):
         """Handle object selection in the 3D view."""
-        print("[DEBUG] _on_object_selected called")
+        log.debug("_on_object_selected called")
         try:
             from adaptivecad.command_defs import DOCUMENT
             
             # Get selected objects from the display
             selected_shapes = self.view._display.GetSelectedShapes()
-            print(f"[DEBUG] Selected shapes: {selected_shapes}")
-            print(f"[DEBUG] Number of selected shapes: {len(selected_shapes) if selected_shapes else 0}")
+            log.debug(f"Selected shapes: {selected_shapes}; count={len(selected_shapes) if selected_shapes else 0}")
 
             # Handle clicks on move arrows first
             if selected_shapes and hasattr(self, 'arrow_shapes'):
-                print(f"[DEBUG] Checking for arrow selection. Arrow shapes: {list(self.arrow_shapes.keys()) if hasattr(self, 'arrow_shapes') else 'None'}")
+                log.debug(f"Checking for arrow selection. Arrow shapes: {list(self.arrow_shapes.keys()) if hasattr(self, 'arrow_shapes') else 'None'}")
                 for axis, info in self.arrow_shapes.items():
                     if info['shape'] in selected_shapes:
-                        print(f"[DEBUG] Arrow {axis} selected! Moving along axis.")
+                        log.debug(f"Arrow {axis} selected; initiating move")
                         self._move_along_axis(axis)
                         self.view._display.Context.ClearSelected()
                         return
 
             if selected_shapes:
-                print(f"[DEBUG] Processing {len(selected_shapes)} selected shapes")
-                print(f"[DEBUG] DOCUMENT has {len(DOCUMENT)} features")
+                log.debug(f"Processing {len(selected_shapes)} selected shapes; DOCUMENT size={len(DOCUMENT)}")
                 # Find the feature that corresponds to the selected shape
                 for i, feature in enumerate(DOCUMENT):
-                    print(f"[DEBUG] Checking feature {i}: {feature.name}")
+                    log.debug(f"Checking feature {i}: {feature.name}")
                     if hasattr(feature, 'shape') and feature.shape in selected_shapes:
-                        print(f"[DEBUG] Found matching feature: {feature.name}")
+                        log.debug(f"Found matching feature: {feature.name}")
                         self.selected_feature = feature
                         self._update_property_panel(feature)
                         self._create_move_arrows(feature)
@@ -1216,18 +1245,18 @@ class MainWindow:
                         return
 
                 # If no matching feature found, clear selection
-                print("[DEBUG] No matching feature found for selected shapes")
+                log.debug("No matching feature found for selected shapes")
                 self.selected_feature = None
                 self._clear_property_panel()
                 self._remove_move_arrows()
             else:
-                print("[DEBUG] No shapes selected, clearing selection")
+                log.debug("No shapes selected; clearing")
                 self.selected_feature = None
                 self._clear_property_panel()
                 self._remove_move_arrows()
 
         except Exception as e:
-            print(f"[DEBUG] Error handling selection: {e}")
+            log.error(f"Error handling selection: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1890,7 +1919,7 @@ class MainWindow:
     # ------------------------------------------------------------------
     def _create_move_arrows(self, feature):
         """Display simple X/Y/Z arrows at the feature center for quick moves."""
-        print(f"[DEBUG] _create_move_arrows called for feature: {feature.name}")
+        log.debug(f"_create_move_arrows for feature: {feature.name}")
         try:
             from OCC.Core.Bnd import Bnd_Box
             from OCC.Core.BRepBndLib import brepbndlib_Add
@@ -1910,7 +1939,7 @@ class MainWindow:
             cy = (ymin + ymax) / 2.0
             cz = (zmin + zmax) / 2.0
             size = max(xmax - xmin, ymax - ymin, zmax - zmin) * 0.6
-            print(f"[DEBUG] Arrow placement: center=({cx:.2f}, {cy:.2f}, {cz:.2f}), size={size:.2f}")
+            log.debug(f"Arrow placement center=({cx:.2f},{cy:.2f},{cz:.2f}) size={size:.2f}")
             
             cyl_r = size * 0.03
             cyl_h = size * 0.8
@@ -1918,7 +1947,7 @@ class MainWindow:
             cone_h = size * 0.2
 
             def make_arrow(axis):
-                print(f"[DEBUG] Creating arrow for axis: {axis}")
+                log.debug(f"Creating arrow axis={axis}")
                 cyl = BRepPrimAPI_MakeCylinder(cyl_r, cyl_h).Shape()
                 cone = BRepPrimAPI_MakeCone(cone_r, 0, cone_h).Shape()
                 tr = gp_Trsf(); tr.SetTranslation(gp_Vec(0, 0, cyl_h))
@@ -1932,7 +1961,7 @@ class MainWindow:
                     comp = BRepBuilderAPI_Transform(comp, rot, True).Shape()
                 tr2 = gp_Trsf(); tr2.SetTranslation(gp_Vec(cx, cy, cz))
                 comp = BRepBuilderAPI_Transform(comp, tr2, True).Shape()
-                print(f"[DEBUG] Arrow {axis} created successfully")
+                log.debug(f"Arrow {axis} created")
                 return comp
 
             colors = {'x': 'RED', 'y': 'GREEN', 'z': 'BLUE'}
@@ -1941,44 +1970,44 @@ class MainWindow:
                 shp = make_arrow(ax)
                 ais = self.view._display.DisplayShape(shp, color=colors[ax], update=False)
                 self.arrow_shapes[ax] = {'ais': ais, 'shape': shp}
-                print(f"[DEBUG] Arrow {ax} displayed with AIS: {ais}")
+                log.debug(f"Arrow {ax} displayed AIS={ais}")
             self.view._display.Repaint()
-            print(f"[DEBUG] All arrows created. Arrow shapes dict: {list(self.arrow_shapes.keys())}")
+            log.debug(f"All arrows created: {list(self.arrow_shapes.keys())}")
         except Exception as e:
-            print(f"[DEBUG] Error creating move arrows: {e}")
+            log.error(f"Error creating move arrows: {e}")
             import traceback
             traceback.print_exc()
 
     def _remove_move_arrows(self):
-        print("[DEBUG] _remove_move_arrows called")
+        log.debug("_remove_move_arrows called")
         if hasattr(self, 'arrow_shapes'):
-            print(f"[DEBUG] Removing {len(self.arrow_shapes)} arrow shapes")
+            log.debug(f"Removing {len(self.arrow_shapes)} arrow shapes")
             for info in self.arrow_shapes.values():
                 try:
                     if self.view._display.Context.IsDisplayed(info['ais']):
                         self.view._display.Context.Remove(info['ais'], True)
-                        print("[DEBUG] Arrow removed from display")
+                        log.debug("Arrow removed")
                 except Exception as e:
-                    print(f"[DEBUG] Error removing arrow: {e}")
+                    log.error(f"Error removing arrow: {e}")
             self.arrow_shapes = {}
-            print("[DEBUG] Arrow shapes dictionary cleared")
+            log.debug("Arrow shapes dictionary cleared")
         else:
-            print("[DEBUG] No arrow shapes to remove")
+            log.debug("No arrow shapes to remove")
 
     def _move_along_axis(self, axis):
         """Prompt for distance and move selected feature along given axis."""
-        print(f"[DEBUG] _move_along_axis called with axis: {axis}")
+        log.debug(f"_move_along_axis axis={axis}")
         if self.selected_feature is None:
-            print("[DEBUG] No selected feature to move")
+            log.debug("No selected feature to move")
             return
-        print(f"[DEBUG] Moving feature: {self.selected_feature.name}")
+        log.debug(f"Moving feature: {self.selected_feature.name}")
         
         from PySide6.QtWidgets import QInputDialog
         dist, ok = QInputDialog.getDouble(self.win, "Move", f"Distance along {axis.upper()} (mm)", 10.0)
         if not ok:
-            print("[DEBUG] User cancelled move dialog")
+            log.debug("User cancelled move dialog")
             return
-        print(f"[DEBUG] User entered distance: {dist}")
+        log.debug(f"User entered distance: {dist}")
         
         dx = dy = dz = 0.0
         if axis == 'x':
@@ -1987,19 +2016,19 @@ class MainWindow:
             dy = dist
         else:
             dz = dist
-        print(f"[DEBUG] Translation vector: dx={dx}, dy={dy}, dz={dz}")
+        log.debug(f"Translation vector dx={dx}, dy={dy}, dz={dz}")
         
         try:
-            print(f"[DEBUG] Calling apply_translation on feature")
+            log.debug("Calling apply_translation on feature")
             self.selected_feature.apply_translation([dx, dy, dz])
-            print(f"[DEBUG] apply_translation completed, rebuilding scene")
+            log.debug("apply_translation completed; rebuilding scene")
             from adaptivecad.command_defs import rebuild_scene
             rebuild_scene(self.view._display)
-            print(f"[DEBUG] Scene rebuilt, recreating move arrows")
+            log.debug("Scene rebuilt; recreating move arrows")
             self._create_move_arrows(self.selected_feature)
-            print(f"[DEBUG] Move operation completed successfully")
+            log.debug("Move operation completed")
         except Exception as e:
-            print(f"[DEBUG] Error moving feature: {e}")
+            log.error(f"Error moving feature: {e}")
             import traceback
             traceback.print_exc()
     
