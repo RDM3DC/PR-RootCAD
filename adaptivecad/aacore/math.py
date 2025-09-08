@@ -32,6 +32,14 @@ class Xform:
     @staticmethod
     def scale(s: float) -> 'Xform':
         M = np.diag([s, s, s, 1.0]); return Xform(M)
+    @staticmethod
+    def rotate_y(theta: float) -> 'Xform':
+        c, s = math.cos(theta), math.sin(theta)
+        M = np.array([[ c, 0.0,  s, 0.0],
+                      [0.0, 1.0, 0.0, 0.0],
+                      [-s, 0.0, c, 0.0],
+                      [0.0,0.0,0.0,1.0]], dtype=np.float64)
+        return Xform(M)
     def __matmul__(self, other: 'Xform') -> 'Xform':
         return Xform(self.M @ other.M)
     def inverse(self) -> 'Xform':

@@ -1,4 +1,10 @@
-import numpy as np
+import os, sys, numpy as np
+
+# Allow running directly from repo root without installing adaptivecad
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
 from adaptivecad.aacore.sdf import Scene, Prim
 from adaptivecad.aacore.math import Xform
 from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl

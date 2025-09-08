@@ -1,169 +1,67 @@
 #version 330 core
-in vec2 v_uv;
 out vec4 FragColor;
 
-uniform vec3 u_cam_pos;
-uniform mat3 u_cam_rot;   // camera basis
+#define MAX_PRIMS 48 // keep in sync with aacore.sdf.MAX_PRIMS
+
+uniform int   u_count;
+uniform int   u_kind[MAX_PRIMS];
+uniform int   u_op[MAX_PRIMS];
+uniform float u_beta[MAX_PRIMS];
+uniform vec3  u_color[MAX_PRIMS];
+uniform vec4  u_params[MAX_PRIMS]; // sphere:(r,0,0,0) box:(sx,sy,sz,0) capsule:(r,h,0,0) torus:(R,r,0,0)
+uniform mat4  u_xform[MAX_PRIMS];
+
 uniform vec2 u_res;
-uniform int  u_mode;      // 0=beauty, 1=id
-uniform int  u_count;
+uniform vec3 u_cam_pos;
+uniform mat3 u_cam_rot;
+uniform vec3 u_bg;   // background color
+uniform vec3 u_env;  // environment light direction (length may encode intensity)
 
-const int MAXP=32;
-uniform int   u_kind[MAXP];
-uniform vec4  u_params[MAXP];
-uniform vec3  u_color[MAXP];
-uniform float u_beta[MAXP];
-uniform int   u_id[MAXP];
-uniform mat4  u_xform[MAXP];
+const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4;
+const int OP_SOLID=0, OP_SUB=1;
 
-uniform float u_env;
-uniform vec3  u_bg;
+float pia_scale(float r, float beta){ return r * (1.0 + 0.125 * beta * r * r); }
+float sd_sphere(vec3 p, float r){ return length(p) - r; }
+float sd_box(vec3 p, vec3 b){ vec3 q = abs(p)-b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
+float sd_capsule_y(vec3 p, float r, float h){ vec3 a=vec3(0,-0.5*h,0); vec3 b=vec3(0,0.5*h,0); vec3 pa=p-a, ba=b-a; float t=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*t)-r; }
+float sd_torus_y(vec3 p, float R, float r){ float qx=length(p.xz)-R; return length(vec2(qx,p.y))-r; }
 
-float pia_radius(float r, float beta){
-    float kappa = 0.25*beta;
-    return r*(1.0 + 0.5*kappa*r*r);
-}
-
-vec3 xform_inv_point(mat4 M, vec3 p){
-    mat4 invM = inverse(M);
-    vec4 h = invM * vec4(p,1.0);
-    return h.xyz/h.w;
-}
-vec3 xform_inv_dir(mat4 M, vec3 d){
-    mat4 invM = inverse(M);
-    vec4 h = invM * vec4(d,0.0);
-    return h.xyz;
-}
-
-// SDF primitives in local space
-float sdSphere(vec3 p, float r){ return length(p)-r; }
-float sdCapsule(vec3 p, vec3 a, vec3 b, float r){
-    vec3 pa = p - a, ba = b - a;
-    float h = clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);
-    return length(pa - ba*h) - r;
-}
-float sdTorus(vec3 p, vec2 t){
-    vec2 q = vec2(length(p.xz)-t.x, p.y);
-    return length(q)-t.y;
-}
-
-struct Hit { float d; int id; vec3 col; };
-
-// Evaluate scene distance (union MVP)
-Hit map_scene(vec3 p){
-    Hit h; h.d=1e9; h.id=0; h.col=vec3(0.0);
+float map_scene(vec3 pw, out vec3 outColor){
+    float d = 1e9; vec3 col = vec3(0.1);
     for(int i=0;i<u_count;i++){
-        mat4 M = u_xform[i];
-        vec3 pl = xform_inv_point(M,p);
-        float d=1e9;
-        if(u_kind[i]==0){ // sphere
-            float r = pia_radius(u_params[i].w, u_beta[i]);
-            d = sdSphere(pl, r);
-        }else if(u_kind[i]==1){ // capsule
-            // params: (ax, ay, az, r) with b encoded as additional?
-            // MVP: use ax as half-length on +Y
-            float r = pia_radius(u_params[i].w, u_beta[i]);
-            vec3 a = vec3(0.0,-u_params[i].x,0.0);
-            vec3 b = vec3(0.0, u_params[i].x,0.0);
-            d = sdCapsule(pl,a,b,r);
-        }else if(u_kind[i]==2){ // torus
-            // params: (R, r, unused, unused)
-            float Re = u_params[i].x;
-            float r  = pia_radius(u_params[i].y, u_beta[i]);
-            d = sdTorus(pl, vec2(Re, r));
-        }
-        if(d < h.d){ h.d=d; h.id=u_id[i]; h.col=u_color[i]; }
+        mat4 Mi = inverse(u_xform[i]);
+        vec3 pl = (Mi * vec4(pw,1.0)).xyz;
+        float di = 1e9;
+        if(u_kind[i]==KIND_SPHERE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_sphere(pl,r); }
+        else if(u_kind[i]==KIND_BOX){ di = sd_box(pl, u_params[i].xyz); }
+        else if(u_kind[i]==KIND_CAPSULE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_capsule_y(pl, r, u_params[i].y); }
+        else if(u_kind[i]==KIND_TORUS){ float R=u_params[i].x; float r=pia_scale(u_params[i].y, u_beta[i]); di=sd_torus_y(pl,R,r); }
+        if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4) col = u_color[i]; d = nd; }
+        else { if(di < d){ d=di; col=u_color[i]; } }
     }
-    return h;
+    outColor = col; return d;
 }
 
-vec3 calc_normal(vec3 p, float t){
-    float e = max(6e-4, 3e-4 * t);   // larger when farther, tiny when close
-    vec2 k = vec2(1.0,-1.0);
-    vec3 g =
-          k.xyy*map_scene(p + k.xyy*e).d +
-          k.yyx*map_scene(p + k.yyx*e).d +
-          k.yxy*map_scene(p + k.yxy*e).d +
-          k.xxx*map_scene(p + k.xxx*e).d;
-    vec3 n = normalize(g);
-    // one-step refinement for close-ups
-    float d0 = map_scene(p).d;
-    float d1 = map_scene(p + n*e*0.5).d;
-    if (abs(d1) < abs(d0)) p += n*e*0.5;
-    return n;
-}
-
-float softShadow(vec3 ro, vec3 rd, float tmin, float tmax){
-    float res = 1.0, t=tmin;
-    for(int i=0;i<40;i++){
-        float h = map_scene(ro + rd*t).d;
-        if(h<1e-4) return 0.0;
-        // gentler penumbra for macro close-ups
-        res = min(res, 8.0*h/t);
-        t += clamp(h, 0.01, 0.12);
-        if(t>tmax) break;
-    }
-    return clamp(res,0.0,1.0);
-}
-
-float ao(vec3 p, vec3 n){
-    float occ = 0.0, sca=1.0;
-    for(int i=0;i<5;i++){
-        float h = 0.008 + 0.12*float(i)/4.0; // slightly tighter near surface
-        occ += sca * (h - map_scene(p + n*h).d);
-        sca *= 0.75;
-    }
-    return clamp(1.0 - 1.35*occ, 0.0, 1.0);
+vec3 calc_normal(vec3 p){
+    float e = 1e-3; vec2 h = vec2(1.0,-1.0)*0.5773; vec3 c;
+    return normalize( h.xyy*map_scene(p + h.xyy*e,c) +
+                      h.yyx*map_scene(p + h.yyx*e,c) +
+                      h.yxy*map_scene(p + h.yxy*e,c) +
+                      h.xxx*map_scene(p + h.xxx*e,c) );
 }
 
 void main(){
-    // camera ray
-    vec2 uv = (v_uv*2.0-1.0);
-    uv.x *= u_res.x/u_res.y;
+    vec2 uv = (gl_FragCoord.xy / u_res) * 2.0 - 1.0; uv.x *= u_res.x/u_res.y;
+    float fov = radians(45.0);
+    vec3 rd = normalize(u_cam_rot * vec3(uv.x, uv.y, -1.0 / tan(0.5*fov)));
     vec3 ro = u_cam_pos;
-    vec3 rd = normalize(u_cam_rot * normalize(vec3(uv, -1.5)));
-
-    // march
-    float t=0.0; int steps=0; Hit h;
-    for(int i=0;i<128;i++){
-        vec3 pos = ro + rd*t;
-        h = map_scene(pos);
-        if(h.d<0.001){ break; }
-        t += h.d;
-        steps=i;
-        if(t>200.0) break;
-    }
-
-    if(t>200.0){
-        FragColor = vec4(u_bg,1.0); return;
-    }
-
-    vec3 pos = ro + rd*t;
-    if(u_mode==1){ // ID pass
-        float idf = float(h.id)/255.0;
-        FragColor = vec4(idf, idf, idf, 1.0);
-        return;
-    }
-
-    // shading
-    vec3 n = calc_normal(pos, t);
-    vec3 L = normalize(vec3(0.6,0.85,0.25));  // Light tint adjusted for better material separation
-    float diff = max(dot(n,L),0.0);
-    float sh = softShadow(pos + n*0.01, L, 0.02, 4.0);
-    float amb = u_env * ao(pos, n);
-    
-    // lighting bits
-    vec3 V = normalize(-rd);
-    vec3 H = normalize(L + V);
-    float spec = pow(max(dot(n,H),0.0), 32.0);
-    float rim  = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);
-    
-    vec3 lit = h.col * (amb + 0.9*diff*sh) + 0.08*spec + 0.12*rim;
-    
-    // ACES-ish tone map + gamma
-    vec3 a = vec3(2.51), b = vec3(0.03), c = vec3(2.43), d = vec3(0.59), e = vec3(0.14);
-    vec3 tm = clamp((lit*(a*lit + b)) / (lit*(c*lit + d) + e), 0.0, 1.0);
-    vec3 col = pow(tm, vec3(1.0/2.2));
-    
-    FragColor = vec4(col,1.0);
+    float t=0.0; bool hit=false; vec3 p,n; vec3 col=vec3(0.1);
+    for(int i=0;i<256;i++){
+        vec3 c; float d = map_scene(ro + rd*t, c);
+        if(d < 0.001){ hit=true; p=ro+rd*t; col=c; n=calc_normal(p); break; }
+        t += max(d, 0.002); if(t>200.0) break; }
+    if(!hit){ FragColor=vec4(u_bg,1); return; }
+    vec3 L = normalize(u_env); float ndl=max(dot(n,L),0.0);
+    vec3 base = mix(col*0.5, col, 0.5+0.5*ndl);
+    FragColor = vec4(base,1.0);
 }

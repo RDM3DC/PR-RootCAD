@@ -1,6 +1,10 @@
 import numpy as np
-from skimage import measure
-from stl import mesh
+try:
+    from skimage import measure
+    from stl import mesh
+except Exception:
+    measure = None
+    mesh = None
 
 def sample_sdf(scene, bbox, res):
     (xmin,ymin,zmin), (xmax,ymax,zmax) = bbox
@@ -18,6 +22,8 @@ def sample_sdf(scene, bbox, res):
     return D, (xs, ys, zs)
 
 def export_isosurface_to_stl(scene, path, bbox=((-2,-2,-2),(2,2,2)), res=180):
+    if measure is None or mesh is None:
+        raise ImportError("Requires 'scikit-image' and 'numpy-stl' (pip install scikit-image numpy-stl)")
     D, (xs,ys,zs) = sample_sdf(scene, bbox, res)
     spacing = (xs[1]-xs[0], ys[1]-ys[0], zs[1]-zs[0])
     verts, faces, _normals, _ = measure.marching_cubes(D, level=0.0, spacing=spacing)

@@ -53,7 +53,19 @@ if HAS_QT:
         MoveCmd, UnionCmd, CutCmd, IntersectCmd, ScaleCmd, MirrorCmd,
         NewBallCmd, NewTorusCmd, NewConeCmd, ShellCmd
     )
-    from adaptivecad.commands.minimal_import import MinimalImportCmd
+    # Guard OCC-dependent minimal import command so app can start without OCC
+    try:  # pragma: no cover
+        from adaptivecad.commands.minimal_import import MinimalImportCmd
+    except Exception:
+        class MinimalImportCmd:  # fallback stub
+            def run(self, mw):  # mw = MainWindow instance
+                msg = "OCC not available; STL/STEP import disabled in this session."
+                print(msg)
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(mw.win, "Import", msg)
+                except Exception:
+                    pass
     if HAS_OCC:
         from OCC.Core.AIS import AIS_Shape  # type: ignore
         from OCC.Core.TopoDS import TopoDS_Face  # type: ignore
@@ -1084,6 +1096,17 @@ class MainWindow:
         # Setup selection handling
         self._setup_selection_handling()
         
+        # Shared AACore analytic scene
+        try:
+            from adaptivecad.aacore.sdf import Scene as _AACoreScene, Prim as _Prim, KIND_SPHERE, KIND_TORUS, KIND_CAPSULE
+            self.aacore_scene = _AACoreScene()
+            # seed demo prims
+            self.aacore_scene.add(_Prim(KIND_SPHERE, [1.0,0,0,0], beta=0.08, color=(0.9,0.4,0.3)))
+            self.aacore_scene.add(_Prim(KIND_TORUS, [1.4,0.35,0,0], beta=0.05, color=(0.4,0.8,0.6)))
+            self.aacore_scene.add(_Prim(KIND_CAPSULE,[0.35,1.4,0,0], beta=0.0,  color=(0.3,0.6,0.9)))
+        except Exception:
+            self.aacore_scene = None
+
         # Setup UI
         self._create_menus_and_toolbar()
         
@@ -1242,35 +1265,28 @@ class MainWindow:
 
         # Analytic SDF -> STL exporter
         class ExportAnalyticSTLCmd:
+            def __init__(self, get_scene):
+                self._get_scene = get_scene
             def run(self_inner, mw):
-                try:
-                    from PySide6.QtWidgets import QFileDialog, QMessageBox
-                except Exception as e:
-                    print("Qt not available for export dialog:", e); return
-                try:
-                    from adaptivecad.aacore.sdf import Scene, Prim
-                    from adaptivecad.aacore.math import Xform
-                    from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
-                except Exception as e:
-                    QMessageBox.critical(mw.win, "Missing Modules", f"Kernel export modules not available: {e}")
-                    return
-                # TODO: replace with real analytic scene build. For now demo sphere + torus difference.
-                sc = Scene(); sc.global_beta = 0.10
-                sc.add(Prim('sphere', [0,0,0,1.0], Xform.translate(-0.6,0,0), beta=0.05, pid=1))
-                sc.add(Prim('torus',  [1.2,0.35],  Xform.translate(0.9,0.0,0.0),             pid=2))
-                sc.add(Prim('sphere', [0,0,0,0.7], Xform.translate(0.3,0.2,0.0), pid=3, op='subtract'))
+                from PySide6.QtWidgets import QFileDialog, QMessageBox
+                from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
+                sc = self_inner._get_scene()
+                if sc is None or len(sc.prims)==0:
+                    QMessageBox.information(mw.win, "Export", "No analytic primitives to export."); return
                 path, _ = QFileDialog.getSaveFileName(mw.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
-                if not path:
-                    return
+                if not path: return
                 try:
-                    export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=128)
+                    export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=160)
                     mw.win.statusBar().showMessage(f"Exported analytic STL: {path}", 5000)
-                    QMessageBox.information(mw.win, "Export Complete", f"Wrote STL:\n{path}")
+                except ImportError:
+                    QMessageBox.critical(mw.win, "Missing deps", "Install required: pip install scikit-image numpy-stl")
                 except Exception as e:
                     QMessageBox.critical(mw.win, "Export Error", str(e))
 
         export_analytic_stl_action = QAction("Export Analytic (SDF→STL)", self.win)
-        export_analytic_stl_action.triggered.connect(lambda: self._run_command(ExportAnalyticSTLCmd()))
+        export_analytic_stl_action.triggered.connect(
+            lambda: self._run_command(ExportAnalyticSTLCmd(lambda: self.aacore_scene))
+        )
         export_menu.addAction(export_analytic_stl_action)
         
         # Add separator
@@ -1753,8 +1769,8 @@ class MainWindow:
                 vp.scene = scene
                 vp.update()
                 
-                # Print status
-                print(f"[SYNC] Synced analytic scene with {len(scene.primitives)} primitives")
+                # Print status (silenced to avoid spam)
+                # print(f"[SYNC] Synced analytic scene with {len(scene.primitives)} primitives")
         except Exception as e:
             print("[SYNC] Analytic scene sync failed:", e)
             import traceback
