@@ -83,6 +83,9 @@ class AnalyticViewport(QOpenGLWidget):
         self._depth_rb = None
         # micro pick FBO
         self._pick_fbo = None
+    # translation drag state
+    self._drag_move_active = False
+    self._drag_last_pos = None
 
     def _on_scene_changed(self):
         self._scene_dirty = True
@@ -275,17 +278,46 @@ class AnalyticViewport(QOpenGLWidget):
         if changed:
             self._update_title(); self.update(); self._save_settings()
         else:
+            # --- Keyboard nudges (view-aligned + world-aligned) ---
+            pr = self._current_prim()
+            if pr is not None:
+                # determine step
+                step_widget = getattr(self.parent(), '_nudge_step', None)
+                try:
+                    step = float(step_widget.value()) if step_widget is not None else 1.0
+                except Exception:
+                    step = 1.0
+                moved = False
+                basis = self._cam_basis()
+                pos_vec = pr.xform.M[:3,3].astype(np.float32)
+                # View-aligned (WASD + Q/E)
+                if k == Qt.Key_W: pos_vec += basis[:,1]*step; moved=True
+                elif k == Qt.Key_S: pos_vec -= basis[:,1]*step; moved=True
+                elif k == Qt.Key_D: pos_vec += basis[:,0]*step; moved=True
+                elif k == Qt.Key_A: pos_vec -= basis[:,0]*step; moved=True
+                elif k == Qt.Key_E: pos_vec -= basis[:,2]*step; moved=True  # forward (-Z in basis third column sign depending)
+                elif k == Qt.Key_Q: pos_vec += basis[:,2]*step; moved=True
+                # World-aligned (arrows + PgUp/PgDn)
+                elif k == Qt.Key_Up: pos_vec += np.array([0,step,0], np.float32); moved=True
+                elif k == Qt.Key_Down: pos_vec -= np.array([0,step,0], np.float32); moved=True
+                elif k == Qt.Key_Right: pos_vec += np.array([step,0,0], np.float32); moved=True
+                elif k == Qt.Key_Left: pos_vec -= np.array([step,0,0], np.float32); moved=True
+                elif k == Qt.Key_PageUp: pos_vec += np.array([0,0,step], np.float32); moved=True
+                elif k == Qt.Key_PageDown: pos_vec -= np.array([0,0,step], np.float32); moved=True
+                if moved:
+                    self._apply_panel_move(pos_vec)
+                    return
             super().keyPressEvent(event)
 
     # --- Mouse Interaction ---
     def mousePressEvent(self, event: QMouseEvent):
         self._last_mouse = event.position()
         self._last_buttons = event.buttons()
+        # Plain LMB (no modifiers) -> pick
         if event.button() == Qt.MouseButton.LeftButton and event.modifiers() == Qt.KeyboardModifier.NoModifier:
             pid = self._pick_id_at(int(event.position().x()), int(event.position().y()))
             if pid >= 0:
                 self.selected_index = pid
-                # notify possible panel parent
                 try:
                     if hasattr(self.parent(), '_select_prim'):
                         self.parent()._select_prim(pid)
@@ -294,6 +326,12 @@ class AnalyticViewport(QOpenGLWidget):
             else:
                 self.selected_index = -1
             self.update()
+        # Shift + LMB -> begin move-drag if a primitive selected
+        if (event.button() == Qt.MouseButton.LeftButton and \
+            (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and \
+            self._current_prim() is not None):
+            self._drag_move_active = True
+            self._drag_last_pos = event.position()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -301,6 +339,19 @@ class AnalyticViewport(QOpenGLWidget):
             self._last_mouse = event.position()
         dx = event.position().x() - self._last_mouse.x()
         dy = event.position().y() - self._last_mouse.y()
+        # Screen-plane translate when active
+        if self._drag_move_active and self._drag_last_pos is not None:
+            dx2 = event.position().x() - self._drag_last_pos.x()
+            dy2 = event.position().y() - self._drag_last_pos.y()
+            R = self._cam_basis(); right = R[:,0]; up = R[:,1]
+            step = self.distance * 0.0015
+            dp = right * dx2 * step - up * dy2 * step
+            pr = self._current_prim()
+            if pr is not None:
+                new_pos = pr.xform.M[:3,3] + dp.astype(np.float32)
+                self._apply_panel_move(new_pos)
+            self._drag_last_pos = event.position()
+            return
         buttons = event.buttons() or self._last_buttons
         updated = False
         # Orbit (LMB)
@@ -325,6 +376,35 @@ class AnalyticViewport(QOpenGLWidget):
         self._last_mouse = event.position()
         if not updated:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_move_active = False
+            self._drag_last_pos = None
+        super().mouseReleaseEvent(event)
+
+    # --- Selection + panel sync helpers ---
+    def _current_prim(self):
+        try:
+            panel = self.parent()
+            if hasattr(panel, '_current_sel') and 0 <= panel._current_sel < len(self.scene.prims):
+                return self.scene.prims[panel._current_sel]
+        except Exception:
+            return None
+        return None
+
+    def _apply_panel_move(self, new_pos):
+        panel = self.parent()
+        try:
+            if hasattr(panel, '_sp_move'):
+                for i,v in enumerate(new_pos):
+                    panel._sp_move[i].blockSignals(True)
+                    panel._sp_move[i].setValue(float(v))
+                    panel._sp_move[i].blockSignals(False)
+                if hasattr(panel, '_apply_edit'):
+                    panel._apply_edit()
+        except Exception:
+            pass
 
     def _perform_pick(self, x:int, y:int):
         if not self.prog or self._picking_fbo is None:
@@ -568,13 +648,21 @@ class AnalyticViewportPanel(QWidget):
             s = QDoubleSpinBox(); s.setRange(0.01,100.0); s.setSingleStep(0.05); s.setDecimals(3); s.setValue(1.0); return s
         self._sp_rot = [rspin() for _ in range(3)]
         self._sp_scl = [sspin() for _ in range(3)]
+        # Move (translate) controls
+        def mspin():
+            s = QDoubleSpinBox(); s.setRange(-1000.0,1000.0); s.setSingleStep(0.01); s.setDecimals(4); s.setValue(0.0); return s
+        self._sp_move = [mspin() for _ in range(3)]
         fe2.addRow("Rot ° X/Y/Z", self._make_row(self._sp_rot))
         fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
+        fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
+        from PySide6.QtWidgets import QDoubleSpinBox as _QDB2
+        self._nudge_step = _QDB2(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
+        fe2.addRow("Nudge Step", self._nudge_step)
         self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
         for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)
         for sp in self._sp_param: sp.valueChanged.connect(self._apply_edit)
         self._sp_beta.valueChanged.connect(self._apply_edit); self._op_box.currentIndexChanged.connect(self._apply_edit)
-        for s in self._sp_rot + self._sp_scl:
+        for s in self._sp_rot + self._sp_scl + self._sp_move:
             s.valueChanged.connect(self._apply_edit)
         def pick_color():
             from PySide6.QtGui import QColor
@@ -691,6 +779,12 @@ class AnalyticViewportPanel(QWidget):
         # position from transform matrix (assume affine last column xyz)
         pos = pr.xform.M[:3,3]
         for i in range(3): self._sp_pos[i].blockSignals(True); self._sp_pos[i].setValue(float(pos[i])); self._sp_pos[i].blockSignals(False)
+        # populate move spinners (authoritative for translation edits)
+        if hasattr(self, '_sp_move'):
+            for i in range(3):
+                self._sp_move[i].blockSignals(True)
+                self._sp_move[i].setValue(float(pos[i]))
+                self._sp_move[i].blockSignals(False)
         # params
         self._sp_param[0].blockSignals(True); self._sp_param[0].setValue(float(pr.params[0])); self._sp_param[0].blockSignals(False)
         self._sp_param[1].blockSignals(True); self._sp_param[1].setValue(float(pr.params[1] if pr.kind!=KIND_SPHERE else 0.0)); self._sp_param[1].blockSignals(False)
@@ -719,8 +813,11 @@ class AnalyticViewportPanel(QWidget):
         pr.beta = self._sp_beta.value()
         pr.op = 'solid' if self._op_box.currentIndex()==0 else 'subtract'
         pr.color[:3] = np.array(self._current_color[:3])
-        # position, rotation, scale
-        pos = [self._sp_pos[i].value() for i in range(3)]
+        # translation driven by move spinners
+        if hasattr(self, '_sp_move'):
+            pos = [self._sp_move[i].value() for i in range(3)]
+        else:
+            pos = [self._sp_pos[i].value() for i in range(3)]
         rx, ry, rz = [self._sp_rot[i].value() for i in range(3)]
         sx, sy, sz = [self._sp_scl[i].value() for i in range(3)]
         if hasattr(pr, 'set_transform'):
