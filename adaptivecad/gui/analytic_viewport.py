@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent
+from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
 from PySide6.QtCore import Qt, QSize
 from OpenGL.GL import *
 import numpy as np
@@ -28,6 +28,138 @@ try:
     _HAVE_PIL = True
 except Exception:
     _HAVE_PIL = False
+
+    # --- 2D Sketch Overlay (Polyline + Snaps) ---------------------------------
+    SNAP_PX = 10  # pixel radius for snapping
+
+    class SketchEntity:
+        def draw(self, p: QPainter, view): ...
+        def snap_points(self): return []  # list of (x,y) in world (Z=0)
+
+    class Polyline2D(SketchEntity):
+        def __init__(self, pts=None):
+            import numpy as _np
+            self.pts = [ _np.array(p, dtype=_np.float32) for p in (pts or []) ]  # (x,y)
+        def snap_points(self):
+            import numpy as _np
+            out = []
+            out += self.pts
+            for a,b in zip(self.pts[:-1], self.pts[1:]):
+                out.append( (a+b)/2.0 )
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            if not self.pts:
+                return
+            pts2 = [ view._world_to_screen(_np.array([x,y,0.0], _np.float32)) for (x,y) in self.pts ]
+            if len(pts2) >= 2:
+                pen = QPen(QColor(220,220,220)); pen.setWidth(2); p.setPen(pen)
+                for a,b in zip(pts2[:-1], pts2[1:]):
+                    p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen = QPen(QColor(255,200,120)); pen.setWidth(6); p.setPen(pen)
+            for s in pts2:
+                p.drawPoint(int(s[0]), int(s[1]))
+
+    class SketchLayer:
+        def __init__(self):
+            self.entities: list[SketchEntity] = []
+            self.active_poly: Polyline2D | None = None
+            self.active_shape: SketchEntity | None = None  # circle/rect WIP
+            self.hover_snap = None  # (x,y)
+        def all_snap_points(self):
+            pts = []
+            for e in self.entities:
+                pts += e.snap_points()
+            if self.active_poly:
+                pts += self.active_poly.snap_points()
+            if self.active_shape and hasattr(self.active_shape, 'snap_points'):
+                pts += self.active_shape.snap_points()
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            for e in self.entities:
+                e.draw(p, view)
+            if self.active_poly:
+                self.active_poly.draw(p, view)
+            if self.active_shape:
+                self.active_shape.draw(p, view)
+            if self.hover_snap is not None:
+                s = view._world_to_screen(_np.array([self.hover_snap[0], self.hover_snap[1], 0.0], _np.float32))
+                pen = QPen(QColor(120,255,160)); pen.setWidth(2); p.setPen(pen)
+                p.drawLine(int(s[0]-6), int(s[1]), int(s[0]+6), int(s[1]))
+                p.drawLine(int(s[0]), int(s[1]-6), int(s[0]), int(s[1]+6))
+
+    class Circle2D(SketchEntity):
+        def __init__(self, center, radius=0.0):
+            import numpy as _np
+            self.center = _np.array(center, dtype=_np.float32)
+            self.radius = float(radius)
+        def snap_points(self):
+            import numpy as _np, math as _m
+            pts = [self.center]
+            if self.radius > 1e-6:
+                for ang in (0,90,180,270):
+                    a = _m.radians(ang)
+                    pts.append(self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32))
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.radius <= 0: return
+            segs = 40
+            pts = []
+            for i in range(segs+1):
+                a = 2*_m.pi * i / segs
+                w = self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32)
+                s = view._world_to_screen(_np.array([w[0], w[1], 0.0], _np.float32))
+                pts.append(s)
+            pen = QPen(QColor(180,220,255)); pen.setWidth(2); p.setPen(pen)
+            for a,b in zip(pts[:-1], pts[1:]):
+                p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            # center point
+            c = view._world_to_screen(_np.array([self.center[0], self.center[1], 0.0], _np.float32))
+            pen = QPen(QColor(255,180,120)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(c[0]), int(c[1]))
+
+    class Rect2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            self.p0 = _np.array(p0, dtype=_np.float32)
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def corners(self):
+            import numpy as _np
+            if self.p1 is None:
+                return []
+            x0,y0 = self.p0
+            x1,y1 = self.p1
+            mnx,mxx = min(x0,x1), max(x0,x1)
+            mny,mxy = min(y0,y1), max(y0,y1)
+            return [ _np.array([mnx,mny], _np.float32), _np.array([mxx,mny], _np.float32), _np.array([mxx,mxy], _np.float32), _np.array([mnx,mxy], _np.float32) ]
+        def snap_points(self):
+            import numpy as _np
+            cs = self.corners()
+            pts = cs[:]
+            if len(cs)==4:
+                # edge midpoints
+                for a,b in zip(cs, cs[1:]+cs[:1]):
+                    pts.append( (a+b)/2.0 )
+                # center
+                cx = sum(c[0] for c in cs)/4.0; cy = sum(c[1] for c in cs)/4.0
+                pts.append(_np.array([cx,cy], _np.float32))
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            cs = self.corners()
+            if len(cs) < 2:
+                # just draw p0
+                s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+                pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
+                return
+            pts2 = [ view._world_to_screen(_np.array([c[0], c[1], 0.0], _np.float32)) for c in cs ]
+            pen = QPen(QColor(200,255,180)); pen.setWidth(2); p.setPen(pen)
+            for a,b in zip(pts2, pts2[1:]+pts2[:1]):
+                p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen)
+            for s in pts2:
+                p.drawPoint(int(s[0]), int(s[1]))
 
 # --- Gizmo helper functions (move/rotate/scale snapping) ---
 import math
@@ -61,6 +193,110 @@ def _get_local_axes_from_xform(M):
     def _norm(v):
         n = np.linalg.norm(v); return v if n < 1e-9 else v / n
     return _norm(rx), _norm(ry), _norm(rz)
+
+# --- Ensure Sketch Overlay classes exist even if PIL import succeeded ---
+try:
+    SketchLayer
+except NameError:  # define overlay classes (PIL present path)
+    SNAP_PX = 10
+    class SketchEntity:
+        def draw(self, p: QPainter, view): ...
+        def snap_points(self): return []
+    class Polyline2D(SketchEntity):
+        def __init__(self, pts=None):
+            import numpy as _np
+            self.pts = [ _np.array(p, dtype=_np.float32) for p in (pts or []) ]
+        def snap_points(self):
+            import numpy as _np
+            out = [] + self.pts
+            for a,b in zip(self.pts[:-1], self.pts[1:]):
+                out.append((a+b)/2.0)
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            if not self.pts: return
+            pts2 = [ view._world_to_screen(_np.array([x,y,0.0], _np.float32)) for (x,y) in self.pts ]
+            if len(pts2) >= 2:
+                pen = QPen(QColor(220,220,220)); pen.setWidth(2); p.setPen(pen)
+                for a,b in zip(pts2[:-1], pts2[1:]):
+                    p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen = QPen(QColor(255,200,120)); pen.setWidth(6); p.setPen(pen)
+            for s in pts2: p.drawPoint(int(s[0]), int(s[1]))
+    class Circle2D(SketchEntity):
+        def __init__(self, center, radius=0.0):
+            import numpy as _np
+            self.center = _np.array(center, dtype=_np.float32)
+            self.radius = float(radius)
+        def snap_points(self):
+            import numpy as _np, math as _m
+            pts = [self.center]
+            if self.radius>1e-6:
+                for ang in (0,90,180,270):
+                    a=_m.radians(ang)
+                    pts.append(self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32))
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.radius <= 0: return
+            segs=40; pts=[]
+            for i in range(segs+1):
+                a=2*_m.pi*i/segs
+                w=self.center + self.radius*_np.array([_np.cos(a), _np.sin(a)], _np.float32)
+                s=view._world_to_screen(_np.array([w[0],w[1],0.0], _np.float32))
+                pts.append(s)
+            pen = QPen(QColor(180,220,255)); pen.setWidth(2); p.setPen(pen)
+            for a,b in zip(pts[:-1], pts[1:]): p.drawLine(int(a[0]),int(a[1]),int(b[0]),int(b[1]))
+            c=view._world_to_screen(_np.array([self.center[0],self.center[1],0.0], _np.float32))
+            pen = QPen(QColor(255,180,120)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(c[0]), int(c[1]))
+    class Rect2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            self.p0=_np.array(p0, dtype=_np.float32)
+            self.p1=_np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def corners(self):
+            import numpy as _np
+            if self.p1 is None: return []
+            x0,y0=self.p0; x1,y1=self.p1
+            mnx,mxx=min(x0,x1),max(x0,x1); mny,mxy=min(y0,y1),max(y0,y1)
+            return [ _np.array([mnx,mny],_np.float32), _np.array([mxx,mny],_np.float32), _np.array([mxx,mxy],_np.float32), _np.array([mnx,mxy],_np.float32) ]
+        def snap_points(self):
+            import numpy as _np
+            cs=self.corners(); pts=cs[:]
+            if len(cs)==4:
+                for a,b in zip(cs, cs[1:]+cs[:1]): pts.append((a+b)/2.0)
+                cx=sum(c[0] for c in cs)/4.0; cy=sum(c[1] for c in cs)/4.0
+                pts.append(_np.array([cx,cy], _np.float32))
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            cs=self.corners()
+            if len(cs)<2:
+                s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32))
+                pen=QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1])); return
+            pts2=[ view._world_to_screen(_np.array([c[0],c[1],0.0], _np.float32)) for c in cs ]
+            pen=QPen(QColor(200,255,180)); pen.setWidth(2); p.setPen(pen)
+            for a,b in zip(pts2, pts2[1:]+pts2[:1]): p.drawLine(int(a[0]),int(a[1]),int(b[0]),int(b[1]))
+            pen=QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen)
+            for s in pts2: p.drawPoint(int(s[0]), int(s[1]))
+    class SketchLayer:
+        def __init__(self):
+            self.entities=[]; self.active_poly=None; self.active_shape=None; self.hover_snap=None
+        def all_snap_points(self):
+            pts=[]
+            for e in self.entities: pts+=e.snap_points()
+            if self.active_poly: pts+=self.active_poly.snap_points()
+            if self.active_shape and hasattr(self.active_shape,'snap_points'): pts+=self.active_shape.snap_points()
+            return pts
+        def draw(self, p: QPainter, view):
+            for e in self.entities: e.draw(p, view)
+            if self.active_poly: self.active_poly.draw(p, view)
+            if self.active_shape: self.active_shape.draw(p, view)
+            if self.hover_snap is not None:
+                import numpy as _np
+                s=view._world_to_screen(_np.array([self.hover_snap[0], self.hover_snap[1],0.0], _np.float32))
+                pen=QPen(QColor(120,255,160)); pen.setWidth(2); p.setPen(pen)
+                p.drawLine(int(s[0]-6), int(s[1]), int(s[0]+6), int(s[1]))
+                p.drawLine(int(s[0]), int(s[1]-6), int(s[0]), int(s[1]+6))
 
 def load_text(p):
     return Path(p).read_text(encoding="utf-8")
@@ -225,6 +461,45 @@ class AnalyticViewport(QOpenGLWidget):
         glClearColor(*self.scene.bg_color, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
         self._render_scene_internal(debug_override=None)
+        # Sketch overlay
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        if panel is not None and getattr(panel,'_sketch_on',False):
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            panel._sketch.draw(p, self)
+            p.end()
+
+    # --- Sketch projection helpers ---
+    def _world_to_screen(self, p3):
+        # Simple orthographic-ish projection using camera distance for scale
+        w,h = float(self.width()), float(self.height())
+        # derive right/up from camera basis
+        R = self._cam_basis()
+        right = R[:,0]; up = R[:,1]
+        rel = p3 - self.cam_pos
+        x = np.dot(rel, right)
+        y = np.dot(rel, up)
+        s = 80.0 / max(1e-5, self.distance)
+        return np.array([w*0.5 + x*s, h*0.5 - y*s], np.float32)
+
+    def _screen_to_world_xy(self, sx, sy):
+        # Map screen to world on Z≈0 plane
+        w,h = float(self.width()), float(self.height())
+        R = self._cam_basis(); right = R[:,0]; up = R[:,1]; forward = -R[:,2]
+        s = 80.0 / max(1e-5, self.distance)
+        dx = (sx - w*0.5)/s
+        dy = -(sy - h*0.5)/s
+        # construct point relative to camera
+        pos = self.cam_pos + right*dx + up*dy
+        # project to z=0 along forward
+        if abs(forward[2]) > 1e-5:
+            t = -pos[2]/forward[2]
+            pos = pos + forward*t
+        pos[2] = 0.0
+        return pos
 
     def _render_scene_internal(self, debug_override=None):
         if not self.prog:
@@ -320,16 +595,28 @@ class AnalyticViewport(QOpenGLWidget):
         if changed:
             self._update_title(); self.update(); self._save_settings()
         else:
-            # Gizmo mode shortcuts (override before movement keys)
             try:
                 panel = self.parent()
             except Exception:
                 panel = None
+            # Sketch polyline finalize / undo
+            if panel is not None and getattr(panel,'_sketch_on',False) and panel._sketch_mode=='polyline':
+                if k in (Qt.Key_Return, Qt.Key_Enter):
+                    if panel._sketch.active_poly and len(panel._sketch.active_poly.pts)>=2:
+                        panel._sketch.entities.append(panel._sketch.active_poly)
+                    panel._sketch.active_poly = None
+                    self.update(); return
+                elif k == Qt.Key_Escape:
+                    if panel._sketch.active_poly and panel._sketch.active_poly.pts:
+                        panel._sketch.active_poly.pts.pop()
+                        if not panel._sketch.active_poly.pts:
+                            panel._sketch.active_poly = None
+                        self.update(); return
+            # Gizmo mode shortcuts
             if panel is not None:
                 if k == Qt.Key_R:
                     panel._gizmo_mode = 'rotate'; self.update(); return
                 elif k == Qt.Key_S and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                    # 'S' repurposed for Scale mode; (Ctrl+S still free for save if future)
                     panel._gizmo_mode = 'scale'; self.update(); return
                 elif k == Qt.Key_M:
                     panel._gizmo_mode = 'move'; self.update(); return
@@ -339,7 +626,7 @@ class AnalyticViewport(QOpenGLWidget):
                     panel._axis_lock = 'y'; return
                 elif k == Qt.Key_Z:
                     panel._axis_lock = 'z'; return
-                elif k == Qt.Key_Escape:
+                elif k == Qt.Key_Escape and not (getattr(panel,'_sketch_on',False) and panel._sketch_mode=='polyline'):
                     panel._axis_lock = None; return
             # --- Keyboard nudges (view-aligned + world-aligned) ---
             pr = self._current_prim()
@@ -397,6 +684,38 @@ class AnalyticViewport(QOpenGLWidget):
             self._current_prim() is not None):
             self._drag_move_active = True
             self._drag_last_pos = event.position()
+        # Sketch polyline placement (before default)
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        if panel is not None and getattr(panel,'_sketch_on',False) and event.button()==Qt.MouseButton.LeftButton:
+            mode = panel._sketch_mode
+            pt_world2 = panel._sketch.hover_snap if panel._sketch.hover_snap is not None else self._screen_to_world_xy(event.position().x(), event.position().y())[:2]
+            if mode=='polyline':
+                if panel._sketch.active_poly is None:
+                    panel._sketch.active_poly = Polyline2D([])
+                panel._sketch.active_poly.pts.append(np.array([pt_world2[0],pt_world2[1]], np.float32))
+                self.update(); return
+            elif mode=='circle':
+                if panel._sketch.active_shape is None:
+                    panel._sketch.active_shape = Circle2D(pt_world2, 0.0)
+                else:
+                    # finalize
+                    if isinstance(panel._sketch.active_shape, Circle2D) and panel._sketch.active_shape.radius>0:
+                        panel._sketch.entities.append(panel._sketch.active_shape)
+                    panel._sketch.active_shape = None
+                self.update(); return
+            elif mode=='rect':
+                if panel._sketch.active_shape is None:
+                    panel._sketch.active_shape = Rect2D(pt_world2)
+                else:
+                    if isinstance(panel._sketch.active_shape, Rect2D):
+                        panel._sketch.active_shape.p1 = np.array([pt_world2[0],pt_world2[1]], np.float32)
+                        if panel._sketch.active_shape.p1 is not None:
+                            panel._sketch.entities.append(panel._sketch.active_shape)
+                    panel._sketch.active_shape = None
+                self.update(); return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -404,6 +723,28 @@ class AnalyticViewport(QOpenGLWidget):
             self._last_mouse = event.position()
         dx = event.position().x() - self._last_mouse.x()
         dy = event.position().y() - self._last_mouse.y()
+        # Sketch hover snapping
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        if panel is not None and getattr(panel,'_sketch_on',False):
+            hit = self._screen_to_world_xy(event.position().x(), event.position().y())
+            wpt = np.array([hit[0], hit[1]], np.float32)
+            snap = None; best = 1e9
+            for sp in panel._sketch.all_snap_points():
+                scr_sp = self._world_to_screen(np.array([sp[0],sp[1],0.0], np.float32))
+                dpx = float(np.hypot(scr_sp[0]-event.position().x(), scr_sp[1]-event.position().y()))
+                if dpx < SNAP_PX and dpx < best:
+                    best = dpx; snap = sp
+            panel._sketch.hover_snap = snap if snap is not None else wpt
+            # live update active shape dimensions
+            if panel._sketch_mode=='circle' and isinstance(panel._sketch.active_shape, Circle2D):
+                c = panel._sketch.active_shape.center
+                panel._sketch.active_shape.radius = float(np.linalg.norm(wpt - c))
+            elif panel._sketch_mode=='rect' and isinstance(panel._sketch.active_shape, Rect2D):
+                panel._sketch.active_shape.p1 = wpt.copy()
+            self.update()
         # Gizmo rotate / scale (invisible gizmo) using horizontal drag
         try:
             panel = self.parent()
@@ -686,6 +1027,10 @@ class AnalyticViewportPanel(QWidget):
     def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
+        # --- Sketch layer state (overlay) ---
+        self._sketch_on: bool = False
+        self._sketch_mode: str | None = None  # 'polyline' or None
+        self._sketch = SketchLayer()
         # Gizmo / transform state
         self._gizmo_mode = 'move'   # 'move' | 'rotate' | 'scale'
         self._axis_lock = None      # 'x' | 'y' | 'z' | None
@@ -783,6 +1128,59 @@ class AnalyticViewportPanel(QWidget):
         fg.addRow("Scale Snap", spin_scl)
         side.addWidget(gb_gizmo)
 
+        # --- Sketch (2D) overlay ---
+        gb_sk = QGroupBox("Sketch (2D)"); fs = QFormLayout(); gb_sk.setLayout(fs)
+        cb_sketch = QCheckBox("Enable Sketch Overlay"); cb_sketch.setChecked(False)
+        def _toggle_sk(_):
+            self._sketch_on = cb_sketch.isChecked()
+            if not self._sketch_on:  # disable & clean up
+                self._sketch_mode = None
+                self._sketch.active_poly = None
+            self.view.update()
+        cb_sketch.stateChanged.connect(_toggle_sk)
+        fs.addRow(cb_sketch)
+        row_tools = QWidget(); ht = QHBoxLayout(row_tools); ht.setContentsMargins(0,0,0,0)
+        btn_poly = QPushButton("Polyline"); btn_poly.setCheckable(True)
+        btn_circle = QPushButton("Circle"); btn_circle.setCheckable(True)
+        btn_rect = QPushButton("Rectangle"); btn_rect.setCheckable(True)
+        def _choose_poly():
+            on = btn_poly.isChecked()
+            if on:
+                btn_circle.setChecked(False); btn_rect.setChecked(False)
+                self._sketch_mode = 'polyline'
+                self._sketch.active_shape = None
+            else:
+                if self._sketch_mode=='polyline':
+                    self._sketch_mode = None
+            self.view.update()
+        btn_poly.clicked.connect(_choose_poly)
+        def _choose_circle():
+            on = btn_circle.isChecked()
+            if on:
+                btn_poly.setChecked(False); btn_rect.setChecked(False)
+                self._sketch_mode = 'circle'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+            else:
+                if self._sketch_mode=='circle': self._sketch_mode = None
+            self.view.update()
+        btn_circle.clicked.connect(_choose_circle)
+        def _choose_rect():
+            on = btn_rect.isChecked()
+            if on:
+                btn_poly.setChecked(False); btn_circle.setChecked(False)
+                self._sketch_mode = 'rect'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+            else:
+                if self._sketch_mode=='rect': self._sketch_mode = None
+            self.view.update()
+        btn_rect.clicked.connect(_choose_rect)
+        for b in (btn_poly, btn_circle, btn_rect):
+            ht.addWidget(b)
+        fs.addRow("Tool", row_tools)
+        side.addWidget(gb_sk)
+
         # --- Actions ---
         gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
         btn_save = QPushButton("Save G-Buffers [G]"); btn_save.setEnabled(False)
@@ -815,7 +1213,7 @@ class AnalyticViewportPanel(QWidget):
         vb_holder = QWidget(); vb_holder.setLayout(self._prim_buttons_box); vp.addWidget(vb_holder)
         # Edit group
         self._edit_group = QGroupBox("Edit Selected"); fe2 = QFormLayout(); self._edit_group.setLayout(fe2)
-        from PySide6.QtWidgets import QDoubleSpinBox, QComboBox as _QCB2, QColorDialog
+        from PySide6.QtWidgets import QComboBox as _QCB2, QColorDialog
         def dspin(r=(-10,10), step=0.01, val=0.0):
             sp = QDoubleSpinBox(); sp.setRange(r[0], r[1]); sp.setSingleStep(step); sp.setDecimals(4); sp.setValue(val); return sp
         self._sp_pos = [dspin() for _ in range(3)]
@@ -842,8 +1240,7 @@ class AnalyticViewportPanel(QWidget):
         fe2.addRow("Rot ° X/Y/Z", self._make_row(self._sp_rot))
         fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
         fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
-        from PySide6.QtWidgets import QDoubleSpinBox as _QDB2
-        self._nudge_step = _QDB2(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
+        self._nudge_step = QDoubleSpinBox(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
         fe2.addRow("Nudge Step", self._nudge_step)
         self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
         for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)

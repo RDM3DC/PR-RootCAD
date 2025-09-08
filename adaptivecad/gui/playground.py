@@ -776,6 +776,8 @@ class NewAnalyticViewportPanelCmd:
             from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
             shared_scene = getattr(mw, 'aacore_scene', None)
             panel = AnalyticViewportPanel(aacore_scene=shared_scene)
+            panel.resize(1200, 800)
+            panel.setMinimumSize(800, 500)
             panel.show()
             mw._analytic_viewport_panel = panel
             # optional sync if scene sync method exists

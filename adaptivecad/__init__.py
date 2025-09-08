@@ -37,12 +37,22 @@ from .cosmic_curve_tools import (
     CosmicSplineFeature,
     NDFieldExplorerFeature,
 )
-from .quantum_visualization import (
-    QuantumState,
-    WavefunctionVisualizer,
-    EntanglementVisualizer,
-    QuantumFieldVisualizer,
-)
+try:
+    from .quantum_visualization import (
+        QuantumState,
+        WavefunctionVisualizer,
+        EntanglementVisualizer,
+        QuantumFieldVisualizer,
+    )
+except Exception as _quantum_err:  # SciPy or related optional deps missing
+    import logging as _logging
+    _logging.getLogger("adaptivecad").debug(
+        "Quantum visualization modules unavailable (optional): %s", _quantum_err
+    )
+    QuantumState = None  # type: ignore
+    WavefunctionVisualizer = None  # type: ignore
+    EntanglementVisualizer = None  # type: ignore
+    QuantumFieldVisualizer = None  # type: ignore
 
 
 def generate_gcode_from_shape(*args, **kwargs):
