@@ -412,6 +412,11 @@ class AnalyticViewport(QOpenGLWidget):
         if not self.prog or self._picking_fbo is None:
             return
         try:
+            # Ensure GL context is current for FBO operations outside paintGL
+            try:
+                self.makeCurrent()
+            except Exception:
+                pass
             dpr = self.devicePixelRatio() if hasattr(self, 'devicePixelRatio') else 1
             sx = int(x * dpr); sy = int(y * dpr)
             glBindFramebuffer(GL_FRAMEBUFFER, self._picking_fbo)
@@ -459,7 +464,12 @@ class AnalyticViewport(QOpenGLWidget):
             self.update()
             log.debug(f"pick raw={px[0,0].tolist()} enc={enc} sel={self.selected_index} at ({x},{y}) dpr={dpr}")
         except Exception as e:
-            log.debug(f"pick failed: {e}")
+            log.debug(f"pick failed (full-res) falling back to micro pick: {e}")
+            try:
+                pid = self._pick_id_at(x,y)
+                self.selected_index = pid
+            except Exception:
+                pass
 
     def _pick_id_at(self, x:int, y:int) -> int:
         if not self.prog or self._pick_fbo is None:
