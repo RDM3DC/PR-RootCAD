@@ -7,17 +7,19 @@ can operate on the same underlying primitive set.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
-    QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox
+    QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
+    QScrollArea
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtGui import QGuiApplication
 from OpenGL.GL import *
 import numpy as np
 from pathlib import Path
 from adaptivecad.aacore.sdf import (
     Scene as AACoreScene, Prim, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS,
-    OP_SOLID, OP_SUBTRACT, MAX_PRIMS
+    KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
 )
 import time, os
 import json
@@ -1040,12 +1042,24 @@ class AnalyticViewportPanel(QWidget):
         self._build_ui()
         self.setWindowTitle("Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Ensure the analytic panel is visible on at least one screen.
+        # Run after a short delay so top-level windows have a chance to map.
+        try:
+            QTimer.singleShot(150, self._ensure_on_screen)
+        except Exception:
+            pass
 
     def _build_ui(self):
         root = QHBoxLayout(self)
         root.setContentsMargins(4,4,4,4)
         root.addWidget(self.view, 1)
-        side = QVBoxLayout(); side.setSpacing(6)
+        # Put the side controls into a dedicated widget so we can wrap
+        # them with a QScrollArea to provide vertical scrolling when
+        # the panel is taller than the available window height.
+        side_widget = QWidget()
+        side = QVBoxLayout(side_widget)
+        side.setContentsMargins(0,0,0,0)
+        side.setSpacing(6)
 
         # --- Debug Modes ---
         gb_modes = QGroupBox("Debug / Modes"); fm = QFormLayout(); gb_modes.setLayout(fm)
@@ -1207,8 +1221,17 @@ class AnalyticViewportPanel(QWidget):
         btn_add_box = QPushButton("Add Box"); btn_add_box.clicked.connect(lambda: self._add_prim('box'))
         btn_add_capsule = QPushButton("Add Capsule"); btn_add_capsule.clicked.connect(lambda: self._add_prim('capsule'))
         btn_add_torus = QPushButton("Add Torus"); btn_add_torus.clicked.connect(lambda: self._add_prim('torus'))
+        btn_add_mobius = QPushButton("Add Mobius"); btn_add_mobius.clicked.connect(lambda: self._add_prim('mobius'))
+        btn_add_superell = QPushButton("Add Superellipsoid"); btn_add_superell.clicked.connect(lambda: self._add_prim('superellipsoid'))
+        btn_add_qc = QPushButton("Add QuasiCrystal"); btn_add_qc.clicked.connect(lambda: self._add_prim('quasicrystal'))
         btn_del_last = QPushButton("Delete Last"); btn_del_last.clicked.connect(self._del_last)
-        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_del_last):
+        btn_dup_sel = QPushButton("Duplicate Selected"); btn_dup_sel.clicked.connect(self._duplicate_selected)
+        btn_center_sel = QPushButton("Center On Selected"); btn_center_sel.clicked.connect(self._center_on_selected)
+        btn_reset_cam = QPushButton("Reset Camera"); btn_reset_cam.clicked.connect(self._reset_camera)
+        btn_export = QPushButton("Export Scene JSON"); btn_export.clicked.connect(self._export_scene_json)
+        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_del_last):
+            vp.addWidget(b)
+        for b in (btn_dup_sel, btn_center_sel, btn_reset_cam, btn_export):
             vp.addWidget(b)
         vb_holder = QWidget(); vb_holder.setLayout(self._prim_buttons_box); vp.addWidget(vb_holder)
         # Edit group
@@ -1259,7 +1282,14 @@ class AnalyticViewportPanel(QWidget):
         side.addWidget(gb_prims)
 
         # finalize
-        side.addStretch(1); root.addLayout(side)
+        side.addStretch(1)
+        # Wrap the side widget in a scroll area so overflowing controls
+        # become scrollable instead of going off-screen.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(side_widget)
+        scroll.setMinimumWidth(300)
+        root.addWidget(scroll)
         self._refresh_prim_label()
 
     # --- UI callbacks ---
@@ -1323,12 +1353,77 @@ class AnalyticViewportPanel(QWidget):
             self.view.scene.add(Prim(KIND_CAPSULE, [0.3,1.5,0,0], beta=0.02, color=(0.6,0.9,0.5)))
         elif kind=='torus':
             self.view.scene.add(Prim(KIND_TORUS, [0.9,0.25,0,0], beta=0.03, color=(0.8,0.6,0.4)))
+        elif kind=='mobius':
+            # params: [R, width]
+            self.view.scene.add(Prim(KIND_MOBIUS, [1.2, 0.25, 0, 0], beta=0.02, color=(0.7,0.5,0.9)))
+        elif kind=='superellipsoid':
+            # params: [radius, power]
+            self.view.scene.add(Prim(KIND_SUPERELLIPSOID, [1.2, 4.0, 0, 0], beta=0.0, color=(0.95,0.9,0.85)))
+        elif kind=='quasicrystal':
+            # params: [scale, iso, thickness]
+            self.view.scene.add(Prim(KIND_QUASICRYSTAL, [3.0, 1.0, 0.02, 0], beta=0.0, color=(0.2,0.9,0.9)))
         self._refresh_prim_label(); self.view.update()
 
     def _del_last(self):
         if self.view.scene.prims:
             self.view.scene.remove_index(len(self.view.scene.prims)-1)
             self._refresh_prim_label(); self.view.update()
+
+    def _duplicate_selected(self):
+        if not (0 <= self._current_sel < len(self.view.scene.prims)):
+            return
+        try:
+            src = self.view.scene.prims[self._current_sel]
+            # Shallow copy primitive fields
+            from adaptivecad.aacore.sdf import Prim as _Prim
+            new_pr = _Prim(src.kind, list(src.params), beta=float(src.beta), color=tuple(src.color[:3]), op=src.op)
+            # Offset position slightly so it's visible; rely on set_transform if available
+            M = src.xform.M.copy()
+            M[:3,3] += np.array([0.25,0.25,0.0], np.float32)
+            if hasattr(new_pr, 'xform'):
+                new_pr.xform.M = M
+            self.view.scene.add(new_pr)
+            self._refresh_prim_label(); self.view.update()
+        except Exception as e:
+            log.debug(f"duplicate failed: {e}")
+
+    def _center_on_selected(self):
+        if not (0 <= self._current_sel < len(self.view.scene.prims)):
+            return
+        pr = self.view.scene.prims[self._current_sel]
+        try:
+            pos = pr.xform.M[:3,3]
+            self.view.cam_target = pos.astype(np.float32)
+            self.view._update_camera()
+        except Exception:
+            pass
+
+    def _reset_camera(self):
+        self.view.yaw = 0.0; self.view.pitch = 0.0
+        self.view.distance = 6.0
+        self.view.cam_target = np.array([0.0,0.0,0.0], np.float32)
+        self.view._update_camera()
+
+    def _export_scene_json(self):
+        try:
+            data = []
+            for pr in self.view.scene.prims:
+                entry = {
+                    'kind': self._kind_name(pr.kind),
+                    'params': [float(x) for x in pr.params],
+                    'beta': float(pr.beta),
+                    'color': [float(c) for c in pr.color[:3]],
+                    'op': pr.op,
+                    'pos': [float(v) for v in pr.xform.M[:3,3]]
+                }
+                data.append(entry)
+            ts = time.strftime('%Y%m%d_%H%M%S')
+            out_path = os.path.join(os.getcwd(), f'analytic_scene_{ts}.json')
+            with open(out_path,'w',encoding='utf-8') as f:
+                json.dump(data,f,indent=2)
+            log.info(f"Exported analytic scene -> {out_path}")
+        except Exception as e:
+            log.debug(f"export scene failed: {e}")
 
     def _refresh_prim_label(self):
         self._prim_list_label.setText(f"({len(self.view.scene.prims)})")
@@ -1348,12 +1443,42 @@ class AnalyticViewportPanel(QWidget):
         self._prim_buttons_box.addStretch(1)
 
     def _kind_name(self, k):
-        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus"}.get(k,str(k))
+        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus", KIND_MOBIUS: "Mobius", KIND_SUPERELLIPSOID:"Superellipsoid", KIND_QUASICRYSTAL:"QuasiCrystal"}.get(k,str(k))
 
     def _make_row(self, widgets):
         box = QWidget(); hl = QHBoxLayout(box); hl.setContentsMargins(0,0,0,0)
         for w in widgets: hl.addWidget(w)
         return box
+
+    def _ensure_on_screen(self):
+        try:
+            top = self.window()
+            if top is None:
+                return
+            # get window frame geometry and check against available screens
+            fg = top.frameGeometry()
+            screens = QGuiApplication.screens()
+            intersects = False
+            for s in screens:
+                ag = s.availableGeometry()
+                if fg.intersected(ag).isValid():
+                    intersects = True
+                    break
+            if not intersects and screens:
+                # move to center of primary screen
+                primary = QGuiApplication.primaryScreen() or screens[0]
+                ag = primary.availableGeometry()
+                new_x = ag.x() + max(0, (ag.width() - fg.width()) // 2)
+                new_y = ag.y() + max(0, (ag.height() - fg.height()) // 2)
+                try:
+                    top.move(new_x, new_y)
+                except Exception:
+                    try:
+                        top.setGeometry(new_x, new_y, fg.width(), fg.height())
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _select_prim(self, idx:int):
         if not (0 <= idx < len(self.view.scene.prims)):
@@ -1383,6 +1508,29 @@ class AnalyticViewportPanel(QWidget):
             for i in range(3):
                 self._sp_scl[i].blockSignals(True); self._sp_scl[i].setValue(float(pr.scale[i])); self._sp_scl[i].blockSignals(False)
         self._edit_group.setEnabled(True)
+        # Update parameter tooltips / semantic hints
+        try:
+            kind_name = self._kind_name(pr.kind)
+            if kind_name == 'Sphere':
+                a_tt = 'Radius'; b_tt = 'Unused'
+            elif kind_name == 'Capsule':
+                a_tt = 'Radius'; b_tt = 'Half-Length'
+            elif kind_name == 'Torus':
+                a_tt = 'Major Radius'; b_tt = 'Minor Radius'
+            elif kind_name == 'Mobius':
+                a_tt = 'Ring Radius R'; b_tt = 'Strip Half-Width'
+            elif kind_name == 'Box':
+                a_tt = 'Half-Extent X'; b_tt = 'Half-Extent Y (Z via scale)'
+            elif kind_name == 'Superellipsoid':
+                a_tt = 'Radius (overall)'; b_tt = 'Power p (boxier > 2)'
+            elif kind_name == 'QuasiCrystal':
+                a_tt = 'Scale (frequency)'; b_tt = 'Iso (level)'
+            else:
+                a_tt = 'Param A'; b_tt = 'Param B'
+            self._sp_param[0].setToolTip(a_tt)
+            self._sp_param[1].setToolTip(b_tt)
+        except Exception:
+            pass
 
     def _apply_edit(self):
         if self._current_sel < 0 or self._current_sel >= len(self.view.scene.prims):

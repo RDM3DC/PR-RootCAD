@@ -20,6 +20,7 @@
                 "args": ["/k", "start_terminal.bat"],
                 "icon": "terminal-cmd"
             }
-        }
+        },
+        "chatgpt.openOnStartup": true
     }
 }

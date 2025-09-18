@@ -1026,6 +1026,26 @@ class NewTorusCmd(BaseCmd):
         DOCUMENT.append(Feature("Torus", dict(center=center, major_radius=maj, minor_radius=minr), shape))
         rebuild_scene(mw.view._display)
 
+class NewMobiusCmd(BaseCmd):
+    title = "Mobius Strip"
+
+    def run(self, mw):
+        from PySide6.QtWidgets import QInputDialog
+        from adaptivecad.primitives import make_mobius
+        center_str, ok = QInputDialog.getText(mw.win, "Mobius Center", "Center (x,y,z):", text="0,0,0")
+        if not ok:
+            return
+        center = [float(x) for x in center_str.split(",")]
+        major, ok = QInputDialog.getDouble(mw.win, "Major Radius", "Major radius:", 30.0)
+        if not ok:
+            return
+        width, ok = QInputDialog.getDouble(mw.win, "Width", "Strip width:", 8.0)
+        if not ok:
+            return
+        shape = make_mobius(center, major_radius=major, width=width)
+        DOCUMENT.append(Feature("Mobius", dict(center=center, major_radius=major, width=width), shape))
+        rebuild_scene(mw.view._display)
+
 class NewConeCmd(BaseCmd):
     title = "Cone"
 

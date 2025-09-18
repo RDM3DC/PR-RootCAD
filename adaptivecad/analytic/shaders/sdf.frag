@@ -20,7 +20,7 @@ uniform vec3 u_env;  // environment light direction (length may encode intensity
 uniform int  u_debug;      // 0 beauty,1 normals,2 id,3 depth,4 thickness
 uniform int  u_selected;   // selected primitive index (-1 none)
 
-const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4;
+const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4, KIND_MOBIUS=5, KIND_SUPERELLIPSOID=6, KIND_QUASICRYSTAL=7;
 const int OP_SOLID=0, OP_SUB=1;
 
 float pia_scale(float r, float beta){ return r * (1.0 + 0.125 * beta * r * r); }
@@ -28,6 +28,47 @@ float sd_sphere(vec3 p, float r){ return length(p) - r; }
 float sd_box(vec3 p, vec3 b){ vec3 q = abs(p)-b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
 float sd_capsule_y(vec3 p, float r, float h){ vec3 a=vec3(0,-0.5*h,0); vec3 b=vec3(0,0.5*h,0); vec3 pa=p-a, ba=b-a; float t=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*t)-r; }
 float sd_torus_y(vec3 p, float R, float r){ float qx=length(p.xz)-R; return length(vec2(qx,p.y))-r; }
+float lpn(vec3 p, float power){
+    power = max(1.0, power);
+    vec3 ap = abs(p);
+    return pow(pow(ap.x,power) + pow(ap.y,power) + pow(ap.z,power), 1.0/power);
+}
+float sd_superellipsoid(vec3 p, float r, float power){ return lpn(p, power) - r; }
+
+// Quasi-crystal value and conservative bound
+float qc_value(vec3 p, float scale){
+    // 7 directions via Fibonacci sphere
+    float f = 0.0; float n = 7.0; float ga = 2.39996322973;
+    for(int i=0;i<7;i++){
+        float a = ga * float(i);
+        float z = 1.0 - 2.0*(float(i)+0.5)/n;
+        float r = sqrt(max(1e-6, 1.0 - z*z));
+        vec3 k = vec3(cos(a)*r, sin(a)*r, z);
+        f += cos(scale * dot(k, p));
+    }
+    return f;
+}
+
+// approximate Möbius distance (sampling-based)
+float sd_mobius(vec3 p, float R, float w){
+    float best = 1e9;
+    for(int i=0;i<64;i++){
+        float u = 6.28318530718 * (float(i) / 64.0);
+        float c = cos(u); float s = sin(u);
+        float c2 = cos(0.5*u); float s2 = sin(0.5*u);
+        vec3 A = vec3(R*c, R*s, 0.0);
+        vec3 B = vec3(c2*c, c2*s, s2);
+        float bb = dot(B,B) + 1e-6;
+        vec3 v = p - A;
+        float vstar = dot(v,B) / bb;
+        float halfw = 0.5 * w;
+        vstar = clamp(vstar, -halfw, halfw);
+        vec3 S = A + vstar * B;
+        float d = length(p - S);
+        if(d < best) best = d;
+    }
+    return best;
+}
 
 float map_scene(vec3 pw, out vec3 outColor, out int outId){
     float d = 1e9; vec3 col = vec3(0.1); int hitId = -1;
@@ -38,7 +79,16 @@ float map_scene(vec3 pw, out vec3 outColor, out int outId){
         if(u_kind[i]==KIND_SPHERE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_sphere(pl,r); }
         else if(u_kind[i]==KIND_BOX){ di = sd_box(pl, u_params[i].xyz); }
         else if(u_kind[i]==KIND_CAPSULE){ float r = pia_scale(u_params[i].x, u_beta[i]); di = sd_capsule_y(pl, r, u_params[i].y); }
-        else if(u_kind[i]==KIND_TORUS){ float R=u_params[i].x; float r=pia_scale(u_params[i].y, u_beta[i]); di=sd_torus_y(pl,R,r); }
+    else if(u_kind[i]==KIND_TORUS){ float R=u_params[i].x; float r=pia_scale(u_params[i].y, u_beta[i]); di=sd_torus_y(pl,R,r); }
+    else if(u_kind[i]==KIND_MOBIUS){ float R=u_params[i].x; float w=u_params[i].y; di=sd_mobius(pl,R,w); }
+        else if(u_kind[i]==KIND_SUPERELLIPSOID){ float r=u_params[i].x; float pwr=max(1.0,u_params[i].y); di = sd_superellipsoid(pl, r, pwr); }
+        else if(u_kind[i]==KIND_QUASICRYSTAL){
+            float sc=u_params[i].x; float iso=u_params[i].y; float th=max(0.0005,u_params[i].z);
+            float v = qc_value(pl, sc);
+            // |grad f| <= n*scale where n=7
+            float K = 7.0*abs(sc);
+            di = (abs(v - iso)/max(K,1e-4)) - th;
+        }
         if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4){ col = u_color[i]; hitId=i; } d = nd; }
         else { if(di < d){ d=di; col=u_color[i]; hitId=i; } }
     }

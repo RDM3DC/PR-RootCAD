@@ -866,6 +866,21 @@ class NewAnalyticTorusCmd:
         except Exception as e:
             log.error("Failed to create analytic torus: %s", e)
 
+    class NewAnalyticMobiusCmd:
+        """Creates a new analytic Möbius strip in the scene."""
+        def __init__(self): pass
+        def run(self, mw):
+            try:
+                from adaptivecad.aacore.sdf import Prim, KIND_MOBIUS
+                sc = getattr(mw, 'aacore_scene', None)
+                if sc is None:
+                    from adaptivecad.aacore.sdf import Scene as _Scene
+                    sc = _Scene(); mw.aacore_scene = sc
+                # params: [major_radius, width, 0, 0]
+                sc.add(Prim(KIND_MOBIUS, [0.9, 0.25, 0, 0], beta=0.02, color=(0.6,0.8,0.6)))
+            except Exception as e:
+                log.error("Failed to create analytic mobius: %s", e)
+
 # --- PROJECT MANAGEMENT COMMANDS ---
 class SaveProjectCmd:
     def __init__(self):
