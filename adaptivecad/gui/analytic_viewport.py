@@ -2361,6 +2361,45 @@ class AnalyticViewportPanel(QWidget):
         self._current_sel = -1; self._current_color = (0.8,0.7,0.6)
         side.addWidget(gb_prims)
 
+        # --- Tesseract (4D hypercube) ---
+        gb_tess = QGroupBox("Tesseract (4D Hypercube)"); ft = QFormLayout(); gb_tess.setLayout(ft)
+        self._tess_edge = QDoubleSpinBox(); self._tess_edge.setRange(0.1, 10.0); self._tess_edge.setDecimals(3); self._tess_edge.setSingleStep(0.1); self._tess_edge.setValue(2.0)
+        self._tess_edge_rad = QDoubleSpinBox(); self._tess_edge_rad.setRange(0.001, 1.0); self._tess_edge_rad.setDecimals(3); self._tess_edge_rad.setSingleStep(0.01); self._tess_edge_rad.setValue(0.03)
+        self._tess_node_rad = QDoubleSpinBox(); self._tess_node_rad.setRange(0.001, 1.0); self._tess_node_rad.setDecimals(3); self._tess_node_rad.setSingleStep(0.01); self._tess_node_rad.setValue(0.04)
+        self._tess_include_nodes = QCheckBox("Include Nodes (spheres)"); self._tess_include_nodes.setChecked(False)
+        # Projection
+        self._tess_proj = QComboBox(); self._tess_proj.addItems(["Orthographic","Perspective"])
+        self._tess_fw = QDoubleSpinBox(); self._tess_fw.setRange(0.5, 10.0); self._tess_fw.setDecimals(2); self._tess_fw.setSingleStep(0.1); self._tess_fw.setValue(3.0)
+        # 4D rotation angles
+        def r4spin():
+            s = QDoubleSpinBox(); s.setRange(-360.0, 360.0); s.setDecimals(2); s.setSingleStep(1.0); s.setValue(0.0); return s
+        self._tess_ang_xy = r4spin(); self._tess_ang_xz = r4spin(); self._tess_ang_xw = r4spin();
+        self._tess_ang_yz = r4spin(); self._tess_ang_yw = r4spin(); self._tess_ang_zw = r4spin();
+        self._tess_autospin = QCheckBox("Auto-Spin"); self._tess_autospin.setChecked(True)
+        self._tess_speed = QDoubleSpinBox(); self._tess_speed.setRange(0.0, 360.0); self._tess_speed.setDecimals(2); self._tess_speed.setSingleStep(5.0); self._tess_speed.setValue(30.0)
+        btn_tess = QPushButton("Add Tesseract")
+        btn_tess.clicked.connect(self._add_tesseract)
+        # Layout
+        ft.addRow("Edge Length", self._tess_edge)
+        ft.addRow("Edge Radius", self._tess_edge_rad)
+        ft.addRow("Node Radius", self._tess_node_rad)
+        ft.addRow(self._tess_include_nodes)
+        ft.addRow("Projection", self._tess_proj)
+        ft.addRow("Focal (persp fw)", self._tess_fw)
+        row_ang1 = self._make_row([QLabel("XY"), self._tess_ang_xy, QLabel("XZ"), self._tess_ang_xz, QLabel("XW"), self._tess_ang_xw])
+        row_ang2 = self._make_row([QLabel("YZ"), self._tess_ang_yz, QLabel("YW"), self._tess_ang_yw, QLabel("ZW"), self._tess_ang_zw])
+        ft.addRow("Angles 1", row_ang1)
+        ft.addRow("Angles 2", row_ang2)
+        row_spin = self._make_row([self._tess_autospin, QLabel("Speed (deg/s)"), self._tess_speed])
+        ft.addRow("Spin", row_spin)
+        ft.addRow(btn_tess)
+        side.addWidget(gb_tess)
+
+        # rigs & timer
+        self._rigs = []
+        self._rig_timer = QTimer(self); self._rig_timer.timeout.connect(self._update_rigs)
+        self._rig_timer.start(33)
+
         # finalize
         side.addStretch(1)
         # Wrap the side widget in a scroll area so overflowing controls
@@ -2371,6 +2410,156 @@ class AnalyticViewportPanel(QWidget):
         scroll.setMinimumWidth(300)
         root.addWidget(scroll)
         self._refresh_prim_label()
+
+    # --- Tesseract helpers ---
+    def _add_tesseract(self):
+        L = float(self._tess_edge.value())
+        er = float(self._tess_edge_rad.value())
+        nr = float(self._tess_node_rad.value())
+        include_nodes = bool(self._tess_include_nodes.isChecked())
+        proj = self._tess_proj.currentIndex()  # 0=ortho,1=persp
+        fw = float(self._tess_fw.value())
+        verts4 = self._tesseract_vertices4(L)
+        edges = self._tesseract_edges()
+        # Prim budget
+        need = len(edges) + (len(verts4) if include_nodes else 0)
+        if len(self.view.scene.prims) + need > MAX_PRIMS:
+            log.info(f"[tesseract] Not enough prim budget: need {need}, have {MAX_PRIMS-len(self.view.scene.prims)}")
+            return
+        # Create prims
+        color_edge = (0.9, 0.8, 0.35)
+        color_node = (0.85, 0.55, 0.2)
+        # Initial angles
+        angs = { 'xy': float(self._tess_ang_xy.value()), 'xz': float(self._tess_ang_xz.value()), 'xw': float(self._tess_ang_xw.value()),
+                 'yz': float(self._tess_ang_yz.value()), 'yw': float(self._tess_ang_yw.value()), 'zw': float(self._tess_ang_zw.value()) }
+        pidx_edges = []
+        for (i,j) in edges:
+            pr = Prim(KIND_CAPSULE, [er, 1.0, 0.0, 0.0], beta=0.0, color=color_edge)
+            self.view.scene.add(pr)
+            pidx_edges.append(len(self.view.scene.prims)-1)
+        pidx_nodes = []
+        if include_nodes:
+            for _ in verts4:
+                pr = Prim(KIND_SPHERE, [nr, 0.0, 0.0, 0.0], beta=0.0, color=color_node)
+                self.view.scene.add(pr)
+                pidx_nodes.append(len(self.view.scene.prims)-1)
+        rig = {
+            'type':'tesseract', 'edges':edges, 'verts4':verts4,
+            'pidx_edges':pidx_edges, 'pidx_nodes':pidx_nodes,
+            'edge_r':er, 'node_r':nr, 'L':L,
+            'proj':proj, 'fw':fw,
+            'angs':angs,
+            'autospin': bool(self._tess_autospin.isChecked()), 'speed': float(self._tess_speed.value())
+        }
+        self._rigs.append(rig)
+        self._refresh_prim_label(); self.view.update()
+        self._update_tesseract_rig(rig)
+
+    def _update_rigs(self):
+        if not self._rigs:
+            return
+        dt = 0.033
+        for rig in self._rigs:
+            if rig.get('autospin', False):
+                sp = float(rig.get('speed', 0.0))
+                for k in ('xy','xz','xw','yz','yw','zw'):
+                    rig['angs'][k] = float(rig['angs'][k]) + sp*dt
+            try:
+                self._update_tesseract_rig(rig)
+            except Exception as e:
+                log.debug(f"tesseract update failed: {e}")
+
+    def _update_tesseract_rig(self, rig):
+        import math
+        verts4 = rig['verts4']
+        angs = rig['angs']
+        proj = rig['proj']; fw = rig['fw']
+        # Build 4D rotation matrix
+        def R4_plane(i,j,deg):
+            a = math.radians(float(deg)); c = math.cos(a); s = math.sin(a)
+            R = np.eye(4, dtype=np.float32)
+            R[i,i]=c; R[i,j]=-s; R[j,i]=s; R[j,j]=c
+            return R
+        R = np.eye(4, dtype=np.float32)
+        R = R4_plane(0,1,angs['xy']) @ R
+        R = R4_plane(0,2,angs['xz']) @ R
+        R = R4_plane(0,3,angs['xw']) @ R
+        R = R4_plane(1,2,angs['yz']) @ R
+        R = R4_plane(1,3,angs['yw']) @ R
+        R = R4_plane(2,3,angs['zw']) @ R
+        # Transform and project
+        v3 = []
+        for v in verts4:
+            vv = (R @ v.reshape(4,1)).reshape(4)
+            x,y,z,w = float(vv[0]), float(vv[1]), float(vv[2]), float(vv[3])
+            if proj == 0:
+                p = np.array([x,y,z], np.float32)
+            else:
+                factor = fw / max(1e-3, (fw - w))
+                p = np.array([x*factor, y*factor, z*factor], np.float32)
+            v3.append(p)
+        # Center offset
+        center = np.array([0.0, 0.0, 0.0], np.float32)
+        v3 = [p + center for p in v3]
+        # Update edges
+        for eidx, (i,j) in enumerate(rig['edges']):
+            a = v3[i]; b = v3[j]
+            mid = (a+b)*0.5
+            dirv = b - a
+            h = float(max(1e-6, np.linalg.norm(dirv)))
+            y = dirv / max(1e-6, np.linalg.norm(dirv))
+            # Build orthonormal basis (x,y,z) with y along dir
+            tmp = np.array([1.0, 0.0, 0.0], np.float32) if abs(float(y[0])) < 0.9 else np.array([0.0, 0.0, 1.0], np.float32)
+            x = np.cross(tmp, y); x /= max(1e-6, np.linalg.norm(x))
+            z = np.cross(y, x)
+            M = np.eye(4, dtype=np.float32)
+            M[:3,0] = x; M[:3,1] = y; M[:3,2] = z; M[:3,3] = mid
+            pr = self.view.scene.prims[rig['pidx_edges'][eidx]]
+            pr.params[0] = float(rig['edge_r']); pr.params[1] = float(h)
+            pr.xform.M = M
+            try: pr.xform.M_inv = np.linalg.inv(M)
+            except Exception: pr.xform.M_inv = None
+        # Update nodes
+        if rig['pidx_nodes']:
+            for vidx, pidx in enumerate(rig['pidx_nodes']):
+                pr = self.view.scene.prims[pidx]
+                M = np.eye(4, dtype=np.float32); M[:3,3] = v3[vidx]
+                pr.xform.M = M
+                try: pr.xform.M_inv = np.linalg.inv(M)
+                except Exception: pr.xform.M_inv = None
+        try: self.view.scene._notify()
+        except Exception: pass
+        self.view.update()
+
+    def _tesseract_vertices4(self, L):
+        # 16 vertices with coords at +/- L/2 in 4D
+        s = float(L) * 0.5
+        verts = []
+        for sx in (-s, s):
+            for sy in (-s, s):
+                for sz in (-s, s):
+                    for sw in (-s, s):
+                        verts.append(np.array([sx, sy, sz, sw], np.float32))
+        return verts
+
+    def _tesseract_edges(self):
+        # Edges connect vertices differing in exactly one coordinate
+        edges = []
+        def idx_of(bits):
+            # bits is tuple (bx,by,bz,bw) with 0 or 1
+            return (bits[0]<<3) | (bits[1]<<2) | (bits[2]<<1) | bits[3]
+        for bx in (0,1):
+            for by in (0,1):
+                for bz in (0,1):
+                    for bw in (0,1):
+                        b = (bx,by,bz,bw)
+                        i = idx_of(b)
+                        for dim in range(4):
+                            bb = list(b); bb[dim] = 1 - bb[dim]
+                            j = idx_of(tuple(bb))
+                            if i < j:
+                                edges.append((i,j))
+        return edges
 
     def _update_sketch_info(self, sel_key):
         try:
