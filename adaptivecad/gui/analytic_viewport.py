@@ -19,7 +19,7 @@ import numpy as np
 from pathlib import Path
 from adaptivecad.aacore.sdf import (
     Scene as AACoreScene, Prim, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS,
-    KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
+    KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
 )
 import time, os
 import json
@@ -563,8 +563,9 @@ class AnalyticViewport(QOpenGLWidget):
         elif k in (Qt.Key_2, Qt.Key.Key_2): self.debug_mode=2; changed=True
         elif k in (Qt.Key_3, Qt.Key.Key_3): self.debug_mode=3; changed=True
         elif k in (Qt.Key_4, Qt.Key.Key_4): self.debug_mode=4; changed=True
+        elif k in (Qt.Key_5, Qt.Key.Key_5): self.debug_mode=5; changed=True  # adaptive heatmap
         elif k == Qt.Key_Space:
-            self.debug_mode = (self.debug_mode + 1) % 5; changed=True
+            self.debug_mode = (self.debug_mode + 1) % 6; changed=True
         elif k == Qt.Key_A: self.use_analytic_aa ^=1; changed=True
         elif k == Qt.Key_F: self.use_foveated ^=1; changed=True
         elif k == Qt.Key_T: self.use_toon ^=1; changed=True
@@ -1224,12 +1225,17 @@ class AnalyticViewportPanel(QWidget):
         btn_add_mobius = QPushButton("Add Mobius"); btn_add_mobius.clicked.connect(lambda: self._add_prim('mobius'))
         btn_add_superell = QPushButton("Add Superellipsoid"); btn_add_superell.clicked.connect(lambda: self._add_prim('superellipsoid'))
         btn_add_qc = QPushButton("Add QuasiCrystal"); btn_add_qc.clicked.connect(lambda: self._add_prim('quasicrystal'))
+        btn_add_torus4d = QPushButton("Add 4D Torus"); btn_add_torus4d.clicked.connect(lambda: self._add_prim('torus4d'))
+        btn_add_mandelbulb = QPushButton("Add Mandelbulb"); btn_add_mandelbulb.clicked.connect(lambda: self._add_prim('mandelbulb'))
+        btn_add_klein = QPushButton("Add Klein Bottle"); btn_add_klein.clicked.connect(lambda: self._add_prim('klein'))
+        btn_add_menger = QPushButton("Add Menger Sponge"); btn_add_menger.clicked.connect(lambda: self._add_prim('menger'))
+        btn_add_hyperbolic = QPushButton("Add Hyperbolic Tiling"); btn_add_hyperbolic.clicked.connect(lambda: self._add_prim('hyperbolic'))
         btn_del_last = QPushButton("Delete Last"); btn_del_last.clicked.connect(self._del_last)
         btn_dup_sel = QPushButton("Duplicate Selected"); btn_dup_sel.clicked.connect(self._duplicate_selected)
         btn_center_sel = QPushButton("Center On Selected"); btn_center_sel.clicked.connect(self._center_on_selected)
         btn_reset_cam = QPushButton("Reset Camera"); btn_reset_cam.clicked.connect(self._reset_camera)
         btn_export = QPushButton("Export Scene JSON"); btn_export.clicked.connect(self._export_scene_json)
-        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_del_last):
+        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_add_torus4d, btn_add_mandelbulb, btn_add_klein, btn_add_menger, btn_add_hyperbolic, btn_del_last):
             vp.addWidget(b)
         for b in (btn_dup_sel, btn_center_sel, btn_reset_cam, btn_export):
             vp.addWidget(b)
@@ -1362,6 +1368,21 @@ class AnalyticViewportPanel(QWidget):
         elif kind=='quasicrystal':
             # params: [scale, iso, thickness]
             self.view.scene.add(Prim(KIND_QUASICRYSTAL, [3.0, 1.0, 0.02, 0], beta=0.0, color=(0.2,0.9,0.9)))
+        elif kind=='torus4d':
+            # params: [R1, R2, r, w_slice] - two major radii, minor radius, 4D slice position
+            self.view.scene.add(Prim(KIND_TORUS4D, [1.0, 0.8, 0.3, 0.0], beta=0.0, color=(0.9,0.3,0.9)))
+        elif kind=='mandelbulb':
+            # params: [power, bailout, max_iter, scale] - fractal parameters (better visibility)
+            self.view.scene.add(Prim(KIND_MANDELBULB, [8.0, 2.0, 24, 0.8], beta=0.0, color=(0.9,0.2,0.1)))
+        elif kind=='klein':
+            # params: [scale, n, t_offset, thickness] - Klein bottle parameters (75% smaller)
+            self.view.scene.add(Prim(KIND_KLEIN, [0.25, 2.0, 0.0, 0.025], beta=0.0, color=(0.1,0.7,0.9)))
+        elif kind=='menger':
+            # params: [iterations, size, 0, 0] - Menger sponge fractal
+            self.view.scene.add(Prim(KIND_MENGER, [3, 1.0, 0, 0], beta=0.0, color=(0.8,0.6,0.2)))
+        elif kind=='hyperbolic':
+            # params: [scale, order, symmetry, 0] - Hyperbolic {order,symmetry} tiling
+            self.view.scene.add(Prim(KIND_HYPERBOLIC, [2.0, 7, 3, 0], beta=0.0, color=(0.9,0.3,0.7)))
         self._refresh_prim_label(); self.view.update()
 
     def _del_last(self):
@@ -1443,7 +1464,7 @@ class AnalyticViewportPanel(QWidget):
         self._prim_buttons_box.addStretch(1)
 
     def _kind_name(self, k):
-        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus", KIND_MOBIUS: "Mobius", KIND_SUPERELLIPSOID:"Superellipsoid", KIND_QUASICRYSTAL:"QuasiCrystal"}.get(k,str(k))
+        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus", KIND_MOBIUS: "Mobius", KIND_SUPERELLIPSOID:"Superellipsoid", KIND_QUASICRYSTAL:"QuasiCrystal", KIND_TORUS4D:"4D Torus", KIND_MANDELBULB:"Mandelbulb", KIND_KLEIN:"Klein Bottle", KIND_MENGER:"Menger Sponge", KIND_HYPERBOLIC:"Hyperbolic Tiling"}.get(k,str(k))
 
     def _make_row(self, widgets):
         box = QWidget(); hl = QHBoxLayout(box); hl.setContentsMargins(0,0,0,0)
@@ -1525,6 +1546,16 @@ class AnalyticViewportPanel(QWidget):
                 a_tt = 'Radius (overall)'; b_tt = 'Power p (boxier > 2)'
             elif kind_name == 'QuasiCrystal':
                 a_tt = 'Scale (frequency)'; b_tt = 'Iso (level)'
+            elif kind_name == '4D Torus':
+                a_tt = 'Major Radius 1 (XY plane)'; b_tt = 'Major Radius 2 (ZW plane)'
+            elif kind_name == 'Mandelbulb':
+                a_tt = 'Power (8.0 = classic)'; b_tt = 'Bailout Radius (escape)'
+            elif kind_name == 'Klein Bottle':
+                a_tt = 'Scale (overall size)'; b_tt = 'Shape Parameter'
+            elif kind_name == 'Menger Sponge':
+                a_tt = 'Iterations (detail level)'; b_tt = 'Size (overall scale)'
+            elif kind_name == 'Hyperbolic Tiling':
+                a_tt = 'Scale (overall size)'; b_tt = 'Order (polygon sides)'
             else:
                 a_tt = 'Param A'; b_tt = 'Param B'
             self._sp_param[0].setToolTip(a_tt)

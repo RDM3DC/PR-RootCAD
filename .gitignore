@@ -47,3 +47,15 @@ Miniconda*.exe
 # ARP Site
 adaptive-resistance-site/node_modules/
 adaptive-resistance-site/dist/
+
+# Renders and video outputs
+renders/
+**/frame_*.png
+**/*.mp4
+**/*.mov
+**/*.avi
+**/*.gif
+
+# Local logs and debug outputs
+*.log
+playground_debug.log

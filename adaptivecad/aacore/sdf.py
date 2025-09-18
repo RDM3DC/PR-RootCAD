@@ -5,7 +5,7 @@ from .math import Xform, clamp
 MAX_PRIMS = 48  # keep in sync with shader arrays
 
 # ---- Kinds & Ops ----
-KIND_NONE, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS, KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL = 0, 1, 2, 3, 4, 5, 6, 7
+KIND_NONE, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS, KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 OP_SOLID, OP_SUBTRACT = 0, 1
 
 def pia_scale(r, beta):  # toy metric scaling
@@ -29,6 +29,203 @@ def sd_capsule_y(p, r, h):  # Y-axis capsule height=h
 def sd_torus_y(p, R, r):
     qx = np.sqrt(p[0]*p[0] + p[2]*p[2]) - R
     return np.sqrt(qx*qx + p[1]*p[1]) - r
+
+def sd_torus4d(p, R1, R2, r, w_slice=0.0):
+    """4D torus (duocylinder) with 3D cross-section at w=w_slice
+    R1, R2 are major radii of two orthogonal circles
+    r is minor radius (tube thickness)
+    w_slice is the 4th dimension coordinate for cross-section
+    """
+    # In 4D: x²+y² and z²+w² form two perpendicular circles
+    # For 3D visualization, we treat z as the 4th dimension w
+    circle1_radius = np.sqrt(p[0]*p[0] + p[1]*p[1])
+    circle2_radius = np.sqrt(p[2]*p[2] + w_slice*w_slice)
+    
+    # Distance to the 4D torus surface
+    d1 = circle1_radius - R1
+    d2 = circle2_radius - R2
+    return np.sqrt(d1*d1 + d2*d2) - r
+
+def sd_mandelbulb(p, power=8.0, bailout=2.0, max_iter=16):
+    """3D Mandelbulb fractal distance estimation
+    power: fractal power (8.0 is classic)
+    bailout: escape radius 
+    max_iter: iteration limit for performance
+    """
+    z = p.copy()
+    dr = 1.0
+    r = 0.0
+    
+    for i in range(int(max_iter)):
+        r = np.linalg.norm(z)
+        if r > bailout:
+            break
+            
+        # Convert to spherical coordinates (avoid singularities)
+        if r < 1e-6:
+            break
+            
+        theta = np.arctan2(np.sqrt(z[0]*z[0] + z[1]*z[1]), z[2])
+        phi = np.arctan2(z[1], z[0])
+        
+        # Scale and rotate the point
+        zr = r ** (power - 1.0)
+        dr = zr * power * dr + 1.0
+        
+        # Convert back to cartesian coordinates
+        zr *= r
+        sin_theta = np.sin(theta * power)
+        z[0] = zr * sin_theta * np.cos(phi * power)
+        z[1] = zr * sin_theta * np.sin(phi * power)
+        z[2] = zr * np.cos(theta * power)
+        
+        # Add original point (Mandelbulb iteration)
+        z += p
+    
+    # Improved distance estimation
+    if r < bailout:
+        return 0.0  # Inside the set
+    else:
+        return 0.5 * np.log(r) * r / max(dr, 1e-6)
+
+def sd_klein_bottle(p, a=1.0, n=2.0, t_offset=0.0):
+    """Klein bottle 4D->3D projection with rotation
+    a: scale parameter
+    n: figure-8 parameter 
+    t_offset: 4D rotation phase
+    """
+    # Klein bottle parametric equations projected to 3D
+    # Using a simplified approach for real-time rendering
+    x, y, z = p[0], p[1], p[2]
+    
+    # Convert to cylindrical-ish coordinates
+    r = np.sqrt(x*x + y*y)
+    theta = np.arctan2(y, x)
+    
+    # Klein bottle surface approximation with 4D rotation
+    u = theta + t_offset
+    v = z / a
+    
+    # Simplified Klein bottle equations
+    cos_u, sin_u = np.cos(u), np.sin(u)
+    cos_v, sin_v = np.cos(v), np.sin(v)
+    
+    # Target surface points
+    target_r = a * (2.0 + cos_u) * (1.0 + 0.5 * cos_v)
+    target_z = a * sin_u * (1.0 + 0.5 * cos_v) + a * 0.5 * sin_v
+    
+    # Distance to Klein bottle surface
+    dr = r - target_r
+    dz = z - target_z
+    
+    return np.sqrt(dr*dr + dz*dz) - 0.1  # Small thickness
+
+def sd_menger_sponge(p, iterations=3, size=1.0):
+    """Menger sponge fractal - infinite detail CSG operations
+    iterations: number of recursive subdivisions
+    size: overall scale of the sponge
+    """
+    # Start with a box
+    d = sd_box(p, np.array([size, size, size]))
+    
+    # Recursively subtract smaller boxes
+    s = size
+    for i in range(int(iterations)):
+        # Scale for this iteration
+        s /= 3.0
+        
+        # Create holes pattern for this level
+        holes = []
+        
+        # Generate hole positions for 3x3x3 grid
+        for x in [-1, 0, 1]:
+            for y in [-1, 0, 1]:
+                for z in [-1, 0, 1]:
+                    # Skip corners (they remain solid)
+                    hole_count = (abs(x) + abs(y) + abs(z))
+                    if hole_count >= 2:  # Remove center faces and edges
+                        hole_pos = s * np.array([x, y, z])
+                        
+                        # Create holes in different orientations
+                        if abs(x) == 1 and y == 0 and z == 0:  # X-axis holes
+                            hole_size = np.array([size*2, s*0.33, s*0.33])
+                        elif x == 0 and abs(y) == 1 and z == 0:  # Y-axis holes  
+                            hole_size = np.array([s*0.33, size*2, s*0.33])
+                        elif x == 0 and y == 0 and abs(z) == 1:  # Z-axis holes
+                            hole_size = np.array([s*0.33, s*0.33, size*2])
+                        else:  # Corner holes
+                            hole_size = np.array([s*0.33, s*0.33, s*0.33])
+                        
+                        # Subtract hole from main shape
+                        hole_dist = sd_box(p - hole_pos, hole_size)
+                        d = max(d, -hole_dist)  # CSG subtraction
+        
+        # Scale point for next iteration 
+        p_scaled = p * 3.0
+        
+        # Apply modulo operation for fractal repetition
+        p_mod = np.zeros_like(p_scaled)
+        for j in range(3):
+            p_mod[j] = np.mod(p_scaled[j] + s*1.5, s*3.0) - s*1.5
+        
+        # Continue with scaled point
+        p = p_mod
+    
+    return d
+
+def sd_hyperbolic_tiling(p, scale=1.0, order=7, symmetry=3):
+    """Hyperbolic {order,symmetry} tiling projected to Poincaré disk
+    order: number of sides per polygon (7 for heptagon)
+    symmetry: number of polygons meeting at each vertex (3)
+    scale: overall size scaling
+    This creates a {7,3} tiling - the classic hyperbolic tessellation
+    """
+    import math
+    
+    # Transform to complex plane (x + iy)
+    x, y = float(p[0]) / scale, float(p[1]) / scale
+    z = complex(x, y)
+    
+    # Apply Poincaré disk model transformations
+    r = abs(z)
+    if r > 0.98:  # Boundary of hyperbolic disk
+        return (r - 0.98) * scale
+    
+    # Hyperbolic distance from origin
+    if r < 1e-6:
+        hyperbolic_r = 0.0
+    else:
+        hyperbolic_r = math.atanh(min(r, 0.999))
+    
+    # Generate fundamental domain for {7,3} tiling
+    angle = math.atan2(y, x) if r > 1e-6 else 0.0
+    
+    # Apply rotational symmetry (7-fold)
+    sector_angle = 2.0 * math.pi / order
+    normalized_angle = (angle % sector_angle) - sector_angle * 0.5
+    
+    # Distance to sector boundaries
+    boundary_dist = abs(normalized_angle) - sector_angle * 0.5
+    
+    # Hyperbolic polygon edges using distance in Poincaré model
+    edge_spacing = 0.8  # Spacing between concentric heptagons
+    ring_number = int(hyperbolic_r / edge_spacing)
+    dist_to_ring = abs(hyperbolic_r - ring_number * edge_spacing) - 0.05
+    
+    # Combine radial and angular distances
+    angular_dist = abs(boundary_dist) * hyperbolic_r - 0.02
+    
+    # Apply hyperbolic metric correction
+    metric_factor = 1.0 / (1.0 - r*r + 1e-6)
+    
+    # Final distance (minimum of radial and angular features)
+    dist = min(dist_to_ring, angular_dist) * metric_factor
+    
+    # Add 3D height modulation for visualization
+    z_height = float(p[2]) / scale
+    height_modulation = 0.1 * math.cos(hyperbolic_r * 10.0) * math.cos(normalized_angle * order)
+    
+    return (dist + abs(z_height - height_modulation) - 0.1) * scale
 
 
 def sd_mobius(p, R, w, samples=64):
@@ -208,6 +405,35 @@ class Scene:
                 sc, iso, th = float(pr.params[0]), float(pr.params[1]), float(max(1e-3, pr.params[2]))
                 val, K = qc_value_and_bound(pl, sc)
                 di = (abs(val - iso) / max(K,1e-6)) - th
+            elif pr.kind in (KIND_TORUS4D, 'torus4d'):
+                # Params: [R1, R2, r, w_slice] - two major radii, minor radius, 4D slice position
+                R1, R2, r = pr.params[0], pr.params[1], pr.params[2]
+                w_slice = pr.params[3] if len(pr.params) > 3 else 0.0
+                di = sd_torus4d(pl, R1, R2, r, w_slice)
+            elif pr.kind in (KIND_MANDELBULB, 'mandelbulb'):
+                # Params: [power, bailout, max_iter, scale]
+                power = max(2.0, pr.params[0]) if len(pr.params) > 0 else 8.0
+                bailout = max(1.0, pr.params[1]) if len(pr.params) > 1 else 2.0
+                max_iter = int(max(4, pr.params[2])) if len(pr.params) > 2 else 16
+                scale = pr.params[3] if len(pr.params) > 3 else 1.0
+                di = sd_mandelbulb(pl * scale, power, bailout, max_iter) / scale
+            elif pr.kind in (KIND_KLEIN, 'klein'):
+                # Params: [scale, n, t_offset, thickness]
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                n = pr.params[1] if len(pr.params) > 1 else 2.0
+                t_offset = pr.params[2] if len(pr.params) > 2 else 0.0
+                di = sd_klein_bottle(pl, scale, n, t_offset)
+            elif pr.kind in (KIND_MENGER, 'menger'):
+                # Params: [iterations, size, 0, 0]
+                iterations = max(1, pr.params[0]) if len(pr.params) > 0 else 3
+                size = max(0.1, pr.params[1]) if len(pr.params) > 1 else 1.0
+                di = sd_menger_sponge(pl, iterations, size)
+            elif pr.kind in (KIND_HYPERBOLIC, 'hyperbolic'):
+                # Params: [scale, order, symmetry, 0]
+                scale = max(0.1, pr.params[0]) if len(pr.params) > 0 else 1.0
+                order = max(3, pr.params[1]) if len(pr.params) > 1 else 7
+                symmetry = max(3, pr.params[2]) if len(pr.params) > 2 else 3
+                di = sd_hyperbolic_tiling(pl, scale, order, symmetry)
             else:
                 continue
             if pr.op == 'subtract':
@@ -250,6 +476,40 @@ class Scene:
             elif pr.kind in (KIND_QUASICRYSTAL, 'quasicrystal'):
                 kind[i]  = KIND_QUASICRYSTAL
                 params[i]= [pr.params[0], pr.params[1], pr.params[2], 0]
+            elif pr.kind in (KIND_TORUS4D, 'torus4d'):
+                kind[i]  = KIND_TORUS4D
+                # Pack R1, R2, r, w_slice
+                w_slice = pr.params[3] if len(pr.params) > 3 else 0.0
+                params[i]= [pr.params[0], pr.params[1], pr.params[2], w_slice]
+            elif pr.kind in (KIND_MANDELBULB, 'mandelbulb'):
+                kind[i]  = KIND_MANDELBULB
+                # Pack power, bailout, max_iter, scale
+                power = max(2.0, pr.params[0]) if len(pr.params) > 0 else 8.0
+                bailout = max(1.0, pr.params[1]) if len(pr.params) > 1 else 2.0
+                max_iter = max(4, pr.params[2]) if len(pr.params) > 2 else 16
+                scale = pr.params[3] if len(pr.params) > 3 else 1.0
+                params[i]= [power, bailout, max_iter, scale]
+            elif pr.kind in (KIND_KLEIN, 'klein'):
+                kind[i]  = KIND_KLEIN
+                # Pack scale, n, t_offset, thickness
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                n = pr.params[1] if len(pr.params) > 1 else 2.0
+                t_offset = pr.params[2] if len(pr.params) > 2 else 0.0
+                thickness = pr.params[3] if len(pr.params) > 3 else 0.1
+                params[i]= [scale, n, t_offset, thickness]
+            elif pr.kind in (KIND_MENGER, 'menger'):
+                kind[i]  = KIND_MENGER
+                # Pack iterations, size, 0, 0
+                iterations = max(1, pr.params[0]) if len(pr.params) > 0 else 3
+                size = max(0.1, pr.params[1]) if len(pr.params) > 1 else 1.0
+                params[i]= [iterations, size, 0, 0]
+            elif pr.kind in (KIND_HYPERBOLIC, 'hyperbolic'):
+                kind[i]  = KIND_HYPERBOLIC
+                # Pack scale, order, symmetry, 0
+                scale = max(0.1, pr.params[0]) if len(pr.params) > 0 else 1.0
+                order = max(3, pr.params[1]) if len(pr.params) > 1 else 7
+                symmetry = max(3, pr.params[2]) if len(pr.params) > 2 else 3
+                params[i]= [scale, order, symmetry, 0]
             else:
                 kind[i]  = KIND_NONE
 

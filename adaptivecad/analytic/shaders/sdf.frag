@@ -20,7 +20,7 @@ uniform vec3 u_env;  // environment light direction (length may encode intensity
 uniform int  u_debug;      // 0 beauty,1 normals,2 id,3 depth,4 thickness
 uniform int  u_selected;   // selected primitive index (-1 none)
 
-const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4, KIND_MOBIUS=5, KIND_SUPERELLIPSOID=6, KIND_QUASICRYSTAL=7;
+const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4, KIND_MOBIUS=5, KIND_SUPERELLIPSOID=6, KIND_QUASICRYSTAL=7, KIND_TORUS4D=8, KIND_MANDELBULB=9, KIND_KLEIN=10, KIND_MENGER=11, KIND_HYPERBOLIC=12;
 const int OP_SOLID=0, OP_SUB=1;
 
 float pia_scale(float r, float beta){ return r * (1.0 + 0.125 * beta * r * r); }
@@ -34,6 +34,164 @@ float lpn(vec3 p, float power){
     return pow(pow(ap.x,power) + pow(ap.y,power) + pow(ap.z,power), 1.0/power);
 }
 float sd_superellipsoid(vec3 p, float r, float power){ return lpn(p, power) - r; }
+
+// 4D torus (duocylinder) distance function
+float sd_torus4d(vec3 p, float R1, float R2, float r, float w_slice) {
+    // In 4D: x²+y² and z²+w² form two perpendicular circles
+    // For 3D visualization, we treat the input z as the 4th dimension w
+    float circle1_radius = length(p.xy);
+    float circle2_radius = length(vec2(p.z, w_slice));
+    
+    // Distance to the 4D torus surface
+    float d1 = circle1_radius - R1;
+    float d2 = circle2_radius - R2;
+    return length(vec2(d1, d2)) - r;
+}
+
+// Mandelbulb fractal distance estimation
+float sd_mandelbulb(vec3 p, float power, float bailout, float max_iter) {
+    vec3 z = p;
+    float dr = 1.0;
+    float r = 0.0;
+    
+    for(int i = 0; i < int(max_iter); i++) {
+        r = length(z);
+        if(r > bailout) break;
+        
+        // Avoid singularities
+        if(r < 1e-6) break;
+        
+        // Convert to spherical coordinates
+        float theta = atan(length(z.xy), z.z);
+        float phi = atan(z.y, z.x);
+        
+        // Scale and rotate the point
+        float zr = pow(r, power - 1.0);
+        dr = zr * power * dr + 1.0;
+        
+        // Convert back to cartesian coordinates
+        zr *= r;
+        float sin_theta = sin(theta * power);
+        z.x = zr * sin_theta * cos(phi * power);
+        z.y = zr * sin_theta * sin(phi * power);
+        z.z = zr * cos(theta * power);
+        
+        // Add original point (Mandelbulb iteration)
+        z += p;
+    }
+    
+    // Improved distance estimation
+    if(r < bailout) {
+        return 0.0; // Inside the set
+    } else {
+        return 0.5 * log(r) * r / max(dr, 1e-6);
+    }
+}
+
+// Klein bottle 4D->3D projection
+float sd_klein_bottle(vec3 p, float a, float n, float t_offset) {
+    // Convert to cylindrical coordinates
+    float r = length(p.xy);
+    float theta = atan(p.y, p.x);
+    
+    // Klein bottle surface approximation with 4D rotation
+    float u = theta + t_offset;
+    float v = p.z / a;
+    
+    // Simplified Klein bottle equations
+    float cos_u = cos(u), sin_u = sin(u);
+    float cos_v = cos(v), sin_v = sin(v);
+    
+    // Target surface points
+    float target_r = a * (2.0 + cos_u) * (1.0 + 0.5 * cos_v);
+    float target_z = a * sin_u * (1.0 + 0.5 * cos_v) + a * 0.5 * sin_v;
+    
+    // Distance to Klein bottle surface
+    float dr = r - target_r;
+    float dz = p.z - target_z;
+    
+    return length(vec2(dr, dz)) - 0.1; // Small thickness
+}
+
+// Menger sponge fractal - infinite detail CSG showcase
+float sd_menger_sponge(vec3 p, float iterations, float size) {
+    // Start with a box
+    float d = sd_box(p, vec3(size));
+    
+    float s = size;
+    vec3 pos = p;
+    
+    for(int i = 0; i < int(iterations); i++) {
+        // Scale for this iteration
+        s /= 3.0;
+        
+        // Create the cross-shaped holes pattern
+        vec3 a = mod(pos*3.0, 3.0) - 1.5;
+        
+        // X-axis hole
+        float hole_x = sd_box(a, vec3(2.0, s*0.33, s*0.33));
+        // Y-axis hole  
+        float hole_y = sd_box(a, vec3(s*0.33, 2.0, s*0.33));
+        // Z-axis hole
+        float hole_z = sd_box(a, vec3(s*0.33, s*0.33, 2.0));
+        
+        // Combine holes (union)
+        float holes = min(hole_x, min(hole_y, hole_z));
+        
+        // Subtract holes from main shape
+        d = max(d, -holes);
+        
+        // Scale position for next iteration
+        pos *= 3.0;
+    }
+    
+    return d;
+}
+
+// Hyperbolic {order,symmetry} tiling in Poincaré disk
+float sd_hyperbolic_tiling(vec3 p, float scale, float order, float symmetry) {
+    // Transform to 2D complex plane
+    vec2 z = p.xy / scale;
+    float r = length(z);
+    
+    // Boundary of hyperbolic disk
+    if (r > 0.98) {
+        return (r - 0.98) * scale;
+    }
+    
+    // Hyperbolic distance from origin
+    float hyperbolic_r = (r < 1e-6) ? 0.0 : atanh(min(r, 0.999));
+    
+    // Angle in complex plane
+    float angle = (r > 1e-6) ? atan(z.y, z.x) : 0.0;
+    
+    // Apply rotational symmetry
+    float sector_angle = 2.0 * 3.14159265 / order;
+    float normalized_angle = mod(angle + sector_angle * 0.5, sector_angle) - sector_angle * 0.5;
+    
+    // Distance to sector boundaries
+    float boundary_dist = abs(normalized_angle) - sector_angle * 0.5;
+    
+    // Concentric hyperbolic rings
+    float edge_spacing = 0.8;
+    float ring_number = floor(hyperbolic_r / edge_spacing);
+    float dist_to_ring = abs(hyperbolic_r - ring_number * edge_spacing) - 0.05;
+    
+    // Angular features
+    float angular_dist = abs(boundary_dist) * hyperbolic_r - 0.02;
+    
+    // Hyperbolic metric correction
+    float metric_factor = 1.0 / (1.0 - r*r + 1e-6);
+    
+    // Combine distances
+    float dist = min(dist_to_ring, angular_dist) * metric_factor;
+    
+    // 3D height modulation
+    float z_height = p.z / scale;
+    float height_modulation = 0.1 * cos(hyperbolic_r * 10.0) * cos(normalized_angle * order);
+    
+    return (dist + abs(z_height - height_modulation) - 0.1) * scale;
+}
 
 // Quasi-crystal value and conservative bound
 float qc_value(vec3 p, float scale){
@@ -89,10 +247,41 @@ float map_scene(vec3 pw, out vec3 outColor, out int outId){
             float K = 7.0*abs(sc);
             di = (abs(v - iso)/max(K,1e-4)) - th;
         }
+        else if(u_kind[i]==KIND_TORUS4D){
+            float R1=u_params[i].x; float R2=u_params[i].y; float r=u_params[i].z; float w_slice=u_params[i].w;
+            di = sd_torus4d(pl, R1, R2, r, w_slice);
+        }
+        else if(u_kind[i]==KIND_MANDELBULB){
+            float power=u_params[i].x; float bailout=u_params[i].y; float max_iter=u_params[i].z; float scale=u_params[i].w;
+            di = sd_mandelbulb(pl * scale, power, bailout, max_iter) / scale;
+        }
+        else if(u_kind[i]==KIND_KLEIN){
+            float scale=u_params[i].x; float n=u_params[i].y; float t_offset=u_params[i].z;
+            di = sd_klein_bottle(pl, scale, n, t_offset);
+        }
+        else if(u_kind[i]==KIND_MENGER){
+            float iterations=u_params[i].x; float size=u_params[i].y;
+            di = sd_menger_sponge(pl, iterations, size);
+        }
+        else if(u_kind[i]==KIND_HYPERBOLIC){
+            float scale=u_params[i].x; float order=u_params[i].y; float symmetry=u_params[i].z;
+            di = sd_hyperbolic_tiling(pl, scale, order, symmetry);
+        }
         if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4){ col = u_color[i]; hitId=i; } d = nd; }
         else { if(di < d){ d=di; col=u_color[i]; hitId=i; } }
     }
     outColor = col; outId = hitId; return d;
+}
+
+// Central difference gradient for distance field visualization
+vec3 gradient_central_diff(vec3 p) {
+    float eps = 0.001;
+    vec3 dummy_color;
+    int dummy_id;
+    float gx = map_scene(p + vec3(eps, 0, 0), dummy_color, dummy_id) - map_scene(p - vec3(eps, 0, 0), dummy_color, dummy_id);
+    float gy = map_scene(p + vec3(0, eps, 0), dummy_color, dummy_id) - map_scene(p - vec3(0, eps, 0), dummy_color, dummy_id);
+    float gz = map_scene(p + vec3(0, 0, eps), dummy_color, dummy_id) - map_scene(p - vec3(0, 0, eps), dummy_color, dummy_id);
+    return vec3(gx, gy, gz) / (2.0 * eps);
 }
 
 vec3 calc_normal(vec3 p){
@@ -133,6 +322,20 @@ void main(){
     if(u_debug==4){ // thickness placeholder (use curvature-ish via normal variation)
         float th = pow(1.0 - abs(dot(n, rd)), 2.0);
         FragColor = vec4(vec3(th),1.0); return; }
+    if(u_debug==5){ // adaptive heatmap - distance field gradient
+        vec3 p_hit = p + t * rd;
+        float hval = length(gradient_central_diff(p_hit));
+        // Color gradient: blue -> green -> yellow -> red
+        vec3 heat_color;
+        hval = clamp(hval * 2.0, 0.0, 3.0); // scale for visibility
+        if(hval < 1.0) {
+            heat_color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), hval);  // blue -> green
+        } else if(hval < 2.0) {
+            heat_color = mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), hval-1.0);  // green -> yellow
+        } else {
+            heat_color = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), hval-2.0);  // yellow -> red
+        }
+        FragColor = vec4(heat_color, 1.0); return; }
 
     // Beauty + selection highlight (strong gold tint + rim)
     if(u_selected >=0 && pid==u_selected){
