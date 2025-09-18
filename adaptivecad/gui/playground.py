@@ -106,7 +106,7 @@ if HAS_QT:
         from OCC.Core.TopoDS import TopoDS_Face  # type: ignore
         from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
         from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
-        from adaptivecad.core.backends import MeshBackend, AnalyticBackend
+    # Note: legacy backends import removed (module not present in repo)
 
 # Backwards compatibility flag
 HAS_GUI = HAS_QT

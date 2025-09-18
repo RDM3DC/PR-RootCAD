@@ -5,7 +5,7 @@ from .math import Xform, clamp
 MAX_PRIMS = 48  # keep in sync with shader arrays
 
 # ---- Kinds & Ops ----
-KIND_NONE, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS, KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+KIND_NONE, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS, KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC, KIND_GYROID, KIND_TREFOIL = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 OP_SOLID, OP_SUBTRACT = 0, 1
 
 def pia_scale(r, beta):  # toy metric scaling
@@ -302,6 +302,62 @@ def qc_value_and_bound(p, scale, dirs=None):
     K = len(dirs) * abs(ps)
     return f, max(K, 1e-3)
 
+# --- New Primitives ---
+def sd_gyroid(p, scale=1.0, tau=0.0, thickness=0.05):
+    """Approximate SDF of a gyroid TPMS shell.
+    f(x,y,z) = sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) - tau
+    Distance ~ |f|/|grad f|, then offset by thickness to create shell.
+    scale: frequency multiplier; tau: iso-level; thickness: half-thickness.
+    """
+    import math
+    x,y,z = (np.asarray(p, dtype=np.float64) * float(scale)).tolist()
+    sx,cx = math.sin(x), math.cos(x)
+    sy,cy = math.sin(y), math.cos(y)
+    sz,cz = math.sin(z), math.cos(z)
+    f = sx*cy + sy*cz + sz*cx - float(tau)
+    gx = cx*cy - sz*sx
+    gy = cz*cy - sx*sy
+    gz = cx*cz - sy*sz
+    g = math.sqrt(gx*gx + gy*gy + gz*gz) + 1e-6
+    sdf = abs(f) / g
+    return sdf/ max(1e-6, float(scale)) - float(thickness)
+
+def sd_trefoil_knot(p, scale=1.0, tube=0.1, samples=96):
+    """Approximate distance to a trefoil knot tube using sampled closest point.
+    Trefoil centerline C(t) = ((2+cos 3t) cos 2t, (2+cos 3t) sin 2t, sin 3t)
+    We search along t in [0,2pi) and take min distance.
+    scale scales the curve; tube is tube radius.
+    """
+    import math
+    pt = np.asarray(p, dtype=np.float64) / max(1e-6, float(scale))
+    two_pi = 2.0*math.pi
+    n1 = max(24, int(samples)//2)
+    best = 1e18
+    t_best = 0.0
+    for i in range(n1):
+        t = two_pi * (i / max(1, n1))
+        c3, s3 = math.cos(3*t), math.sin(3*t)
+        c2, s2 = math.cos(2*t), math.sin(2*t)
+        r = 2.0 + c3
+        q = np.array([r*c2, r*s2, s3], dtype=np.float64)
+        d = np.linalg.norm(pt - q)
+        if d < best: best = d; t_best = t
+    # refine around best with smaller window
+    n2 = max(24, int(samples))
+    window = two_pi / float(n2)
+    for j in range(n2):
+        t = (t_best - 0.5*window) + (j / max(1, n2-1)) * window
+        # wrap
+        if t < 0.0: t += two_pi
+        if t >= two_pi: t -= two_pi
+        c3, s3 = math.cos(3*t), math.sin(3*t)
+        c2, s2 = math.cos(2*t), math.sin(2*t)
+        r = 2.0 + c3
+        q = np.array([r*c2, r*s2, s3], dtype=np.float64)
+        d = np.linalg.norm(pt - q)
+        if d < best: best = d
+    return best * float(scale) - float(tube)
+
 class Prim:
     def __init__(self, kind, params, xform=None, beta=0.0, pid=0, op="solid", color=(0.8,0.7,0.6)):
         self.kind  = kind
@@ -434,6 +490,18 @@ class Scene:
                 order = max(3, pr.params[1]) if len(pr.params) > 1 else 7
                 symmetry = max(3, pr.params[2]) if len(pr.params) > 2 else 3
                 di = sd_hyperbolic_tiling(pl, scale, order, symmetry)
+            elif pr.kind in (KIND_GYROID, 'gyroid'):
+                # Params: [scale, tau, thickness, 0]
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                tau = pr.params[1] if len(pr.params) > 1 else 0.0
+                thickness = pr.params[2] if len(pr.params) > 2 else 0.05
+                di = sd_gyroid(pl, scale, tau, thickness)
+            elif pr.kind in (KIND_TREFOIL, 'trefoil'):
+                # Params: [scale, tube, samples, 0]
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                tube  = pr.params[1] if len(pr.params) > 1 else 0.1
+                samples = int(pr.params[2]) if len(pr.params) > 2 else 96
+                di = sd_trefoil_knot(pl, scale, tube, samples)
             else:
                 continue
             if pr.op == 'subtract':
@@ -510,6 +578,20 @@ class Scene:
                 order = max(3, pr.params[1]) if len(pr.params) > 1 else 7
                 symmetry = max(3, pr.params[2]) if len(pr.params) > 2 else 3
                 params[i]= [scale, order, symmetry, 0]
+            elif pr.kind in (KIND_GYROID, 'gyroid'):
+                kind[i] = KIND_GYROID
+                # Pack scale, tau, thickness, 0
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                tau = pr.params[1] if len(pr.params) > 1 else 0.0
+                thickness = pr.params[2] if len(pr.params) > 2 else 0.05
+                params[i] = [scale, tau, thickness, 0]
+            elif pr.kind in (KIND_TREFOIL, 'trefoil'):
+                kind[i] = KIND_TREFOIL
+                # Pack scale, tube, samples, 0 (samples as float)
+                scale = pr.params[0] if len(pr.params) > 0 else 1.0
+                tube  = pr.params[1] if len(pr.params) > 1 else 0.1
+                samples = pr.params[2] if len(pr.params) > 2 else 96
+                params[i] = [scale, tube, samples, 0]
             else:
                 kind[i]  = KIND_NONE
 

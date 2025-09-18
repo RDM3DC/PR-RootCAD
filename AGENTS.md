@@ -1,0 +1,1 @@
+Always search for up to date information about libraries frameworks and tools. You can youse the #fetch tool or the #context7 tool

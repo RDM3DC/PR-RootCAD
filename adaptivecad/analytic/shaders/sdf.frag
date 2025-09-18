@@ -20,7 +20,7 @@ uniform vec3 u_env;  // environment light direction (length may encode intensity
 uniform int  u_debug;      // 0 beauty,1 normals,2 id,3 depth,4 thickness
 uniform int  u_selected;   // selected primitive index (-1 none)
 
-const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4, KIND_MOBIUS=5, KIND_SUPERELLIPSOID=6, KIND_QUASICRYSTAL=7, KIND_TORUS4D=8, KIND_MANDELBULB=9, KIND_KLEIN=10, KIND_MENGER=11, KIND_HYPERBOLIC=12;
+const int KIND_NONE=0, KIND_SPHERE=1, KIND_BOX=2, KIND_CAPSULE=3, KIND_TORUS=4, KIND_MOBIUS=5, KIND_SUPERELLIPSOID=6, KIND_QUASICRYSTAL=7, KIND_TORUS4D=8, KIND_MANDELBULB=9, KIND_KLEIN=10, KIND_MENGER=11, KIND_HYPERBOLIC=12, KIND_GYROID=13, KIND_TREFOIL=14;
 const int OP_SOLID=0, OP_SUB=1;
 
 float pia_scale(float r, float beta){ return r * (1.0 + 0.125 * beta * r * r); }
@@ -193,6 +193,52 @@ float sd_hyperbolic_tiling(vec3 p, float scale, float order, float symmetry) {
     return (dist + abs(z_height - height_modulation) - 0.1) * scale;
 }
 
+// Gyroid TPMS shell SDF (approximate)
+float sd_gyroid(vec3 p, float scale, float tau, float thickness){
+    vec3 ps = p * scale;
+    float x=ps.x, y=ps.y, z=ps.z;
+    float sx=sin(x), cx=cos(x);
+    float sy=sin(y), cy=cos(y);
+    float sz=sin(z), cz=cos(z);
+    float f = sx*cy + sy*cz + sz*cx - tau;
+    vec3 g = vec3(cx*cy - sz*sx, cz*cy - sx*sy, cx*cz - sy*sz);
+    float mag = length(g) + 1e-6;
+    float sdf = abs(f)/mag;
+    // account for scaling so world-distance remains consistent
+    sdf = sdf / max(1e-6, scale);
+    return sdf - thickness;
+}
+
+// Trefoil knot tube (sampling-based)
+vec3 trefoil_pos(float t){
+    float c3 = cos(3.0*t), s3 = sin(3.0*t);
+    float c2 = cos(2.0*t), s2 = sin(2.0*t);
+    float r = 2.0 + c3;
+    return vec3(r*c2, r*s2, s3);
+}
+float sd_trefoil_knot(vec3 p, float scale, float tube, float samples){
+    vec3 q = p / max(1e-6, scale);
+    int N1 = int(max(24.0, samples*0.5));
+    float best = 1e9; float tbest = 0.0;
+    for(int i=0;i<N1;i++){
+        float t = 6.28318530718 * (float(i)/float(max(1,N1)));
+        vec3 c = trefoil_pos(t);
+        float d = length(q - c);
+        if(d < best){ best = d; tbest = t; }
+    }
+    int N2 = int(max(24.0, samples));
+    float window = 6.28318530718 / float(N2);
+    for(int j=0;j<N2;j++){
+        float t = (tbest - 0.5*window) + (float(j)/max(1.0, float(N2-1))) * window;
+        if(t < 0.0) t += 6.28318530718;
+        if(t >= 6.28318530718) t -= 6.28318530718;
+        vec3 c = trefoil_pos(t);
+        float d = length(q - c);
+        if(d < best) best = d;
+    }
+    return best * scale - tube;
+}
+
 // Quasi-crystal value and conservative bound
 float qc_value(vec3 p, float scale){
     // 7 directions via Fibonacci sphere
@@ -266,6 +312,14 @@ float map_scene(vec3 pw, out vec3 outColor, out int outId){
         else if(u_kind[i]==KIND_HYPERBOLIC){
             float scale=u_params[i].x; float order=u_params[i].y; float symmetry=u_params[i].z;
             di = sd_hyperbolic_tiling(pl, scale, order, symmetry);
+        }
+        else if(u_kind[i]==KIND_GYROID){
+            float scale=u_params[i].x; float tau=u_params[i].y; float thickness=u_params[i].z;
+            di = sd_gyroid(pl, scale, tau, thickness);
+        }
+        else if(u_kind[i]==KIND_TREFOIL){
+            float scale=u_params[i].x; float tube=u_params[i].y; float samples=u_params[i].z;
+            di = sd_trefoil_knot(pl, scale, tube, samples);
         }
         if(u_op[i]==OP_SUB){ float nd = max(d, -di); if(nd < d + 1e-4){ col = u_color[i]; hitId=i; } d = nd; }
         else { if(di < d){ d=di; col=u_color[i]; hitId=i; } }

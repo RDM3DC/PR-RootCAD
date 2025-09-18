@@ -17,9 +17,11 @@ from PySide6.QtGui import QGuiApplication
 from OpenGL.GL import *
 import numpy as np
 from pathlib import Path
+from adaptivecad.sketch.model import SketchDocument
+from adaptivecad.sketch.units import Units
 from adaptivecad.aacore.sdf import (
     Scene as AACoreScene, Prim, KIND_SPHERE, KIND_BOX, KIND_CAPSULE, KIND_TORUS,
-    KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
+    KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC, KIND_GYROID, KIND_TREFOIL, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
 )
 import time, os
 import json
@@ -35,19 +37,40 @@ except Exception:
     SNAP_PX = 10  # pixel radius for snapping
 
     class SketchEntity:
+        def __init__(self):
+            self.construction = False
         def draw(self, p: QPainter, view): ...
         def snap_points(self): return []  # list of (x,y) in world (Z=0)
+        def snap_points_typed(self):
+            return [(pt, 'other') for pt in self.snap_points()]
 
     class Polyline2D(SketchEntity):
         def __init__(self, pts=None):
             import numpy as _np
+            super().__init__()
             self.pts = [ _np.array(p, dtype=_np.float32) for p in (pts or []) ]  # (x,y)
+            self.closed = False
         def snap_points(self):
             import numpy as _np
             out = []
             out += self.pts
             for a,b in zip(self.pts[:-1], self.pts[1:]):
                 out.append( (a+b)/2.0 )
+            if self.closed and len(self.pts) >= 2:
+                a = self.pts[-1]; b = self.pts[0]
+                out.append((a+b)/2.0)
+            return out
+        def snap_points_typed(self):
+            out=[]
+            if self.pts:
+                out.append((self.pts[0],'end'))
+                if len(self.pts)>1:
+                    out.append((self.pts[-1],'end'))
+            for a,b in zip(self.pts[:-1], self.pts[1:]):
+                out.append(((a+b)/2.0, 'mid'))
+            if self.closed and len(self.pts)>=2:
+                a=self.pts[-1]; b=self.pts[0]
+                out.append(((a+b)/2.0, 'mid'))
             return out
         def draw(self, p: QPainter, view):
             import numpy as _np
@@ -55,45 +78,47 @@ except Exception:
                 return
             pts2 = [ view._world_to_screen(_np.array([x,y,0.0], _np.float32)) for (x,y) in self.pts ]
             if len(pts2) >= 2:
-                pen = QPen(QColor(220,220,220)); pen.setWidth(2); p.setPen(pen)
+                pen = QPen(QColor(220,220,220)); pen.setWidth(2)
+                if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
                 for a,b in zip(pts2[:-1], pts2[1:]):
                     p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+                if self.closed:
+                    a=pts2[-1]; b=pts2[0]
+                    p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
             pen = QPen(QColor(255,200,120)); pen.setWidth(6); p.setPen(pen)
-            for s in pts2:
-                p.drawPoint(int(s[0]), int(s[1]))
+            for s in pts2: p.drawPoint(int(s[0]), int(s[1]))
 
-    class SketchLayer:
-        def __init__(self):
-            self.entities: list[SketchEntity] = []
-            self.active_poly: Polyline2D | None = None
-            self.active_shape: SketchEntity | None = None  # circle/rect WIP
-            self.hover_snap = None  # (x,y)
-        def all_snap_points(self):
-            pts = []
-            for e in self.entities:
-                pts += e.snap_points()
-            if self.active_poly:
-                pts += self.active_poly.snap_points()
-            if self.active_shape and hasattr(self.active_shape, 'snap_points'):
-                pts += self.active_shape.snap_points()
+    class Line2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            super().__init__()
+            self.p0 = _np.array(p0, dtype=_np.float32)
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def snap_points(self):
+            import numpy as _np
+            pts = [self.p0]
+            if self.p1 is not None:
+                pts.append(self.p1)
+                pts.append((self.p0 + self.p1)/2.0)
             return pts
         def draw(self, p: QPainter, view):
             import numpy as _np
-            for e in self.entities:
-                e.draw(p, view)
-            if self.active_poly:
-                self.active_poly.draw(p, view)
-            if self.active_shape:
-                self.active_shape.draw(p, view)
-            if self.hover_snap is not None:
-                s = view._world_to_screen(_np.array([self.hover_snap[0], self.hover_snap[1], 0.0], _np.float32))
-                pen = QPen(QColor(120,255,160)); pen.setWidth(2); p.setPen(pen)
-                p.drawLine(int(s[0]-6), int(s[1]), int(s[0]+6), int(s[1]))
-                p.drawLine(int(s[0]), int(s[1]-6), int(s[0]), int(s[1]+6))
+            s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+            pen = QPen(QColor(220,220,220)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            if self.p1 is not None:
+                s1 = view._world_to_screen(_np.array([self.p1[0], self.p1[1], 0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+            pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
+            if self.p1 is not None:
+                p.drawPoint(int(s1[0]), int(s1[1]))
 
     class Circle2D(SketchEntity):
         def __init__(self, center, radius=0.0):
             import numpy as _np
+            super().__init__()
             self.center = _np.array(center, dtype=_np.float32)
             self.radius = float(radius)
         def snap_points(self):
@@ -114,7 +139,9 @@ except Exception:
                 w = self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32)
                 s = view._world_to_screen(_np.array([w[0], w[1], 0.0], _np.float32))
                 pts.append(s)
-            pen = QPen(QColor(180,220,255)); pen.setWidth(2); p.setPen(pen)
+            pen = QPen(QColor(180,220,255)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
             for a,b in zip(pts[:-1], pts[1:]):
                 p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
             # center point
@@ -124,6 +151,7 @@ except Exception:
     class Rect2D(SketchEntity):
         def __init__(self, p0, p1=None):
             import numpy as _np
+            super().__init__()
             self.p0 = _np.array(p0, dtype=_np.float32)
             self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
         def corners(self):
@@ -156,7 +184,478 @@ except Exception:
                 pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
                 return
             pts2 = [ view._world_to_screen(_np.array([c[0], c[1], 0.0], _np.float32)) for c in cs ]
-            pen = QPen(QColor(200,255,180)); pen.setWidth(2); p.setPen(pen)
+            pen = QPen(QColor(200,255,180)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            for a,b in zip(pts2, pts2[1:]+pts2[:1]):
+                p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen)
+            for s in pts2:
+                p.drawPoint(int(s[0]), int(s[1]))
+
+    class Arc2D(SketchEntity):
+        def __init__(self, p0=None, p1=None, p2=None):
+            import numpy as _np
+            super().__init__()
+            self.p0 = _np.array(p0, dtype=_np.float32) if p0 is not None else None
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+            self.p2 = _np.array(p2, dtype=_np.float32) if p2 is not None else None
+        def _circle_from_3pts(self):
+            import numpy as _np
+            if self.p0 is None or self.p1 is None or self.p2 is None:
+                return None
+            x1,y1 = self.p0; x2,y2 = self.p1; x3,y3 = self.p2
+            a = x1*(y2 - y3) - y1*(x2 - x3) + x2*y3 - x3*y2
+            if abs(a) < 1e-9: return None
+            b = (x1*x1 + y1*y1)*(y3 - y2) + (x2*x2 + y2*y2)*(y1 - y3) + (x3*x3 + y3*y3)*(y2 - y1)
+            c = (x1*x1 + y1*y1)*(x2 - x3) + (x2*x2 + y2*y2)*(x3 - x1) + (x3*x3 + y3*y3)*(x1 - x2)
+            cx = -b/(2*a); cy = -c/(2*a)
+            r = float(_np.hypot(x1-cx, y1-cy))
+            return _np.array([cx,cy], _np.float32), r
+        def snap_points(self):
+            import numpy as _np
+            pts=[]
+            if self.p0 is not None: pts.append(self.p0)
+            if self.p2 is not None: pts.append(self.p2)
+            circ = self._circle_from_3pts()
+            if circ is not None:
+                c,_ = circ; pts.append(c)
+            if self.p0 is not None and self.p2 is not None:
+                pts.append((self.p0 + self.p2)/2.0)
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.p0 is None:
+                return
+            pen=QPen(QColor(200,240,255)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            if self.p1 is None or self.p2 is None:
+                s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32))
+                p.drawPoint(int(s0[0]), int(s0[1]))
+                if self.p1 is not None:
+                    s1=view._world_to_screen(_np.array([self.p1[0], self.p1[1],0.0], _np.float32))
+                    p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+                return
+            circ=self._circle_from_3pts()
+            if circ is None:
+                s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32))
+                s2=view._world_to_screen(_np.array([self.p2[0], self.p2[1],0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s2[0]), int(s2[1]))
+                return
+            c,r=circ
+            a0=_m.atan2(self.p0[1]-c[1], self.p0[0]-c[0])
+            a1=_m.atan2(self.p1[1]-c[1], self.p1[0]-c[0])
+            a2=_m.atan2(self.p2[1]-c[1], self.p2[0]-c[0])
+            def ang_dist(a,b):
+                d=(b-a+_m.pi)%(2*_m.pi)-_m.pi
+                return d
+            d1=abs(ang_dist(a0,a1))+abs(ang_dist(a1,a2))
+            d2=abs(ang_dist(a0,a2))
+            cw=False if d1<d2 else True
+            segs=48; pts=[]
+            if not cw:
+                step=ang_dist(a0,a2)/segs; k=0
+                while k<=segs:
+                    ang=a0+step*k; k+=1
+                    w=c+r*_np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s=view._world_to_screen(_np.array([w[0],w[1],0.0], _np.float32)); pts.append(s)
+            else:
+                step=ang_dist(a2,a0)/segs; k=0
+                while k<=segs:
+                    ang=a2+step*k; k+=1
+                    w=c+r*_np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s=view._world_to_screen(_np.array([w[0],w[1],0.0], _np.float32)); pts.append(s)
+            for a,b in zip(pts[:-1], pts[1:]): p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen_pts=QPen(QColor(255,200,140)); pen_pts.setWidth(6); p.setPen(pen_pts)
+            s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32)); p.drawPoint(int(s0[0]), int(s0[1]))
+            s2=view._world_to_screen(_np.array([self.p2[0], self.p2[1],0.0], _np.float32)); p.drawPoint(int(s2[0]), int(s2[1]))
+            sc=view._world_to_screen(_np.array([c[0], c[1],0.0], _np.float32)); p.drawPoint(int(sc[0]), int(sc[1]))
+
+    class Line2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            super().__init__()
+            self.p0 = _np.array(p0, dtype=_np.float32)
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def snap_points(self):
+            import numpy as _np
+            pts = [self.p0]
+            if self.p1 is not None:
+                pts.append(self.p1)
+                pts.append((self.p0 + self.p1)/2.0)
+            return pts
+        def snap_points_typed(self):
+            out=[(self.p0,'end')]
+            if self.p1 is not None:
+                out.append((self.p1,'end'))
+                out.append(((self.p0+self.p1)/2.0,'mid'))
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+            pen = QPen(QColor(220,220,220)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            if self.p1 is not None:
+                s1 = view._world_to_screen(_np.array([self.p1[0], self.p1[1], 0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+            pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
+            if self.p1 is not None:
+                p.drawPoint(int(s1[0]), int(s1[1]))
+
+    class Arc2D(SketchEntity):
+        def __init__(self, p0=None, p1=None, p2=None):
+            import numpy as _np
+            super().__init__()
+            self.p0 = _np.array(p0, dtype=_np.float32) if p0 is not None else None
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+            self.p2 = _np.array(p2, dtype=_np.float32) if p2 is not None else None
+        def _circle_from_3pts(self):
+            import numpy as _np
+            if self.p0 is None or self.p1 is None or self.p2 is None:
+                return None
+            x1,y1 = self.p0; x2,y2 = self.p1; x3,y3 = self.p2
+            a = x1*(y2 - y3) - y1*(x2 - x3) + x2*y3 - x3*y2
+            if abs(a) < 1e-9: return None
+            b = (x1*x1 + y1*y1)*(y3 - y2) + (x2*x2 + y2*y2)*(y1 - y3) + (x3*x3 + y3*y3)*(y2 - y1)
+            c = (x1*x1 + y1*y1)*(x2 - x3) + (x2*x2 + y2*y2)*(x3 - x1) + (x3*x3 + y3*y3)*(x1 - x2)
+            cx = -b/(2*a); cy = -c/(2*a)
+            r = float(_np.hypot(x1-cx, y1-cy))
+            return _np.array([cx,cy], _np.float32), r
+        def snap_points(self):
+            import numpy as _np
+            pts=[]
+            if self.p0 is not None: pts.append(self.p0)
+            if self.p2 is not None: pts.append(self.p2)
+            circ = self._circle_from_3pts()
+            if circ is not None:
+                c,_ = circ; pts.append(c)
+            if self.p0 is not None and self.p2 is not None:
+                pts.append((self.p0 + self.p2)/2.0)
+            return pts
+        def snap_points_typed(self):
+            out=[]
+            if self.p0 is not None: out.append((self.p0,'end'))
+            if self.p2 is not None: out.append((self.p2,'end'))
+            circ = self._circle_from_3pts()
+            if circ is not None:
+                c,_ = circ; out.append((c,'center'))
+            if self.p0 is not None and self.p2 is not None:
+                out.append(((self.p0+self.p2)/2.0,'mid'))
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.p0 is None:
+                return
+            pen = QPen(QColor(200,240,255)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            # if not complete, draw provisional segment(s)
+            if self.p1 is None or self.p2 is None:
+                s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+                p.drawPoint(int(s0[0]), int(s0[1]))
+                if self.p1 is not None:
+                    s1 = view._world_to_screen(_np.array([self.p1[0], self.p1[1], 0.0], _np.float32))
+                    p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+                return
+            circ = self._circle_from_3pts()
+            if circ is None:
+                # fallback draw polyline
+                s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+                s2 = view._world_to_screen(_np.array([self.p2[0], self.p2[1], 0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s2[0]), int(s2[1]))
+                return
+            c, r = circ
+            # compute angles
+            a0 = _m.atan2(self.p0[1]-c[1], self.p0[0]-c[0])
+            a1 = _m.atan2(self.p1[1]-c[1], self.p1[0]-c[0])
+            a2 = _m.atan2(self.p2[1]-c[1], self.p2[0]-c[0])
+            # pick direction that passes near a1 (shorter arc through a1)
+            def ang_dist(a,b):
+                d = (b - a + _m.pi) % (2*_m.pi) - _m.pi
+                return d
+            d1 = abs(ang_dist(a0, a1)) + abs(ang_dist(a1, a2))
+            d2 = abs(ang_dist(a0, a2))
+            cw = False if d1 < d2 else True
+            # sample arc
+            segs = 48
+            pts=[]
+            if not cw:
+                step = ang_dist(a0, a2)/segs
+                k = 0
+                while k <= segs:
+                    ang = a0 + step*k; k += 1
+                    w = c + r * _np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s = view._world_to_screen(_np.array([w[0], w[1], 0.0], _np.float32))
+                    pts.append(s)
+            else:
+                # reverse direction
+                step = ang_dist(a2, a0)/segs
+                k = 0
+                while k <= segs:
+                    ang = a2 + step*k; k += 1
+                    w = c + r * _np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s = view._world_to_screen(_np.array([w[0], w[1], 0.0], _np.float32))
+                    pts.append(s)
+            for a,b in zip(pts[:-1], pts[1:]):
+                p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            # endpoints & optional center point
+            pen_pts = QPen(QColor(255,200,140)); pen_pts.setWidth(6); p.setPen(pen_pts)
+            s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32)); p.drawPoint(int(s0[0]), int(s0[1]))
+            s2 = view._world_to_screen(_np.array([self.p2[0], self.p2[1], 0.0], _np.float32)); p.drawPoint(int(s2[0]), int(s2[1]))
+            sc = view._world_to_screen(_np.array([c[0], c[1], 0.0], _np.float32)); p.drawPoint(int(sc[0]), int(sc[1]))
+
+    class SketchLayer:
+        def __init__(self):
+            self.entities: list[SketchEntity] = []
+            self.active_poly: Polyline2D | None = None
+            self.active_shape: SketchEntity | None = None  # circle/rect WIP
+            self.hover_snap = None  # (x,y)
+            self.dimensions = []  # list of DimOverlay
+            self._dim_pick = None  # first ref for dimension tools
+            self._dim_preview = None  # transient preview overlay
+        def all_snap_points(self):
+            pts = []
+            for e in self.entities:
+                pts += e.snap_points()
+            if self.active_poly:
+                pts += self.active_poly.snap_points()
+            if self.active_shape and hasattr(self.active_shape, 'snap_points'):
+                pts += self.active_shape.snap_points()
+            return pts
+        def all_snap_points_typed(self):
+            pts = []
+            for e in self.entities:
+                if hasattr(e,'snap_points_typed'):
+                    pts += e.snap_points_typed()
+                else:
+                    pts += [(pt,'other') for pt in e.snap_points()]
+            if self.active_poly:
+                pts += self.active_poly.snap_points_typed()
+            if self.active_shape and hasattr(self.active_shape, 'snap_points_typed'):
+                pts += self.active_shape.snap_points_typed()
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            for e in self.entities:
+                e.draw(p, view)
+            if self.active_poly:
+                self.active_poly.draw(p, view)
+            if self.active_shape:
+                self.active_shape.draw(p, view)
+            # draw dimensions
+            for d in getattr(self, 'dimensions', []):
+                try:
+                    d.draw(p, view)
+                except Exception:
+                    pass
+            # draw preview dim if any
+            try:
+                if self._dim_preview is not None:
+                    self._dim_preview.draw(p, view)
+            except Exception:
+                pass
+            if self.hover_snap is not None:
+                s = view._world_to_screen(_np.array([self.hover_snap[0], self.hover_snap[1], 0.0], _np.float32))
+                pen = QPen(QColor(120,255,160)); pen.setWidth(2); p.setPen(pen)
+                p.drawLine(int(s[0]-6), int(s[1]), int(s[0]+6), int(s[1]))
+                p.drawLine(int(s[0]), int(s[1]-6), int(s[0]), int(s[1]+6))
+
+    # --- Dimension overlays ---
+    class DimBase2D:
+        def __init__(self):
+            self.label_override = None  # when set, displayed instead of measured
+        def _fmt(self, val: float, panel) -> str:
+            try:
+                prec = int(getattr(panel, '_dim_precision', 2))
+            except Exception:
+                prec = 2
+            return f"{val:.{prec}f}"
+        def draw_text(self, p: QPainter, view, pos_xy, text):
+            import numpy as _np
+            s = view._world_to_screen(_np.array([pos_xy[0], pos_xy[1], 0.0], _np.float32))
+            p.setPen(QPen(QColor(250, 250, 210)))
+            p.drawText(int(s[0]+6), int(s[1]-6), text)
+
+    class DimLinear2D(DimBase2D):
+        def __init__(self, ref_a, ref_b, panel):
+            super().__init__(); self.ref_a = ref_a; self.ref_b = ref_b; self.panel = panel
+        def _xy(self, ref):
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
+                ent, idx = ref; return ent.pts[idx]
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Line2D):
+                ent, idx = ref
+                if idx == 0: return ent.p0
+                if idx == 1 and ent.p1 is not None: return ent.p1
+                return None
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Rect2D):
+                ent, idx = ref
+                cs = ent.corners()
+                if 0 <= idx < len(cs): return cs[idx]
+                return None
+            if isinstance(ref, tuple) and ref[0]=='circle' and isinstance(ref[1], Circle2D):
+                return ref[1].center
+            # allow raw points [[x,y]] or numpy arrays
+            try:
+                import numpy as _np
+                if isinstance(ref, (list, tuple)) and len(ref)==2 and all(isinstance(v, (int,float)) for v in ref):
+                    return _np.array([float(ref[0]), float(ref[1])], _np.float32)
+                if hasattr(ref, 'shape') and getattr(ref, 'shape', None) is not None and len(ref.shape)==1 and ref.shape[0]==2:
+                    return ref
+            except Exception:
+                pass
+            return None
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = float(np.linalg.norm(b - a))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (a + b) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimHorizontal2D(DimLinear2D):
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = abs(float(b[0] - a[0]))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (a + b) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimVertical2D(DimLinear2D):
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = abs(float(b[1] - a[1]))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (a + b) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimRadius2D(DimBase2D):
+        def __init__(self, circle_ref, panel):
+            super().__init__(); self.circle_ref = circle_ref; self.panel = panel
+        def draw(self, p: QPainter, view):
+            if not (isinstance(self.circle_ref, tuple) and self.circle_ref[0]=='circle' and isinstance(self.circle_ref[1], Circle2D)):
+                return
+            c = self.circle_ref[1]
+            val = float(c.radius)
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            # place text slightly above center
+            pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
+            self.draw_text(p, view, pos, f"R {text}")
+
+    class DimDiameter2D(DimRadius2D):
+        def draw(self, p: QPainter, view):
+            if not (isinstance(self.circle_ref, tuple) and self.circle_ref[0]=='circle' and isinstance(self.circle_ref[1], Circle2D)):
+                return
+            c = self.circle_ref[1]
+            val = float(c.radius*2.0)
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
+            self.draw_text(p, view, pos, f"⌀ {text}")
+
+    class Circle2D(SketchEntity):
+        def __init__(self, center, radius=0.0):
+            import numpy as _np
+            super().__init__()
+            self.center = _np.array(center, dtype=_np.float32)
+            self.radius = float(radius)
+        def snap_points(self):
+            import numpy as _np, math as _m
+            pts = [self.center]
+            if self.radius > 1e-6:
+                for ang in (0,90,180,270):
+                    a = _m.radians(ang)
+                    pts.append(self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32))
+            return pts
+        def snap_points_typed(self):
+            out=[(self.center,'center')]
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.radius <= 0: return
+            segs = 40
+            pts = []
+            for i in range(segs+1):
+                a = 2*_m.pi * i / segs
+                w = self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32)
+                s = view._world_to_screen(_np.array([w[0], w[1], 0.0], _np.float32))
+                pts.append(s)
+            pen = QPen(QColor(180,220,255)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            for a,b in zip(pts[:-1], pts[1:]):
+                p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            # center point
+            c = view._world_to_screen(_np.array([self.center[0], self.center[1], 0.0], _np.float32))
+            pen = QPen(QColor(255,180,120)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(c[0]), int(c[1]))
+
+    class Rect2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            super().__init__()
+            self.p0 = _np.array(p0, dtype=_np.float32)
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def corners(self):
+            import numpy as _np
+            if self.p1 is None:
+                return []
+            x0,y0 = self.p0
+            x1,y1 = self.p1
+            mnx,mxx = min(x0,x1), max(x0,x1)
+            mny,mxy = min(y0,y1), max(y0,y1)
+            return [ _np.array([mnx,mny], _np.float32), _np.array([mxx,mny], _np.float32), _np.array([mxx,mxy], _np.float32), _np.array([mnx,mxy], _np.float32) ]
+        def snap_points(self):
+            import numpy as _np
+            cs = self.corners()
+            pts = cs[:]
+            if len(cs)==4:
+                # edge midpoints
+                for a,b in zip(cs, cs[1:]+cs[:1]):
+                    pts.append( (a+b)/2.0 )
+                # center
+                cx = sum(c[0] for c in cs)/4.0; cy = sum(c[1] for c in cs)/4.0
+                pts.append(_np.array([cx,cy], _np.float32))
+            return pts
+        def snap_points_typed(self):
+            import numpy as _np
+            cs = self.corners()
+            out=[(c,'end') for c in cs]
+            if len(cs)==4:
+                for a,b in zip(cs, cs[1:]+cs[:1]): out.append(((a+b)/2.0,'mid'))
+                cx = sum(c[0] for c in cs)/4.0; cy = sum(c[1] for c in cs)/4.0
+                out.append((_np.array([cx,cy], _np.float32),'center'))
+            return out
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            cs = self.corners()
+            if len(cs) < 2:
+                # just draw p0
+                s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+                pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
+                return
+            pts2 = [ view._world_to_screen(_np.array([c[0], c[1], 0.0], _np.float32)) for c in cs ]
+            pen = QPen(QColor(200,255,180)); pen.setWidth(2)
+            if getattr(self,'construction',False): pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
             for a,b in zip(pts2, pts2[1:]+pts2[:1]):
                 p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
             pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen)
@@ -224,6 +723,28 @@ except NameError:  # define overlay classes (PIL present path)
                     p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
             pen = QPen(QColor(255,200,120)); pen.setWidth(6); p.setPen(pen)
             for s in pts2: p.drawPoint(int(s[0]), int(s[1]))
+    class Line2D(SketchEntity):
+        def __init__(self, p0, p1=None):
+            import numpy as _np
+            self.p0 = _np.array(p0, dtype=_np.float32)
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+        def snap_points(self):
+            import numpy as _np
+            pts = [self.p0]
+            if self.p1 is not None:
+                pts.append(self.p1)
+                pts.append((self.p0 + self.p1)/2.0)
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
+            pen = QPen(QColor(220,220,220)); pen.setWidth(2); p.setPen(pen)
+            if self.p1 is not None:
+                s1 = view._world_to_screen(_np.array([self.p1[0], self.p1[1], 0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+            pen = QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen); p.drawPoint(int(s0[0]), int(s0[1]))
+            if self.p1 is not None:
+                p.drawPoint(int(s1[0]), int(s1[1]))
     class Circle2D(SketchEntity):
         def __init__(self, center, radius=0.0):
             import numpy as _np
@@ -280,6 +801,81 @@ except NameError:  # define overlay classes (PIL present path)
             for a,b in zip(pts2, pts2[1:]+pts2[:1]): p.drawLine(int(a[0]),int(a[1]),int(b[0]),int(b[1]))
             pen=QPen(QColor(255,200,140)); pen.setWidth(6); p.setPen(pen)
             for s in pts2: p.drawPoint(int(s[0]), int(s[1]))
+    class Arc2D(SketchEntity):
+        def __init__(self, p0=None, p1=None, p2=None):
+            import numpy as _np
+            self.p0 = _np.array(p0, dtype=_np.float32) if p0 is not None else None
+            self.p1 = _np.array(p1, dtype=_np.float32) if p1 is not None else None
+            self.p2 = _np.array(p2, dtype=_np.float32) if p2 is not None else None
+        def _circle_from_3pts(self):
+            import numpy as _np
+            if self.p0 is None or self.p1 is None or self.p2 is None:
+                return None
+            x1,y1 = self.p0; x2,y2 = self.p1; x3,y3 = self.p2
+            a = x1*(y2 - y3) - y1*(x2 - x3) + x2*y3 - x3*y2
+            if abs(a) < 1e-9: return None
+            b = (x1*x1 + y1*y1)*(y3 - y2) + (x2*x2 + y2*y2)*(y1 - y3) + (x3*x3 + y3*y3)*(y2 - y1)
+            c = (x1*x1 + y1*y1)*(x2 - x3) + (x2*x2 + y2*y2)*(x3 - x1) + (x3*x3 + y3*y3)*(x1 - x2)
+            cx = -b/(2*a); cy = -c/(2*a)
+            r = float(_np.hypot(x1-cx, y1-cy))
+            return _np.array([cx,cy], _np.float32), r
+        def snap_points(self):
+            import numpy as _np
+            pts=[]
+            if self.p0 is not None: pts.append(self.p0)
+            if self.p2 is not None: pts.append(self.p2)
+            circ = self._circle_from_3pts()
+            if circ is not None:
+                c,_ = circ; pts.append(c)
+            if self.p0 is not None and self.p2 is not None:
+                pts.append((self.p0 + self.p2)/2.0)
+            return pts
+        def draw(self, p: QPainter, view):
+            import numpy as _np, math as _m
+            if self.p0 is None:
+                return
+            pen=QPen(QColor(200,240,255)); pen.setWidth(2); p.setPen(pen)
+            if self.p1 is None or self.p2 is None:
+                s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32))
+                p.drawPoint(int(s0[0]), int(s0[1]))
+                if self.p1 is not None:
+                    s1=view._world_to_screen(_np.array([self.p1[0], self.p1[1],0.0], _np.float32))
+                    p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+                return
+            circ=self._circle_from_3pts()
+            if circ is None:
+                s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32))
+                s2=view._world_to_screen(_np.array([self.p2[0], self.p2[1],0.0], _np.float32))
+                p.drawLine(int(s0[0]), int(s0[1]), int(s2[0]), int(s2[1]))
+                return
+            c,r=circ
+            a0=_m.atan2(self.p0[1]-c[1], self.p0[0]-c[0])
+            a1=_m.atan2(self.p1[1]-c[1], self.p1[0]-c[0])
+            a2=_m.atan2(self.p2[1]-c[1], self.p2[0]-c[0])
+            def ang_dist(a,b):
+                d=(b-a+_m.pi)%(2*_m.pi)-_m.pi
+                return d
+            d1=abs(ang_dist(a0,a1))+abs(ang_dist(a1,a2))
+            d2=abs(ang_dist(a0,a2))
+            cw=False if d1<d2 else True
+            segs=48; pts=[]
+            if not cw:
+                step=ang_dist(a0,a2)/segs; k=0
+                while k<=segs:
+                    ang=a0+step*k; k+=1
+                    w=c+r*_np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s=view._world_to_screen(_np.array([w[0],w[1],0.0], _np.float32)); pts.append(s)
+            else:
+                step=ang_dist(a2,a0)/segs; k=0
+                while k<=segs:
+                    ang=a2+step*k; k+=1
+                    w=c+r*_np.array([_np.cos(ang), _np.sin(ang)], _np.float32)
+                    s=view._world_to_screen(_np.array([w[0],w[1],0.0], _np.float32)); pts.append(s)
+            for a,b in zip(pts[:-1], pts[1:]): p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
+            pen_pts=QPen(QColor(255,200,140)); pen_pts.setWidth(6); p.setPen(pen_pts)
+            s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32)); p.drawPoint(int(s0[0]), int(s0[1]))
+            s2=view._world_to_screen(_np.array([self.p2[0], self.p2[1],0.0], _np.float32)); p.drawPoint(int(s2[0]), int(s2[1]))
+            sc=view._world_to_screen(_np.array([c[0], c[1],0.0], _np.float32)); p.drawPoint(int(sc[0]), int(sc[1]))
     class SketchLayer:
         def __init__(self):
             self.entities=[]; self.active_poly=None; self.active_shape=None; self.hover_snap=None
@@ -357,6 +953,9 @@ class AnalyticViewport(QOpenGLWidget):
         # translation drag state
         self._drag_move_active = False
         self._drag_last_pos = None
+        # Overlay editing state
+        self._sk_point_sel = None  # (entity, index) for Polyline2D point or ('circle', entity) for circle center
+        self._sk_dragging = False
 
     def _on_scene_changed(self):
         self._scene_dirty = True
@@ -471,6 +1070,12 @@ class AnalyticViewport(QOpenGLWidget):
         if panel is not None and getattr(panel,'_sketch_on',False):
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # Draw grid if enabled
+            try:
+                if getattr(panel, '_sketch_grid_on', False):
+                    self._draw_grid(p, getattr(panel, '_sketch_grid_step', 10.0))
+            except Exception:
+                pass
             panel._sketch.draw(p, self)
             p.end()
 
@@ -486,6 +1091,44 @@ class AnalyticViewport(QOpenGLWidget):
         y = np.dot(rel, up)
         s = 80.0 / max(1e-5, self.distance)
         return np.array([w*0.5 + x*s, h*0.5 - y*s], np.float32)
+
+    def _screen_to_world_grid_snap(self, sx, sy, step):
+        wpt = self._screen_to_world_xy(sx, sy)
+        if step <= 0:
+            return wpt
+        wpt_snapped = wpt.copy()
+        wpt_snapped[0] = round(wpt[0] / step) * step
+        wpt_snapped[1] = round(wpt[1] / step) * step
+        return wpt_snapped
+
+    def _draw_grid(self, painter: QPainter, step: float):
+        if step <= 0:
+            return
+        w, h = self.width(), self.height()
+        # Compute world bbox corners at Z≈0
+        tl = self._screen_to_world_xy(0,0)
+        br = self._screen_to_world_xy(w,h)
+        xmin, xmax = sorted([tl[0], br[0]])
+        ymin, ymax = sorted([tl[1], br[1]])
+        import math
+        x0 = math.floor(xmin/step)*step
+        y0 = math.floor(ymin/step)*step
+        pen = QPen(QColor(60,70,85)); pen.setWidth(1)
+        painter.setPen(pen)
+        # verticals
+        x = x0
+        while x <= xmax:
+            s1 = self._world_to_screen(np.array([x, ymin, 0.0], np.float32))
+            s2 = self._world_to_screen(np.array([x, ymax, 0.0], np.float32))
+            painter.drawLine(int(s1[0]), int(s1[1]), int(s2[0]), int(s2[1]))
+            x += step
+        # horizontals
+        y = y0
+        while y <= ymax:
+            s1 = self._world_to_screen(np.array([xmin, y, 0.0], np.float32))
+            s2 = self._world_to_screen(np.array([xmax, y, 0.0], np.float32))
+            painter.drawLine(int(s1[0]), int(s1[1]), int(s2[0]), int(s2[1]))
+            y += step
 
     def _screen_to_world_xy(self, sx, sy):
         # Map screen to world on Z≈0 plane
@@ -615,6 +1258,15 @@ class AnalyticViewport(QOpenGLWidget):
                         if not panel._sketch.active_poly.pts:
                             panel._sketch.active_poly = None
                         self.update(); return
+            # Sketch delete selected vertex/entity
+            if panel is not None and getattr(panel,'_sketch_on',False) and k in (Qt.Key_Delete, Qt.Key_Backspace):
+                if self._delete_selected_sketch():
+                    try:
+                        if hasattr(panel, '_update_sketch_info'):
+                            panel._update_sketch_info(self._sk_point_sel)
+                    except Exception:
+                        pass
+                    self.update(); return
             # Gizmo mode shortcuts
             if panel is not None:
                 if k == Qt.Key_R:
@@ -694,7 +1346,12 @@ class AnalyticViewport(QOpenGLWidget):
             panel = None
         if panel is not None and getattr(panel,'_sketch_on',False) and event.button()==Qt.MouseButton.LeftButton:
             mode = panel._sketch_mode
-            pt_world2 = panel._sketch.hover_snap if panel._sketch.hover_snap is not None else self._screen_to_world_xy(event.position().x(), event.position().y())[:2]
+            if getattr(panel, '_sketch_snap_grid', False):
+                step = float(getattr(panel, '_sketch_grid_step', 10.0))
+                w3 = self._screen_to_world_grid_snap(event.position().x(), event.position().y(), step)
+            else:
+                w3 = self._screen_to_world_xy(event.position().x(), event.position().y())
+            pt_world2 = panel._sketch.hover_snap if panel._sketch.hover_snap is not None else w3[:2]
             if mode=='polyline':
                 if panel._sketch.active_poly is None:
                     panel._sketch.active_poly = Polyline2D([])
@@ -707,6 +1364,23 @@ class AnalyticViewport(QOpenGLWidget):
                     # finalize
                     if isinstance(panel._sketch.active_shape, Circle2D) and panel._sketch.active_shape.radius>0:
                         panel._sketch.entities.append(panel._sketch.active_shape)
+                        # Optional kernel sync: add a thin torus ring at same center/radius
+                        try:
+                            if bool(getattr(panel, '_sketch_circle_to_ring', False)):
+                                c = panel._sketch.active_shape
+                                R = float(max(1e-6, c.radius))
+                                r = max(0.01, R * 0.05)
+                                pr = Prim(KIND_TORUS, [R, r, 0.0, 0.0], beta=0.0, color=(0.9,0.7,0.3))
+                                if hasattr(pr, 'set_transform'):
+                                    pr.set_transform(pos=[float(c.center[0]), float(c.center[1]), 0.0], euler=[0.0,0.0,0.0], scale=[1.0,1.0,1.0])
+                                else:
+                                    pr.xform.M[:3,3] = np.array([float(c.center[0]), float(c.center[1]), 0.0], np.float32)
+                                self.scene.add(pr)
+                        except Exception as _e:
+                            try:
+                                log.debug(f"circle→kernel sync failed: {_e}")
+                            except Exception:
+                                pass
                     panel._sketch.active_shape = None
                 self.update(); return
             elif mode=='rect':
@@ -719,6 +1393,110 @@ class AnalyticViewport(QOpenGLWidget):
                             panel._sketch.entities.append(panel._sketch.active_shape)
                     panel._sketch.active_shape = None
                 self.update(); return
+            elif mode=='line':
+                if panel._sketch.active_shape is None:
+                    panel._sketch.active_shape = Line2D(pt_world2)
+                else:
+                    if isinstance(panel._sketch.active_shape, Line2D):
+                        panel._sketch.active_shape.p1 = np.array([pt_world2[0],pt_world2[1]], np.float32)
+                        panel._sketch.entities.append(panel._sketch.active_shape)
+                    panel._sketch.active_shape = None
+                self.update(); return
+            elif mode=='arc3':
+                if panel._sketch.active_shape is None:
+                    panel._sketch.active_shape = Arc2D(pt_world2, None, None)
+                elif isinstance(panel._sketch.active_shape, Arc2D) and panel._sketch.active_shape.p1 is None:
+                    panel._sketch.active_shape.p1 = np.array([pt_world2[0],pt_world2[1]], np.float32)
+                else:
+                    if isinstance(panel._sketch.active_shape, Arc2D):
+                        panel._sketch.active_shape.p2 = np.array([pt_world2[0],pt_world2[1]], np.float32)
+                        panel._sketch.entities.append(panel._sketch.active_shape)
+                    panel._sketch.active_shape = None
+                self.update(); return
+            elif mode=='dimension':
+                # Typed placement: Linear/H/V use two picks; Radius/Diameter use circle center
+                sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
+                if sel is None:
+                    return
+                dt = getattr(panel, '_dim_type', 'linear')
+                if dt in ('radius','diameter'):
+                    if isinstance(sel, tuple) and sel[0]=='circle' and isinstance(sel[1], Circle2D):
+                        if dt=='radius':
+                            panel._sketch.dimensions.append(DimRadius2D(('circle', sel[1]), panel))
+                        else:
+                            panel._sketch.dimensions.append(DimDiameter2D(('circle', sel[1]), panel))
+                        self.update(); return
+                    else:
+                        return
+                # two-point dims
+                if panel._sketch._dim_pick is None:
+                    panel._sketch._dim_pick = sel
+                else:
+                    a = panel._sketch._dim_pick; b = sel
+                    if dt=='horizontal':
+                        panel._sketch.dimensions.append(DimHorizontal2D(a, b, panel))
+                    elif dt=='vertical':
+                        panel._sketch.dimensions.append(DimVertical2D(a, b, panel))
+                    else:
+                        panel._sketch.dimensions.append(DimLinear2D(a, b, panel))
+                    panel._sketch._dim_pick = None; panel._sketch._dim_preview = None
+                    self.update(); return
+            elif mode=='insert_vertex':
+                # Insert on nearest polyline segment or split a line
+                try:
+                    w2 = np.array([pt_world2[0], pt_world2[1]], np.float32)
+                    best_px = 1e9; best_ent = None; best_idx = -1; best_point = None
+                    for ent in panel._sketch.entities:
+                        if isinstance(ent, Polyline2D) and len(ent.pts) >= 2:
+                            for i in range(len(ent.pts)-1):
+                                a = ent.pts[i]; b = ent.pts[i+1]
+                                ab = b - a; t = 0.0
+                                denom = float(np.dot(ab, ab));
+                                if denom > 1e-9:
+                                    t = max(0.0, min(1.0, float(np.dot(w2 - a, ab) / denom)))
+                                p = a + t*ab
+                                s = self._world_to_screen(np.array([p[0], p[1], 0.0], np.float32))
+                                dpx = float(np.hypot(s[0]-event.position().x(), s[1]-event.position().y()))
+                                if dpx < best_px:
+                                    best_px = dpx; best_ent = ent; best_idx = i+1; best_point = p
+                        elif isinstance(ent, Line2D) and ent.p1 is not None:
+                            a = ent.p0; b = ent.p1
+                            ab = b - a; t = 0.0
+                            denom = float(np.dot(ab, ab));
+                            if denom > 1e-9:
+                                t = max(0.0, min(1.0, float(np.dot(w2 - a, ab) / denom)))
+                            p = a + t*ab
+                            s = self._world_to_screen(np.array([p[0], p[1], 0.0], np.float32))
+                            dpx = float(np.hypot(s[0]-event.position().x(), s[1]-event.position().y()))
+                            if dpx < best_px:
+                                best_px = dpx; best_ent = ent; best_idx = 1; best_point = p
+                    # threshold in pixels
+                    if best_ent is None or best_px > 12.0:
+                        return
+                    if isinstance(best_ent, Polyline2D):
+                        ins = best_point if getattr(panel, '_insert_midpoint', False) else w2
+                        best_ent.pts.insert(best_idx, ins.astype(np.float32))
+                    elif isinstance(best_ent, Line2D):
+                        # split into two lines
+                        a = best_ent.p0; b = best_ent.p1
+                        mid = (best_point if getattr(panel, '_insert_midpoint', False) else w2).copy()
+                        panel._sketch.entities.remove(best_ent)
+                        panel._sketch.entities.append(Line2D(a, mid))
+                        panel._sketch.entities.append(Line2D(mid, b))
+                    self.update(); return
+                except Exception:
+                    return
+            # Selection of nearest sketch vertex (Ctrl+Click)
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
+                self._sk_point_sel = sel
+                self._sk_dragging = sel is not None
+                try:
+                    if hasattr(panel, '_update_sketch_info'):
+                        panel._update_sketch_info(sel)
+                except Exception:
+                    pass
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -747,7 +1525,49 @@ class AnalyticViewport(QOpenGLWidget):
                 panel._sketch.active_shape.radius = float(np.linalg.norm(wpt - c))
             elif panel._sketch_mode=='rect' and isinstance(panel._sketch.active_shape, Rect2D):
                 panel._sketch.active_shape.p1 = wpt.copy()
+            elif panel._sketch_mode=='line' and isinstance(panel._sketch.active_shape, Line2D):
+                panel._sketch.active_shape.p1 = wpt.copy()
+            elif panel._sketch_mode=='arc3' and isinstance(panel._sketch.active_shape, Arc2D):
+                if panel._sketch.active_shape.p1 is None:
+                    panel._sketch.active_shape.p1 = wpt.copy()
+                else:
+                    panel._sketch.active_shape.p2 = wpt.copy()
+            # dimension live preview
+            if panel._sketch_mode=='dimension':
+                sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
+                dt = getattr(panel, '_dim_type', 'linear')
+                panel._sketch._dim_preview = None
+                if dt in ('radius','diameter'):
+                    if isinstance(sel, tuple) and sel[0]=='circle' and isinstance(sel[1], Circle2D):
+                        if dt=='radius':
+                            panel._sketch._dim_preview = DimRadius2D(('circle', sel[1]), panel)
+                        else:
+                            panel._sketch._dim_preview = DimDiameter2D(('circle', sel[1]), panel)
+                else:
+                    a = panel._sketch._dim_pick
+                    b = sel if sel is not None else (panel._sketch.hover_snap if panel._sketch.hover_snap is not None else wpt)
+                    if a is not None and b is not None:
+                        if dt=='horizontal':
+                            panel._sketch._dim_preview = DimHorizontal2D(a, b, panel)
+                        elif dt=='vertical':
+                            panel._sketch._dim_preview = DimVertical2D(a, b, panel)
+                        else:
+                            panel._sketch._dim_preview = DimLinear2D(a, b, panel)
             self.update()
+            # Drag selected vertex (if any)
+            if self._sk_dragging and self._sk_point_sel is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+                if getattr(panel, '_sketch_snap_grid', False):
+                    step = float(getattr(panel, '_sketch_grid_step', 10.0))
+                    w3 = self._screen_to_world_grid_snap(event.position().x(), event.position().y(), step)
+                else:
+                    w3 = self._screen_to_world_xy(event.position().x(), event.position().y())
+                self._move_selected_sketch_vertex(np.array([w3[0], w3[1]], np.float32))
+                try:
+                    if hasattr(panel, '_update_sketch_info'):
+                        panel._update_sketch_info(self._sk_point_sel)
+                except Exception:
+                    pass
+                self.update()
         # Gizmo rotate / scale (invisible gizmo) using horizontal drag
         try:
             panel = self.parent()
@@ -808,8 +1628,14 @@ class AnalyticViewport(QOpenGLWidget):
             return
         buttons = event.buttons() or self._last_buttons
         updated = False
-        # Orbit (LMB)
-        if buttons & Qt.MouseButton.LeftButton:
+        # Orbit (LMB) — disabled if sketch lock top is enabled
+        lock_top = False
+        try:
+            panel = self.parent()
+            lock_top = bool(getattr(panel, '_sketch_on', False) and getattr(panel, '_sketch_lock_top', False))
+        except Exception:
+            lock_top = False
+        if (buttons & Qt.MouseButton.LeftButton) and not lock_top:
             sens = 0.005
             self.yaw   += dx * sens
             self.pitch += dy * sens
@@ -817,8 +1643,8 @@ class AnalyticViewport(QOpenGLWidget):
             self.pitch = float(np.clip(self.pitch, -1.45, 1.45))
             self._update_camera()
             updated = True
-        # Pan (RMB)
-        if buttons & Qt.MouseButton.RightButton:
+        # Pan (RMB) — disabled if sketch lock top is enabled
+        if (buttons & Qt.MouseButton.RightButton) and not lock_top:
             # derive right/up from current basis
             R = self._cam_basis()
             right = R[:,0]; up = R[:,1]
@@ -835,7 +1661,93 @@ class AnalyticViewport(QOpenGLWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_move_active = False
             self._drag_last_pos = None
+            self._sk_dragging = False
         super().mouseReleaseEvent(event)
+
+    def _pick_nearest_sketch_vertex(self, sx: float, sy: float):
+        try:
+            panel = self.parent()
+        except Exception:
+            return None
+        if panel is None:
+            return None
+        best = 1e9; best_key = None
+        # Search polyline points, line endpoints/midpoints, rect corners, circle centers
+        for ent in getattr(panel, '_sketch').entities:
+            if isinstance(ent, Polyline2D):
+                for idx, pt in enumerate(ent.pts):
+                    s = self._world_to_screen(np.array([pt[0], pt[1], 0.0], np.float32))
+                    d = float(np.hypot(s[0]-sx, s[1]-sy))
+                    if d < best and d <= 12.0:
+                        best = d; best_key = (ent, idx)
+            elif isinstance(ent, Line2D):
+                for idx, pt in enumerate([ent.p0] + ([ent.p1] if ent.p1 is not None else [])):
+                    s = self._world_to_screen(np.array([pt[0], pt[1], 0.0], np.float32))
+                    d = float(np.hypot(s[0]-sx, s[1]-sy))
+                    if d < best and d <= 12.0:
+                        best = d; best_key = (ent, idx)
+            elif isinstance(ent, Rect2D):
+                for idx, pt in enumerate(ent.corners()):
+                    s = self._world_to_screen(np.array([pt[0], pt[1], 0.0], np.float32))
+                    d = float(np.hypot(s[0]-sx, s[1]-sy))
+                    if d < best and d <= 12.0:
+                        best = d; best_key = (ent, idx)
+            elif isinstance(ent, Circle2D):
+                c = ent.center
+                s = self._world_to_screen(np.array([c[0], c[1], 0.0], np.float32))
+                d = float(np.hypot(s[0]-sx, s[1]-sy))
+                if d < best and d <= 12.0:
+                    best = d; best_key = ('circle', ent)
+        return best_key
+
+    def _move_selected_sketch_vertex(self, new_xy: np.ndarray):
+        key = self._sk_point_sel
+        if key is None:
+            return
+        if isinstance(key, tuple) and len(key)==2 and isinstance(key[0], Polyline2D):
+            ent, idx = key
+            if 0 <= idx < len(ent.pts):
+                ent.pts[idx] = new_xy.copy()
+        elif isinstance(key, tuple) and key[0] == 'circle' and isinstance(key[1], Circle2D):
+            key[1].center = new_xy.copy()
+
+    def _delete_selected_sketch(self) -> bool:
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        if panel is None or not getattr(panel, '_sketch_on', False):
+            return False
+        key = self._sk_point_sel
+        # Delete logic: if a polyline vertex is selected, remove it; drop entity if < 2 pts.
+        # If a circle center selected, remove the circle entity.
+        if key is None:
+            # fallback: delete last entity if any
+            if panel._sketch.entities:
+                panel._sketch.entities.pop()
+                return True
+            return False
+        if isinstance(key, tuple) and len(key)==2 and isinstance(key[0], Polyline2D):
+            ent, idx = key
+            try:
+                if 0 <= idx < len(ent.pts):
+                    ent.pts.pop(idx)
+                    if len(ent.pts) < 2 and ent in panel._sketch.entities:
+                        panel._sketch.entities.remove(ent)
+                    self._sk_point_sel = None
+                    return True
+            except Exception:
+                return False
+        elif isinstance(key, tuple) and key[0] == 'circle' and isinstance(key[1], Circle2D):
+            ent = key[1]
+            try:
+                if ent in panel._sketch.entities:
+                    panel._sketch.entities.remove(ent)
+                self._sk_point_sel = None
+                return True
+            except Exception:
+                return False
+        return False
 
     # --- Selection + panel sync helpers ---
     def _current_prim(self):
@@ -1034,6 +1946,7 @@ class AnalyticViewportPanel(QWidget):
         self._sketch_on: bool = False
         self._sketch_mode: str | None = None  # 'polyline' or None
         self._sketch = SketchLayer()
+        self._sketch_lock_top: bool = True
         # Gizmo / transform state
         self._gizmo_mode = 'move'   # 'move' | 'rotate' | 'scale'
         self._axis_lock = None      # 'x' | 'y' | 'z' | None
@@ -1151,31 +2064,112 @@ class AnalyticViewportPanel(QWidget):
             if not self._sketch_on:  # disable & clean up
                 self._sketch_mode = None
                 self._sketch.active_poly = None
-            self.view.update()
+            else:
+                if getattr(self, '_sketch_lock_top', False):
+                    try:
+                        self.view.yaw = 0.0; self.view.pitch = 0.0
+                        self.view._update_camera()
+                    except Exception:
+                        self.view.update()
+                else:
+                    self.view.update()
         cb_sketch.stateChanged.connect(_toggle_sk)
         fs.addRow(cb_sketch)
+        # Lock top view while sketching
+        row_lock = QWidget(); hlk = QHBoxLayout(row_lock); hlk.setContentsMargins(0,0,0,0)
+        cb_lock_top = QCheckBox("Lock Top View (XY)"); cb_lock_top.setChecked(True)
+        def _apply_lock_top(_):
+            self._sketch_lock_top = cb_lock_top.isChecked()
+            if self._sketch_on and self._sketch_lock_top:
+                # force yaw/pitch to top view and refresh
+                try:
+                    self.view.yaw = 0.0; self.view.pitch = 0.0
+                    self.view._update_camera()
+                except Exception:
+                    pass
+            else:
+                self.view.update()
+        cb_lock_top.stateChanged.connect(_apply_lock_top)
+        hlk.addWidget(cb_lock_top)
+        fs.addRow("View Lock", row_lock)
+        # Grid & Snap
+        self._sketch_grid_on = False
+        self._sketch_snap_grid = False
+        self._sketch_grid_step = 10.0
+        row_grid = QWidget(); hg = QHBoxLayout(row_grid); hg.setContentsMargins(0,0,0,0)
+        cb_grid = QCheckBox("Show Grid"); cb_grid.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_on', cb_grid.isChecked()) or self.view.update())
+        cb_snapg= QCheckBox("Snap Grid"); cb_snapg.stateChanged.connect(lambda _v: setattr(self, '_sketch_snap_grid', cb_snapg.isChecked()))
+        sp_grid = QDoubleSpinBox(); sp_grid.setRange(0.1, 1000.0); sp_grid.setDecimals(2); sp_grid.setSingleStep(0.5); sp_grid.setValue(self._sketch_grid_step)
+        sp_grid.valueChanged.connect(lambda v: setattr(self, '_sketch_grid_step', float(v)))
+        hg.addWidget(cb_grid); hg.addWidget(cb_snapg); hg.addWidget(QLabel("Step")); hg.addWidget(sp_grid)
+        fs.addRow("Grid/Snap", row_grid)
+        # Kernel Sync (optional)
+        row_sync = QWidget(); hsync = QHBoxLayout(row_sync); hsync.setContentsMargins(0,0,0,0)
+        self._sketch_circle_to_ring = False
+        cb_circle_sync = QCheckBox("Circle → Ring (kernel)")
+        cb_circle_sync.setToolTip("When enabled, finalizing a sketch circle adds a thin torus at the same center/radius in the AACore scene.")
+        cb_circle_sync.stateChanged.connect(lambda _v: setattr(self, '_sketch_circle_to_ring', cb_circle_sync.isChecked()))
+        hsync.addWidget(cb_circle_sync)
+        fs.addRow("Sync", row_sync)
         row_tools = QWidget(); ht = QHBoxLayout(row_tools); ht.setContentsMargins(0,0,0,0)
         btn_poly = QPushButton("Polyline"); btn_poly.setCheckable(True)
+        btn_line = QPushButton("Line"); btn_line.setCheckable(True)
+        btn_arc3 = QPushButton("Arc (3-pt)"); btn_arc3.setCheckable(True)
         btn_circle = QPushButton("Circle"); btn_circle.setCheckable(True)
         btn_rect = QPushButton("Rectangle"); btn_rect.setCheckable(True)
+        btn_insv = QPushButton("Insert Vertex"); btn_insv.setCheckable(True)
         def _choose_poly():
             on = btn_poly.isChecked()
             if on:
-                btn_circle.setChecked(False); btn_rect.setChecked(False)
+                for b2 in (btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
                 self._sketch_mode = 'polyline'
                 self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
             else:
                 if self._sketch_mode=='polyline':
                     self._sketch_mode = None
             self.view.update()
         btn_poly.clicked.connect(_choose_poly)
+        def _choose_line():
+            on = btn_line.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'line'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='line': self._sketch_mode = None
+            self.view.update()
+        btn_line.clicked.connect(_choose_line)
+        def _choose_arc3():
+            on = btn_arc3.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'arc3'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='arc3': self._sketch_mode = None
+            self.view.update()
+        btn_arc3.clicked.connect(_choose_arc3)
         def _choose_circle():
             on = btn_circle.isChecked()
             if on:
-                btn_poly.setChecked(False); btn_rect.setChecked(False)
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_rect): b2.setChecked(False)
                 self._sketch_mode = 'circle'
                 self._sketch.active_poly = None
                 self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
             else:
                 if self._sketch_mode=='circle': self._sketch_mode = None
             self.view.update()
@@ -1183,18 +2177,82 @@ class AnalyticViewportPanel(QWidget):
         def _choose_rect():
             on = btn_rect.isChecked()
             if on:
-                btn_poly.setChecked(False); btn_circle.setChecked(False)
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle): b2.setChecked(False)
                 self._sketch_mode = 'rect'
                 self._sketch.active_poly = None
                 self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
             else:
                 if self._sketch_mode=='rect': self._sketch_mode = None
             self.view.update()
         btn_rect.clicked.connect(_choose_rect)
-        for b in (btn_poly, btn_circle, btn_rect):
+        # Insert Vertex / Midpoint option
+        self._insert_midpoint = False
+        cb_ins_mid = QCheckBox("Midpoint"); cb_ins_mid.stateChanged.connect(lambda _v: setattr(self, '_insert_midpoint', cb_ins_mid.isChecked()))
+        def _choose_insv():
+            on = btn_insv.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'insert_vertex'
+                self._sketch._dim_pick = None
+            else:
+                if self._sketch_mode=='insert_vertex': self._sketch_mode = None
+            self.view.update()
+        btn_insv.clicked.connect(_choose_insv)
+        # Dimension tool
+        btn_dim = QPushButton("Dimension"); btn_dim.setCheckable(True)
+        def _choose_dim():
+            on = btn_dim.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'dimension'
+                self._sketch._dim_pick = None
+            else:
+                if self._sketch_mode=='dimension': self._sketch_mode = None
+            self.view.update()
+        btn_dim.clicked.connect(_choose_dim)
+        for b in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect, btn_insv, btn_dim, cb_ins_mid):
             ht.addWidget(b)
         fs.addRow("Tool", row_tools)
+        # Dimension settings (type + precision)
+        row_dim = QWidget(); hdim = QHBoxLayout(row_dim); hdim.setContentsMargins(0,0,0,0)
+        from PySide6.QtWidgets import QComboBox as _QCB
+        self._dim_type = 'linear'
+        cb_dim_type = _QCB(); cb_dim_type.addItems(["Linear","Horizontal","Vertical","Radius","Diameter"])
+        def _set_dim_type(idx):
+            self._dim_type = [ 'linear','horizontal','vertical','radius','diameter' ][max(0,min(4,idx))]
+        cb_dim_type.currentIndexChanged.connect(_set_dim_type)
+        self._dim_precision = 2
+        sp_dim_prec = QSpinBox(); sp_dim_prec.setRange(0,6); sp_dim_prec.setValue(self._dim_precision)
+        sp_dim_prec.valueChanged.connect(lambda v: setattr(self, '_dim_precision', int(v)))
+        hdim.addWidget(QLabel("Type")); hdim.addWidget(cb_dim_type)
+        hdim.addWidget(QLabel("Precision")); hdim.addWidget(sp_dim_prec)
+        fs.addRow("Dimensions", row_dim)
+        # Selection info label
+        self._sketch_info_label = QLabel("No selection")
+        fs.addRow("Selection", self._sketch_info_label)
+        # Save/Load Sketch JSON
+        row_io = QWidget(); hio = QHBoxLayout(row_io); hio.setContentsMargins(0,0,0,0)
+        btn_save_sk = QPushButton("Save Sketch JSON")
+        btn_load_sk = QPushButton("Load Sketch JSON")
+        btn_save_sk.clicked.connect(self._save_sketch_json)
+        btn_load_sk.clicked.connect(self._load_sketch_json)
+        # Clear button
+        btn_clear_sk = QPushButton("Clear Sketch")
+        def _clear_sk():
+            self._sketch.entities.clear(); self._sketch.active_poly=None; self._sketch.active_shape=None
+            self.view._sk_point_sel=None; self.view._sk_dragging=False
+            self._update_sketch_info(None)
+            self.view.update()
+        btn_clear_sk.clicked.connect(_clear_sk)
+        hio.addWidget(btn_save_sk); hio.addWidget(btn_load_sk)
+        hio.addWidget(btn_clear_sk)
+        fs.addRow("IO", row_io)
         side.addWidget(gb_sk)
+        # Backing model
+        self._sketch_doc = SketchDocument(units=Units.MM)
 
         # --- Actions ---
         gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
@@ -1230,12 +2288,14 @@ class AnalyticViewportPanel(QWidget):
         btn_add_klein = QPushButton("Add Klein Bottle"); btn_add_klein.clicked.connect(lambda: self._add_prim('klein'))
         btn_add_menger = QPushButton("Add Menger Sponge"); btn_add_menger.clicked.connect(lambda: self._add_prim('menger'))
         btn_add_hyperbolic = QPushButton("Add Hyperbolic Tiling"); btn_add_hyperbolic.clicked.connect(lambda: self._add_prim('hyperbolic'))
+        btn_add_gyroid = QPushButton("Add Gyroid"); btn_add_gyroid.clicked.connect(lambda: self._add_prim('gyroid'))
+        btn_add_trefoil = QPushButton("Add Trefoil Knot"); btn_add_trefoil.clicked.connect(lambda: self._add_prim('trefoil'))
         btn_del_last = QPushButton("Delete Last"); btn_del_last.clicked.connect(self._del_last)
         btn_dup_sel = QPushButton("Duplicate Selected"); btn_dup_sel.clicked.connect(self._duplicate_selected)
         btn_center_sel = QPushButton("Center On Selected"); btn_center_sel.clicked.connect(self._center_on_selected)
         btn_reset_cam = QPushButton("Reset Camera"); btn_reset_cam.clicked.connect(self._reset_camera)
         btn_export = QPushButton("Export Scene JSON"); btn_export.clicked.connect(self._export_scene_json)
-        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_add_torus4d, btn_add_mandelbulb, btn_add_klein, btn_add_menger, btn_add_hyperbolic, btn_del_last):
+        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_add_torus4d, btn_add_mandelbulb, btn_add_klein, btn_add_menger, btn_add_hyperbolic, btn_add_gyroid, btn_add_trefoil, btn_del_last):
             vp.addWidget(b)
         for b in (btn_dup_sel, btn_center_sel, btn_reset_cam, btn_export):
             vp.addWidget(b)
@@ -1262,12 +2322,26 @@ class AnalyticViewportPanel(QWidget):
             s = QDoubleSpinBox(); s.setRange(0.01,100.0); s.setSingleStep(0.05); s.setDecimals(3); s.setValue(1.0); return s
         self._sp_rot = [rspin() for _ in range(3)]
         self._sp_scl = [sspin() for _ in range(3)]
+        # Uniform scale control: sets X/Y/Z together
+        self._sp_scl_u = sspin()
         # Move (translate) controls
         def mspin():
             s = QDoubleSpinBox(); s.setRange(-1000.0,1000.0); s.setSingleStep(0.01); s.setDecimals(4); s.setValue(0.0); return s
         self._sp_move = [mspin() for _ in range(3)]
         fe2.addRow("Rot ° X/Y/Z", self._make_row(self._sp_rot))
         fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
+        def _set_uniform_scale(v: float):
+            try:
+                for sp in self._sp_scl:
+                    sp.blockSignals(True)
+                    sp.setValue(float(v))
+                    sp.blockSignals(False)
+                # Apply after setting all axes
+                self._apply_edit()
+            except Exception:
+                pass
+        self._sp_scl_u.valueChanged.connect(_set_uniform_scale)
+        fe2.addRow("Scale (Uniform)", self._sp_scl_u)
         fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
         self._nudge_step = QDoubleSpinBox(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
         fe2.addRow("Nudge Step", self._nudge_step)
@@ -1297,6 +2371,25 @@ class AnalyticViewportPanel(QWidget):
         scroll.setMinimumWidth(300)
         root.addWidget(scroll)
         self._refresh_prim_label()
+
+    def _update_sketch_info(self, sel_key):
+        try:
+            if sel_key is None:
+                self._sketch_info_label.setText("No selection"); return
+            if isinstance(sel_key, tuple) and len(sel_key)==2 and isinstance(sel_key[0], Polyline2D):
+                ent, idx = sel_key
+                self._sketch_info_label.setText(f"Polyline: {len(getattr(ent,'pts',[]))} pts, vertex #{idx}")
+                return
+            if isinstance(sel_key, tuple) and sel_key[0]=='circle' and isinstance(sel_key[1], Circle2D):
+                ent = sel_key[1]
+                self._sketch_info_label.setText(f"Circle: r={getattr(ent,'radius',0.0):.3f}")
+                return
+            self._sketch_info_label.setText("Selection: unknown")
+        except Exception:
+            try:
+                self._sketch_info_label.setText("Selection: error")
+            except Exception:
+                pass
 
     # --- UI callbacks ---
     def _on_mode(self, idx:int):
@@ -1383,6 +2476,12 @@ class AnalyticViewportPanel(QWidget):
         elif kind=='hyperbolic':
             # params: [scale, order, symmetry, 0] - Hyperbolic {order,symmetry} tiling
             self.view.scene.add(Prim(KIND_HYPERBOLIC, [2.0, 7, 3, 0], beta=0.0, color=(0.9,0.3,0.7)))
+        elif kind=='gyroid':
+            # params: [scale, tau, thickness, 0]
+            self.view.scene.add(Prim(KIND_GYROID, [2.5, 0.0, 0.04, 0], beta=0.0, color=(0.7,0.9,0.3)))
+        elif kind=='trefoil':
+            # params: [scale, tube, samples, 0]
+            self.view.scene.add(Prim(KIND_TREFOIL, [0.8, 0.08, 96, 0], beta=0.0, color=(0.9,0.5,0.2)))
         self._refresh_prim_label(); self.view.update()
 
     def _del_last(self):
@@ -1464,7 +2563,7 @@ class AnalyticViewportPanel(QWidget):
         self._prim_buttons_box.addStretch(1)
 
     def _kind_name(self, k):
-        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus", KIND_MOBIUS: "Mobius", KIND_SUPERELLIPSOID:"Superellipsoid", KIND_QUASICRYSTAL:"QuasiCrystal", KIND_TORUS4D:"4D Torus", KIND_MANDELBULB:"Mandelbulb", KIND_KLEIN:"Klein Bottle", KIND_MENGER:"Menger Sponge", KIND_HYPERBOLIC:"Hyperbolic Tiling"}.get(k,str(k))
+        return {KIND_SPHERE:"Sphere",KIND_BOX:"Box",KIND_CAPSULE:"Capsule",KIND_TORUS:"Torus", KIND_MOBIUS: "Mobius", KIND_SUPERELLIPSOID:"Superellipsoid", KIND_QUASICRYSTAL:"QuasiCrystal", KIND_TORUS4D:"4D Torus", KIND_MANDELBULB:"Mandelbulb", KIND_KLEIN:"Klein Bottle", KIND_MENGER:"Menger Sponge", KIND_HYPERBOLIC:"Hyperbolic Tiling", KIND_GYROID:"Gyroid", KIND_TREFOIL:"Trefoil Knot"}.get(k,str(k))
 
     def _make_row(self, widgets):
         box = QWidget(); hl = QHBoxLayout(box); hl.setContentsMargins(0,0,0,0)
@@ -1528,6 +2627,13 @@ class AnalyticViewportPanel(QWidget):
         if hasattr(pr, 'scale'):
             for i in range(3):
                 self._sp_scl[i].blockSignals(True); self._sp_scl[i].setValue(float(pr.scale[i])); self._sp_scl[i].blockSignals(False)
+            try:
+                # Reflect current uniform value as X scale (assumes uniform when set via this control)
+                self._sp_scl_u.blockSignals(True)
+                self._sp_scl_u.setValue(float(pr.scale[0]))
+                self._sp_scl_u.blockSignals(False)
+            except Exception:
+                pass
         self._edit_group.setEnabled(True)
         # Update parameter tooltips / semantic hints
         try:
@@ -1556,6 +2662,10 @@ class AnalyticViewportPanel(QWidget):
                 a_tt = 'Iterations (detail level)'; b_tt = 'Size (overall scale)'
             elif kind_name == 'Hyperbolic Tiling':
                 a_tt = 'Scale (overall size)'; b_tt = 'Order (polygon sides)'
+            elif kind_name == 'Gyroid':
+                a_tt = 'Scale (frequency)'; b_tt = 'Tau (iso-level)'
+            elif kind_name == 'Trefoil Knot':
+                a_tt = 'Scale (curve size)'; b_tt = 'Tube Radius'
             else:
                 a_tt = 'Param A'; b_tt = 'Param B'
             self._sp_param[0].setToolTip(a_tt)
@@ -1596,6 +2706,143 @@ class AnalyticViewportPanel(QWidget):
             pass
         self.view.update()
 
+    # --- Sketch save/load ---
+    def _save_sketch_json(self):
+        try:
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            path, _ = QFileDialog.getSaveFileName(self, "Save Sketch JSON", "sketch.json", "JSON (*.json)")
+            if not path:
+                return
+            # Build doc from overlay entities (minimal polyline/circle export)
+            doc = SketchDocument(units=Units.MM)
+            pid = 0
+            def new_pid():
+                nonlocal pid; pid += 1; return f"p{pid}"
+            extra = { 'lines': [], 'rects': [], 'arcs3': [], 'dimensions': [], 'dim_precision': int(getattr(self,'_dim_precision',2)) }
+            for ent in self._sketch.entities:
+                if isinstance(ent, Polyline2D):
+                    ids = []
+                    for pt in ent.pts:
+                        idp = new_pid(); ids.append(idp)
+                        doc.points.append(type('P',(),{})())  # placeholder; will patch below
+                        doc.points[-1].__dict__.update({"id": idp, "x": float(pt[0]), "y": float(pt[1]), "construction": False})
+                    doc.polylines.append(type('PL',(),{})())
+                    doc.polylines[-1].__dict__.update({"id": f"pl{pid}", "verts": ids, "closed": False, "construction": False})
+                elif isinstance(ent, Circle2D):
+                    idc = new_pid()
+                    c = ent.center
+                    doc.points.append(type('P',(),{})())
+                    doc.points[-1].__dict__.update({"id": idc, "x": float(c[0]), "y": float(c[1]), "construction": False})
+                    doc.circles.append(type('C',(),{})())
+                    doc.circles[-1].__dict__.update({"id": f"c{pid}", "center": idc, "radius": float(ent.radius), "construction": False})
+                elif isinstance(ent, Line2D):
+                    if getattr(ent, 'p1', None) is not None:
+                        extra['lines'].append({'p0':[float(ent.p0[0]), float(ent.p0[1])], 'p1':[float(ent.p1[0]), float(ent.p1[1])]})
+                elif isinstance(ent, Rect2D):
+                    p0 = [float(ent.p0[0]), float(ent.p0[1])]
+                    p1 = [float(ent.p1[0]), float(ent.p1[1])] if getattr(ent,'p1', None) is not None else p0
+                    extra['rects'].append({'p0': p0, 'p1': p1})
+                elif isinstance(ent, Arc2D):
+                    if getattr(ent,'p0',None) is not None and getattr(ent,'p1',None) is not None and getattr(ent,'p2',None) is not None:
+                        extra['arcs3'].append({'p0':[float(ent.p0[0]), float(ent.p0[1])], 'p1':[float(ent.p1[0]), float(ent.p1[1])], 'p2':[float(ent.p2[0]), float(ent.p2[1])]} )
+            # dimensions
+            for d in getattr(self._sketch, 'dimensions', []) or []:
+                try:
+                    if isinstance(d, DimDiameter2D) and isinstance(d.circle_ref, tuple) and d.circle_ref[0]=='circle' and isinstance(d.circle_ref[1], Circle2D):
+                        c = d.circle_ref[1]
+                        extra['dimensions'].append({'type':'diameter', 'center':[float(c.center[0]), float(c.center[1])]})
+                    elif isinstance(d, DimLinear2D):
+                        a = d._xy(d.ref_a); b = d._xy(d.ref_b)
+                        if a is not None and b is not None:
+                            extra['dimensions'].append({'type':'linear', 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])]})
+                except Exception:
+                    pass
+            # Merge extra into doc JSON
+            try:
+                base = json.loads(doc.to_json())
+            except Exception:
+                base = {}
+            base.update(extra)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(base, f, indent=2)
+            QMessageBox.information(self, "Sketch", f"Saved sketch to {path}")
+        except Exception as e:
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Sketch Save", f"Failed: {e}")
+            except Exception:
+                pass
+
+    def _load_sketch_json(self):
+        try:
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            path, _ = QFileDialog.getOpenFileName(self, "Load Sketch JSON", filter="JSON (*.json)")
+            if not path:
+                return
+            with open(path, 'r', encoding='utf-8') as f:
+                s = f.read()
+            # Parse raw JSON alongside SketchDocument for compatibility
+            try:
+                raw = json.loads(s)
+            except Exception:
+                raw = {}
+            doc = SketchDocument.from_json(s)
+            # Replace overlay entities and include extended shapes
+            self._sketch.entities.clear()
+            # Build point map
+            pm = {p.id: np.array([p.x, p.y], np.float32) for p in getattr(doc, 'points', [])}
+            for pl in getattr(doc, 'polylines', []):
+                pts = [ pm[v] for v in getattr(pl, 'verts', []) if v in pm ]
+                self._sketch.entities.append(Polyline2D(pts))
+            for c in getattr(doc, 'circles', []):
+                ctr = pm.get(getattr(c, 'center', ''), np.array([0,0], np.float32))
+                self._sketch.entities.append(Circle2D(ctr, float(getattr(c, 'radius', 0.0))))
+            # Extended entities (raw JSON)
+            for li in raw.get('lines', []) or []:
+                p0 = np.array([float(li.get('p0',[0,0])[0]), float(li.get('p0',[0,0])[1])], np.float32)
+                p1 = np.array([float(li.get('p1',[0,0])[0]), float(li.get('p1',[0,0])[1])], np.float32)
+                self._sketch.entities.append(Line2D(p0, p1))
+            for r in raw.get('rects', []) or []:
+                p0 = np.array([float(r.get('p0',[0,0])[0]), float(r.get('p0',[0,0])[1])], np.float32)
+                p1 = np.array([float(r.get('p1',[0,0])[0]), float(r.get('p1',[0,0])[1])], np.float32)
+                self._sketch.entities.append(Rect2D(p0, p1))
+            for a in raw.get('arcs3', []) or []:
+                p0 = np.array([float(a.get('p0',[0,0])[0]), float(a.get('p0',[0,0])[1])], np.float32)
+                p1 = np.array([float(a.get('p1',[0,0])[0]), float(a.get('p1',[0,0])[1])], np.float32)
+                p2 = np.array([float(a.get('p2',[0,0])[0]), float(a.get('p2',[0,0])[1])], np.float32)
+                self._sketch.entities.append(Arc2D(p0, p1, p2))
+            # Dimensions
+            self._sketch.dimensions = []
+            for d in raw.get('dimensions', []) or []:
+                t = d.get('type','linear')
+                if t == 'diameter':
+                    cx,cy = d.get('center',[0,0])
+                    circ = None
+                    for ent in self._sketch.entities:
+                        if isinstance(ent, Circle2D) and abs(ent.center[0]-cx)<1e-6 and abs(ent.center[1]-cy)<1e-6:
+                            circ = ent; break
+                    if circ is not None:
+                        self._sketch.dimensions.append(DimDiameter2D(('circle', circ), self))
+                else:
+                    a = d.get('a'); b = d.get('b')
+                    if a is not None and b is not None:
+                        pa = np.array([float(a[0]), float(a[1])], np.float32)
+                        pb = np.array([float(b[0]), float(b[1])], np.float32)
+                        self._sketch.dimensions.append(DimLinear2D(pa, pb, self))
+            # restore precision if present
+            try:
+                self._dim_precision = int(raw.get('dim_precision', getattr(self,'_dim_precision',2)))
+            except Exception:
+                pass
+            self.view.update()
+            QMessageBox.information(self, "Sketch", f"Loaded sketch from {path}")
+        except Exception as e:
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Sketch Load", f"Failed: {e}")
+            except Exception:
+                pass
+
     # Convenience passthroughs
     def viewport(self) -> AnalyticViewport: return self.view
 
@@ -1631,6 +2878,14 @@ def _apply_settings(self, data):
     self.beta_overlay_intensity = float(_clamp(data.get('beta_overlay_intensity',0.65),0.0,1.0))
     self.beta_scale = float(_clamp(data.get('beta_scale',1.0),0.01,32.0))
     self.beta_cmap = int(_clamp(data.get('beta_cmap',0),0,3))
+    # dim settings
+    try:
+        panel = self.parent() if hasattr(self,'parent') else None
+        if panel is not None:
+            setattr(panel, '_dim_precision', int(data.get('dim_precision', getattr(panel,'_dim_precision',2))))
+            setattr(panel, '_dim_type', str(data.get('dim_type', getattr(panel,'_dim_type','linear'))))
+    except Exception:
+        pass
 
 def _load_settings(self):
     try:
@@ -1640,6 +2895,63 @@ def _load_settings(self):
         else:
             data=_analytic_settings_defaults()
         _apply_settings(self, data)
+        # Restore sketch overlay (if any)
+        try:
+            panel = self.parent() if hasattr(self, 'parent') else None
+            sk = data.get('sketch_overlay', None)
+            if panel is not None and sk is not None and hasattr(panel, '_sketch'):
+                panel._sketch.entities.clear()
+                for pl in sk.get('polylines', []) or []:
+                    pts = [np.array([float(p[0]), float(p[1])], np.float32) for p in pl]
+                    panel._sketch.entities.append(Polyline2D(pts))
+                for c in sk.get('circles', []) or []:
+                    ctr = np.array([float(c.get('center',[0,0])[0]), float(c.get('center',[0,0])[1])], np.float32)
+                    rad = float(c.get('radius', 0.0))
+                    panel._sketch.entities.append(Circle2D(ctr, rad))
+                for li in sk.get('lines', []) or []:
+                    p0 = np.array([float(li.get('p0',[0,0])[0]), float(li.get('p0',[0,0])[1])], np.float32)
+                    p1 = np.array([float(li.get('p1',[0,0])[0]), float(li.get('p1',[0,0])[1])], np.float32)
+                    panel._sketch.entities.append(Line2D(p0, p1))
+                for r in sk.get('rects', []) or []:
+                    p0 = np.array([float(r.get('p0',[0,0])[0]), float(r.get('p0',[0,0])[1])], np.float32)
+                    p1 = np.array([float(r.get('p1',[0,0])[0]), float(r.get('p1',[0,0])[1])], np.float32)
+                    panel._sketch.entities.append(Rect2D(p0, p1))
+                for a in sk.get('arcs3', []) or []:
+                    p0 = np.array([float(a.get('p0',[0,0])[0]), float(a.get('p0',[0,0])[1])], np.float32)
+                    p1 = np.array([float(a.get('p1',[0,0])[0]), float(a.get('p1',[0,0])[1])], np.float32)
+                    p2 = np.array([float(a.get('p2',[0,0])[0]), float(a.get('p2',[0,0])[1])], np.float32)
+                    panel._sketch.entities.append(Arc2D(p0, p1, p2))
+                # dimensions
+                try:
+                    panel._sketch.dimensions = []
+                    for d in sk.get('dimensions', []) or []:
+                        t = d.get('type','linear')
+                        if t == 'diameter':
+                            # find circle by matching center exactly
+                            cx,cy = d.get('center',[0,0])
+                            circ = None
+                            for ent in panel._sketch.entities:
+                                if isinstance(ent, Circle2D) and abs(ent.center[0]-cx)<1e-6 and abs(ent.center[1]-cy)<1e-6:
+                                    circ = ent; break
+                            if circ is not None:
+                                panel._sketch.dimensions.append(DimDiameter2D(('circle', circ), panel))
+                        else:
+                            a = d.get('a'); b = d.get('b')
+                            if a is not None and b is not None:
+                                pa = np.array([float(a[0]), float(a[1])], np.float32)
+                                pb = np.array([float(b[0]), float(b[1])], np.float32)
+                                panel._sketch.dimensions.append(DimLinear2D(pa, pb, panel))
+                except Exception:
+                    pass
+                # grid settings
+                try:
+                    panel._sketch_grid_on = bool(sk.get('grid_on', panel._sketch_grid_on))
+                    panel._sketch_snap_grid = bool(sk.get('snap_grid', panel._sketch_snap_grid))
+                    panel._sketch_grid_step = float(sk.get('grid_step', panel._sketch_grid_step))
+                except Exception:
+                    pass
+        except Exception:
+            pass
     except Exception as e:
         print(f"(analytic settings) load failed: {e}")
 
@@ -1665,6 +2977,47 @@ def _save_settings(self):
                     existing = json.load(f) or {}
             except Exception:
                 existing = {}
+        # Serialize sketch overlay
+        try:
+            panel = self.parent() if hasattr(self, 'parent') else None
+            if panel is not None and hasattr(panel, '_sketch'):
+                sk = {'polylines': [], 'circles': [], 'lines': [], 'rects': [], 'arcs3': [], 'dimensions': [], 'grid_on': bool(getattr(panel,'_sketch_grid_on', False)), 'snap_grid': bool(getattr(panel,'_sketch_snap_grid', False)), 'grid_step': float(getattr(panel,'_sketch_grid_step', 10.0))}
+                for ent in getattr(panel, '_sketch').entities:
+                    if isinstance(ent, Polyline2D):
+                        sk['polylines'].append([[float(p[0]), float(p[1])] for p in ent.pts])
+                    elif isinstance(ent, Circle2D):
+                        sk['circles'].append({'center':[float(ent.center[0]), float(ent.center[1])], 'radius': float(ent.radius)})
+                    elif isinstance(ent, Line2D):
+                        if ent.p1 is not None:
+                            sk['lines'].append({'p0':[float(ent.p0[0]), float(ent.p0[1])], 'p1':[float(ent.p1[0]), float(ent.p1[1])]} )
+                    elif isinstance(ent, Rect2D):
+                        p0 = [float(ent.p0[0]), float(ent.p0[1])]
+                        p1 = [float(ent.p1[0]), float(ent.p1[1])] if getattr(ent,'p1', None) is not None else p0
+                        sk['rects'].append({'p0': p0, 'p1': p1})
+                    elif isinstance(ent, Arc2D):
+                        if ent.p0 is not None and ent.p1 is not None and ent.p2 is not None:
+                            sk['arcs3'].append({'p0':[float(ent.p0[0]), float(ent.p0[1])], 'p1':[float(ent.p1[0]), float(ent.p1[1])], 'p2':[float(ent.p2[0]), float(ent.p2[1])]} )
+                # dimensions (store basic types we support now)
+                for d in getattr(panel._sketch, 'dimensions', []) or []:
+                    try:
+                        if isinstance(d, DimDiameter2D) and isinstance(d.circle_ref, tuple) and d.circle_ref[0]=='circle' and isinstance(d.circle_ref[1], Circle2D):
+                            c = d.circle_ref[1]
+                            sk['dimensions'].append({'type':'diameter', 'center':[float(c.center[0]), float(c.center[1])]})
+                        elif isinstance(d, DimLinear2D):
+                            a = d._xy(d.ref_a); b = d._xy(d.ref_b)
+                            if a is not None and b is not None:
+                                sk['dimensions'].append({'type':'linear', 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])]})
+                    except Exception:
+                        pass
+                data_update['sketch_overlay'] = sk
+                # dimension settings
+                try:
+                    data_update['dim_precision'] = int(getattr(panel,'_dim_precision',2))
+                    data_update['dim_type'] = str(getattr(panel,'_dim_type','linear'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
         existing.update(data_update)
         with open(self._settings_path,'w',encoding='utf-8') as f:
             json.dump(existing,f,indent=2)
