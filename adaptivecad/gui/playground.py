@@ -799,6 +799,8 @@ class NewAnalyticSphereCmd:
                 from adaptivecad.aacore.sdf import Scene as _Scene
                 sc = _Scene(); mw.aacore_scene = sc
             sc.add(Prim(KIND_SPHERE, [0.6,0,0,0], beta=0.05, color=(0.9,0.5,0.4)))
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
         except Exception as e:
             log.error("Failed to create analytic sphere: %s", e)
 
@@ -815,6 +817,8 @@ class NewAnalyticBoxCmd:
                 from adaptivecad.aacore.sdf import Scene as _Scene
                 sc = _Scene(); mw.aacore_scene = sc
             sc.add(Prim(KIND_BOX, [0.5,0.5,0.5,0], beta=0.0, color=(0.4,0.7,0.9)))
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
         except Exception as e:
             log.error("Failed to create analytic box: %s", e)
 
@@ -831,6 +835,8 @@ class NewAnalyticCylinderCmd:
                 from adaptivecad.aacore.sdf import Scene as _Scene
                 sc = _Scene(); mw.aacore_scene = sc
             sc.add(Prim(KIND_CAPSULE, [0.3,1.5,0,0], beta=0.02, color=(0.6,0.9,0.5)))
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
         except Exception as e:
             log.error("Failed to create analytic cylinder: %s", e)
 
@@ -847,6 +853,8 @@ class NewAnalyticCapsuleCmd:
                 from adaptivecad.aacore.sdf import Scene as _Scene
                 sc = _Scene(); mw.aacore_scene = sc
             sc.add(Prim(KIND_CAPSULE, [0.3,1.5,0,0], beta=0.02, color=(0.6,0.9,0.5)))
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
         except Exception as e:
             log.error("Failed to create analytic capsule: %s", e)
 
@@ -863,6 +871,8 @@ class NewAnalyticTorusCmd:
                 from adaptivecad.aacore.sdf import Scene as _Scene
                 sc = _Scene(); mw.aacore_scene = sc
             sc.add(Prim(KIND_TORUS, [0.9,0.25,0,0], beta=0.03, color=(0.8,0.6,0.4)))
+            if hasattr(mw, "_sync_analytic_scene"):
+                mw._sync_analytic_scene()
         except Exception as e:
             log.error("Failed to create analytic torus: %s", e)
 
@@ -878,6 +888,8 @@ class NewAnalyticTorusCmd:
                     sc = _Scene(); mw.aacore_scene = sc
                 # params: [major_radius, width, 0, 0]
                 sc.add(Prim(KIND_MOBIUS, [0.9, 0.25, 0, 0], beta=0.02, color=(0.6,0.8,0.6)))
+                if hasattr(mw, "_sync_analytic_scene"):
+                    mw._sync_analytic_scene()
             except Exception as e:
                 log.error("Failed to create analytic mobius: %s", e)
 
@@ -1330,400 +1342,214 @@ class MainWindow:
         self.property_layout.insertWidget(self.property_layout.count() - 1, type_label)
         
     def _create_menus_and_toolbar(self):
-        """Create all menus and toolbar in one method to avoid variable scope issues."""
-        # Create menu bar
+        """Create all menus and toolbars with proper grouping and analytic mode support."""
         menubar = self.win.menuBar()
-        
-        # Create File menu
+
+        # File menu
         file_menu = menubar.addMenu("File")
-        
-        # Add Import submenu
         import_menu = file_menu.addMenu("Import")
-          # Add STL/STEP import (Simple with Progress)
         import_simple_action = QAction("STL/STEP (with Progress)", self.win)
         import_simple_action.triggered.connect(lambda: self._run_command(MinimalImportCmd()))
         import_menu.addAction(import_simple_action)
-        
-        # Add separator
         file_menu.addSeparator()
-        
-        # Add Export submenu
         export_menu = file_menu.addMenu("Export")
-        
-        # Add STL export
         export_stl_action = QAction("Export STL", self.win)
         export_stl_action.triggered.connect(lambda: self._run_command(ExportStlCmd()))
         export_menu.addAction(export_stl_action)
-        
-        # Add AMA export
         export_ama_action = QAction("Export AMA", self.win)
         export_ama_action.triggered.connect(lambda: self._run_command(ExportAmaCmd()))
         export_menu.addAction(export_ama_action)
-        
-        # Add G-Code export
         export_gcode_action = QAction("Export G-Code", self.win)
         export_gcode_action.triggered.connect(lambda: self._run_command(ExportGCodeCmd()))
         export_menu.addAction(export_gcode_action)
-        
-        # Add G-Code Direct export
         export_gcode_direct_action = QAction("Export G-Code (Direct)", self.win)
         export_gcode_direct_action.triggered.connect(lambda: self._run_command(ExportGCodeDirectCmd()))
         export_menu.addAction(export_gcode_direct_action)
-
-        # (Legacy analytic STL exporter removed; new capability-gated version added later.)
-        
-        # Add separator
         file_menu.addSeparator()
-        
-        # Add Save/Open project functionality
         save_action = QAction("Save Project...", self.win)
         save_action.triggered.connect(lambda: self._run_command(SaveProjectCmd()))
         file_menu.addAction(save_action)
-        
         open_action = QAction("Open Project...", self.win)
         open_action.triggered.connect(lambda: self._run_command(OpenProjectCmd()))
         file_menu.addAction(open_action)
-        
-        # Add separator and Exit
         file_menu.addSeparator()
-        
         exit_action = QAction("Exit", self.win)
         exit_action.triggered.connect(self.win.close)
         file_menu.addAction(exit_action)
-        
-        # Create Basic Shapes menu
+
+        # Basic Shapes menu
         basic_menu = menubar.addMenu("Basic Shapes")
-        
-        # Add Box tool
         box_action = QAction("Box", self.win)
         box_action.triggered.connect(lambda: self._run_command(NewBoxCmd()))
         basic_menu.addAction(box_action)
-        
-        # Add Cylinder tool
         cyl_action = QAction("Cylinder", self.win)
         cyl_action.triggered.connect(lambda: self._run_command(NewCylCmd()))
         basic_menu.addAction(cyl_action)
-        
-        # Add Ball tool
         ball_action = QAction("Ball", self.win)
         ball_action.triggered.connect(lambda: self._create_ball_via_backend(20.0))
         basic_menu.addAction(ball_action)
-
-        # Analytic (SDF/πₐ) Ball — triangle-free renderer
         analytic_ball_action = QAction("Analytic Ball (SDF/πₐ)", self.win)
         analytic_ball_action.triggered.connect(lambda: self._run_command(NewAnalyticBallCmd()))
         basic_menu.addAction(analytic_ball_action)
-        
-        # Add Torus tool
         torus_action = QAction("Torus", self.win)
         torus_action.triggered.connect(lambda: self._run_command(NewTorusCmd()))
         basic_menu.addAction(torus_action)
-        
-        # Add Cone tool
         cone_action = QAction("Cone", self.win)
         cone_action.triggered.connect(lambda: self._run_command(NewConeCmd()))
         basic_menu.addAction(cone_action)
-        
-        # Create Advanced Shapes menu
+
+        # Advanced Shapes menu
         adv_menu = menubar.addMenu("Advanced Shapes")
-        
-        # Add Superellipse tool
         super_action = QAction("Superellipse", self.win)
         super_action.triggered.connect(lambda: self._run_command(NewSuperellipseCmd()))
         adv_menu.addAction(super_action)
-
-        # Add Pi Curve Shell tool
         pi_shell_action = QAction("Pi Curve Shell (πₐ)", self.win)
         pi_shell_action.triggered.connect(lambda: self._run_command(NewPiCurveShellCmd()))
         adv_menu.addAction(pi_shell_action)
-
-        # Add Helix tool
         helix_action = QAction("Helix/Spiral", self.win)
         helix_action.triggered.connect(lambda: self._run_command(NewHelixCmd()))
         adv_menu.addAction(helix_action)
-
-        # Add Tapered Cylinder tool
         tapered_action = QAction("Tapered Cylinder", self.win)
         tapered_action.triggered.connect(lambda: self._run_command(NewTaperedCylinderCmd()))
         adv_menu.addAction(tapered_action)
-
-        # Add Capsule tool
         capsule_action = QAction("Capsule/Pill", self.win)
         capsule_action.triggered.connect(lambda: self._run_command(NewCapsuleCmd()))
         adv_menu.addAction(capsule_action)
-
-        # Add Ellipsoid tool
         ellipsoid_action = QAction("Ellipsoid", self.win)
         ellipsoid_action.triggered.connect(lambda: self._run_command(NewEllipsoidCmd()))
         adv_menu.addAction(ellipsoid_action)
-
-        # --- Restore ND Field, B Curve, and Spline tools ---
-        try:
-            from adaptivecad.command_defs import NewFieldCmd
-            field_action = QAction("ND Field", self.win)
-            field_action.triggered.connect(lambda: self._run_command(NewFieldCmd()))
-            adv_menu.addAction(field_action)
-        except Exception:
-            pass
-
-        try:
-            from adaptivecad.command_defs import NewBCurveCmd
-            bcurve_action = QAction("B Curve", self.win)
-            bcurve_action.triggered.connect(lambda: self._run_command(NewBCurveCmd()))
-            adv_menu.addAction(bcurve_action)
-        except Exception:
-            pass
-
-        try:
-            from adaptivecad.command_defs import NewNDSplineCmd
-            spline_action = QAction("ND Spline", self.win)
-            spline_action.triggered.connect(lambda: self._run_command(NewNDSplineCmd()))
-            adv_menu.addAction(spline_action)
-        except Exception:
-            pass
-
-        try:
-            from adaptivecad.command_defs import NewNDSplineSurfaceCmd
-            spline_surface_action = QAction("ND Spline Surface", self.win)
-            spline_surface_action.triggered.connect(lambda: self._run_command(NewNDSplineSurfaceCmd()))
-            adv_menu.addAction(spline_surface_action)
-        except Exception:
-            pass
-
-        # --- B Curve Tools and ND/Field Tools ---
-        # Try to import all advanced shape commands, but add buttons only for those that import successfully
-        # Add any additional stashed advanced tools here
-        advanced_tools = [
+        # Optionally add dynamic advanced tools if present
+        for label, cmd_name in [
+            ("ND Field", "NewFieldCmd"),
             ("B Curve", "NewBCurveCmd"),
-            ("B Curve Surface", "NewBCurveSurfaceCmd"),
-            ("ND Box", "NewNDBoxCmd"),
-            ("Field", "NewFieldCmd"),
-            ("ND Ball", "NewNDBallCmd"),
-            ("ND Torus", "NewNDTorusCmd"),
-            ("ND Cylinder", "NewNDCylinderCmd"),
-            # --- RESTORED STASHED TOOLS ---
-            ("ND Superellipse", "NewNDSuperellipseCmd"),
-            ("ND Capsule", "NewNDCapsuleCmd"),
-            ("ND Ellipsoid", "NewNDEllipsoidCmd"),
-            ("ND Pi Shell", "NewNDPiShellCmd"),
-            ("ND Helix", "NewNDHelixCmd"),
-            ("ND Field Surface", "NewNDFieldSurfaceCmd"),
             ("ND Spline", "NewNDSplineCmd"),
             ("ND Spline Surface", "NewNDSplineSurfaceCmd"),
-            ("ND Patch", "NewNDPatchCmd"),
-            ("ND Patch Surface", "NewNDPatchSurfaceCmd"),
-        ]
-        for label, cmd_name in advanced_tools:
+        ]:
             try:
                 cmd = getattr(__import__('adaptivecad.command_defs', fromlist=[cmd_name]), cmd_name)
                 action = QAction(label, self.win)
-                # Use a default argument in a function to capture the current cmd
-                def make_trigger(cmd_class):
-                    return lambda checked=False: self._run_command(cmd_class())
-                action.triggered.connect(make_trigger(cmd))
+                action.triggered.connect(lambda _=False, c=cmd: self._run_command(c()))
                 adv_menu.addAction(action)
             except Exception:
                 pass
-        
-        # Create Analytic Shapes menu
+
+        # Analytic Shapes menu
         analytic_menu = menubar.addMenu("Analytic Shapes")
-        
-        # Add Viewport section
         viewport_submenu = analytic_menu.addMenu("Viewport")
-        
-        # Add Analytic Viewport tool
         analytic_viewport_action = QAction("New Analytic Viewport", self.win)
         analytic_viewport_action.triggered.connect(lambda: self._run_command(NewAnalyticViewportCmd()))
         viewport_submenu.addAction(analytic_viewport_action)
-        
-        # Toggle auto-sync
         sync_action = QAction("Auto-Sync with Main Viewport", self.win, checkable=True)
         sync_action.setChecked(True)
-        
         def toggle_sync(checked):
             if hasattr(self, "_analytic_sync_timer"):
-                if checked:
-                    self._analytic_sync_timer.start()
-                else:
-                    self._analytic_sync_timer.stop()
-        
+                (self._analytic_sync_timer.start() if checked else self._analytic_sync_timer.stop())
         sync_action.triggered.connect(toggle_sync)
         viewport_submenu.addAction(sync_action)
-        
-        # Add separator
         analytic_menu.addSeparator()
-        
-        # Create primitive shapes submenu
         primitives_submenu = analytic_menu.addMenu("Add Primitives")
-        
-        # Add Analytic Sphere tool
         analytic_sphere_action = QAction("Sphere", self.win)
         analytic_sphere_action.triggered.connect(lambda: self._run_command(NewAnalyticSphereCmd()))
         primitives_submenu.addAction(analytic_sphere_action)
-        
-        # Add Analytic Box tool
         analytic_box_action = QAction("Box", self.win)
         analytic_box_action.triggered.connect(lambda: self._run_command(NewAnalyticBoxCmd()))
         primitives_submenu.addAction(analytic_box_action)
-        
-        # Add Analytic Cylinder tool
         analytic_cylinder_action = QAction("Cylinder", self.win)
         analytic_cylinder_action.triggered.connect(lambda: self._run_command(NewAnalyticCylinderCmd()))
         primitives_submenu.addAction(analytic_cylinder_action)
-        
-        # Add Analytic Capsule tool
         analytic_capsule_action = QAction("Capsule", self.win)
         analytic_capsule_action.triggered.connect(lambda: self._run_command(NewAnalyticCapsuleCmd()))
         primitives_submenu.addAction(analytic_capsule_action)
-        
-        # Add Analytic Torus tool
         analytic_torus_action = QAction("Torus", self.win)
         analytic_torus_action.triggered.connect(lambda: self._run_command(NewAnalyticTorusCmd()))
         primitives_submenu.addAction(analytic_torus_action)
-        
-        # Add utilities submenu
         utils_submenu = analytic_menu.addMenu("Utilities")
-        
-        # Add mesh to analytic conversion
         mesh_to_analytic_action = QAction("Convert Mesh to Analytic", self.win)
         mesh_to_analytic_action.triggered.connect(lambda: self._run_command(ConvertMeshToAnalyticCmd()))
         utils_submenu.addAction(mesh_to_analytic_action)
-        
-        # Add analytic to mesh conversion
         analytic_to_mesh_action = QAction("Convert Analytic to Mesh", self.win)
         analytic_to_mesh_action.triggered.connect(lambda: self._run_command(ConvertAnalyticToMeshCmd()))
         utils_submenu.addAction(analytic_to_mesh_action)
-        
-        # Create Modeling Tools menu
+
+        # Modeling Tools menu
         modeling_menu = menubar.addMenu("Modeling Tools")
-        
-        # Add Move tool
         move_action = QAction("Move", self.win)
         move_action.triggered.connect(lambda: self._run_command(MoveCmd()))
         modeling_menu.addAction(move_action)
-        
-        # Add Scale tool
         scale_action = QAction("Scale", self.win)
         scale_action.triggered.connect(lambda: self._run_command(ScaleCmd()))
         modeling_menu.addAction(scale_action)
-
-        # Add Mirror tool
         mirror_action = QAction("Mirror", self.win)
         mirror_action.triggered.connect(lambda: self._run_command(MirrorCmd()))
         modeling_menu.addAction(mirror_action)
-        
-        # Add separator
         modeling_menu.addSeparator()
-        
-        # Add Union tool
         union_action = QAction("Union", self.win)
         union_action.triggered.connect(lambda: self._run_command(UnionCmd()))
         modeling_menu.addAction(union_action)
-        
-        # Add Cut tool
         cut_action = QAction("Cut", self.win)
         cut_action.triggered.connect(lambda: self._run_command(CutCmd()))
         modeling_menu.addAction(cut_action)
-        
-        # Add Intersect tool
         intersect_action = QAction("Intersect", self.win)
         intersect_action.triggered.connect(lambda: self._run_command(IntersectCmd()))
         modeling_menu.addAction(intersect_action)
-        
-        # Add Shell tool
         shell_action = QAction("Shell", self.win)
         shell_action.triggered.connect(lambda: self._run_command(ShellCmd()))
         modeling_menu.addAction(shell_action)
-        
-        # Add separator
         modeling_menu.addSeparator()
-        
-        # Add Delete tool
         delete_action = QAction("Delete", self.win)
         delete_action.triggered.connect(self._delete_selected)
         modeling_menu.addAction(delete_action)
-        
-        # Create Settings menu
+
+        # Settings menu
         settings_menu = menubar.addMenu("Settings")
-        
-        # Add View settings submenu
         view_menu = settings_menu.addMenu("View")
-        
-        # Add Properties Panel toggle
         properties_action = QAction("Show Properties Panel", self.win, checkable=True)
         properties_action.setChecked(False)
         properties_action.triggered.connect(self._toggle_properties_panel)
         view_menu.addAction(properties_action)
-        
-        # Add Dimension Selector toggle
         dimension_action = QAction("Show Dimension Selector", self.win, checkable=True)
         dimension_action.setChecked(False)
         dimension_action.triggered.connect(self._toggle_dimension_panel)
         view_menu.addAction(dimension_action)
-        
-        # (Legacy analytic viewport action removed; rewired version added later.)
-        
-        # Analytic viewport link from view menu
         view_menu.addAction(QAction("Show Analytic Viewport", self.win, triggered=lambda: self._run_command(NewAnalyticViewportCmd())))
         view_menu.addAction(QAction("Show Analytic Viewport (Panel)", self.win, triggered=lambda: self._run_command(NewAnalyticViewportPanelCmd())))
-        
         view_menu.addSeparator()
-        # Analytic-as-main toggle (persistent)
         self._analytic_main_action = QAction("Use Analytic Viewport as Main", self.win, checkable=True)
         self._analytic_main_action.setChecked(False)
         self._analytic_main_action.triggered.connect(self._toggle_analytic_main)
         view_menu.addAction(self._analytic_main_action)
-
-        # Add View Cube toggle
         viewcube_action = QAction("Show View Cube", self.win, checkable=True)
         viewcube_action.setChecked(True)
-        def toggle_cube(checked):
-            self.viewcube.setVisible(checked)
-        viewcube_action.triggered.connect(toggle_cube)
+        viewcube_action.triggered.connect(lambda checked: self.viewcube.setVisible(checked))
         view_menu.addAction(viewcube_action)
-
-        # Add Grid display toggle
         grid_view_action = QAction("Show Grid", self.win, checkable=True)
         grid_view_action.setChecked(False)
         grid_view_action.triggered.connect(self._toggle_grid_display)
         view_menu.addAction(grid_view_action)
-        
-        # Add View Background settings
         view_bg_menu = view_menu.addMenu("Background Color")
         bg_dark_action = QAction("Dark", self.win)
         bg_dark_action.triggered.connect(lambda: self.view._display.set_bg_gradient_color([50, 50, 50], [10, 10, 10]))
         view_bg_menu.addAction(bg_dark_action)
-        
         bg_light_action = QAction("Light", self.win)
         bg_light_action.triggered.connect(lambda: self.view._display.set_bg_gradient_color([230, 230, 230], [200, 200, 200]))
         view_bg_menu.addAction(bg_light_action)
-        
         bg_blue_action = QAction("Blue", self.win)
         bg_blue_action.triggered.connect(lambda: self.view._display.set_bg_gradient_color([5, 20, 76], [5, 39, 175]))
         view_bg_menu.addAction(bg_blue_action)
-        
-        # Add Tessellation quality submenu
         tessellation_menu = settings_menu.addMenu("Tessellation Quality")
-        
-        # Add different tessellation quality options
         def set_tessellation(deflection, angle):
             settings.MESH_DEFLECTION = deflection
             settings.MESH_ANGLE = angle
-            # Update status bar to confirm the change
             self.win.statusBar().showMessage(f"Tessellation set to: deflection={deflection}, angle={angle}", 3000)
-            
         high_quality = QAction("High Quality", self.win)
         high_quality.triggered.connect(lambda: set_tessellation(0.005, 0.01))
         tessellation_menu.addAction(high_quality)
-        
         normal_quality = QAction("Normal Quality", self.win)
         normal_quality.triggered.connect(lambda: set_tessellation(0.01, 0.05))
         tessellation_menu.addAction(normal_quality)
-        
         low_quality = QAction("Low Quality (Faster)", self.win)
         low_quality.triggered.connect(lambda: set_tessellation(0.05, 0.1))
         tessellation_menu.addAction(low_quality)
-        # Add option to toggle triedron visibility
         triedron_action = QAction("Show Axes Indicator", self.win, checkable=True)
         triedron_action.setChecked(True)
         def _toggle_triedron(checked):
@@ -1732,65 +1558,81 @@ class MainWindow:
                 return
             show_fn = getattr(disp, 'display_triedron', None)
             hide_fn = getattr(disp, 'hide_triedron', None)
-            if checked and callable(show_fn):
-                try: show_fn()
-                except Exception: pass
-            elif not checked and callable(hide_fn):
-                try: hide_fn()
-                except Exception: pass
+            try:
+                (show_fn() if checked and callable(show_fn) else hide_fn() if callable(hide_fn) else None)
+            except Exception:
+                pass
         triedron_action.triggered.connect(_toggle_triedron)
         view_menu.addAction(triedron_action)
-
-        # Add Rendering Backend menu
         backend_menu = settings_menu.addMenu("Rendering Backend")
         use_analytic_action = QAction("Use Analytic/SDF for default shapes", self.win, checkable=True)
         use_analytic_action.setChecked(settings.USE_ANALYTIC_BACKEND)
-        def toggle_backend(chk):
-            settings.USE_ANALYTIC_BACKEND = bool(chk)
+        use_analytic_action.triggered.connect(lambda chk: (
+            setattr(settings, 'USE_ANALYTIC_BACKEND', bool(chk)),
             self.win.statusBar().showMessage(f"Analytic backend: {'ON' if chk else 'OFF'}", 3000)
-        use_analytic_action.triggered.connect(toggle_backend)
+        ))
         backend_menu.addAction(use_analytic_action)
 
-        # Create a main toolbar with commonly used shapes
-        self.toolbar = self.win.addToolBar("Common Shapes")
-        self.toolbar.addAction(box_action)
-        self.toolbar.addAction(cyl_action)
-        self.toolbar.addAction(analytic_ball_action)
-        self.toolbar.addAction(super_action)
-        self.toolbar.addAction(pi_shell_action)
+        # Toolbars
+        self.toolbar_occ = self.win.addToolBar("Common Shapes")
+        self.toolbar_occ.addAction(box_action)
+        self.toolbar_occ.addAction(cyl_action)
+        self.toolbar_occ.addAction(analytic_ball_action)
+        self.toolbar_occ.addAction(super_action)
+        self.toolbar_occ.addAction(pi_shell_action)
+        self.toolbar_occ.addSeparator()
+        self.toolbar_occ.addAction(move_action)
+        self.toolbar_occ.addAction(mirror_action)
+        self.toolbar_occ.addAction(union_action)
+        self.toolbar_occ.addAction(cut_action)
+        self.toolbar_occ.addAction(delete_action)
 
-        # Add separator
-        self.toolbar.addSeparator()
+        self.toolbar_analytic = self.win.addToolBar("Analytic Quick")
+        analytic_view_quick = QAction("Analytic View", self.win)
+        analytic_view_quick.triggered.connect(lambda: self._run_command(NewAnalyticViewportCmd()))
+        analytic_view_panel_quick = QAction("Analytic Panel", self.win)
+        analytic_view_panel_quick.triggered.connect(lambda: self._run_command(NewAnalyticViewportPanelCmd()))
+        self.toolbar_analytic.addAction(analytic_view_quick)
+        self.toolbar_analytic.addAction(analytic_view_panel_quick)
+        self.toolbar_analytic.addSeparator()
+        for act in [
+            QAction("Sphere", self.win),
+            QAction("Box", self.win),
+            QAction("Cylinder", self.win),
+            QAction("Capsule", self.win),
+            QAction("Torus", self.win),
+        ]:
+            # Map actions to commands
+            mapper = {
+                "Sphere": NewAnalyticSphereCmd,
+                "Box": NewAnalyticBoxCmd,
+                "Cylinder": NewAnalyticCylinderCmd,
+                "Capsule": NewAnalyticCapsuleCmd,
+                "Torus": NewAnalyticTorusCmd,
+            }
+            act.triggered.connect(lambda _=False, name=act.text(): self._run_command(mapper[name]()))
+            self.toolbar_analytic.addAction(act)
+        self.toolbar_analytic.addSeparator()
+        a_export_act = QAction("Export SDF→STL", self.win)
+        a_export_act.triggered.connect(lambda: self._run_command(ConvertAnalyticToMeshCmd()))
+        self.toolbar_analytic.addAction(a_export_act)
+        self.toolbar_analytic.setVisible(False)
 
-        # Add common modeling tools to toolbar
-        self.toolbar.addAction(move_action)
-        self.toolbar.addAction(mirror_action)
-        self.toolbar.addAction(union_action)
-        self.toolbar.addAction(cut_action)
-        self.toolbar.addAction(delete_action)
-
-        # --- Games / Extras Menu ---
+        # Games / Help / Conversion / Docs
         games_menu = menubar.addMenu("Games")
         chess_action = QAction("Play 4D Chess", self.win)
         chess_action.triggered.connect(self._open_chess_widget)
         games_menu.addAction(chess_action)
 
-        # Create Help menu
         help_menu = menubar.addMenu("Help")
-
-        # Add About action
         about_action = QAction("About AdaptiveCAD", self.win)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
-
-        # Rewired capability-gated helpers
         def _require(cap_fn, ok_fn, msg: str):
             if cap_fn():
                 return ok_fn()
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(self.win, "Feature Unavailable", msg)
-
-        # Analytic viewport action (rewired)
         analytic_view_action2 = QAction("Open Analytic Viewport (No Triangles)", self.win)
         def _open_analytic2():
             from adaptivecad.gui.analytic_viewport import AnalyticViewport
@@ -1803,13 +1645,9 @@ class MainWindow:
             self.analytic_view = AnalyticViewport(parent=self.win, aacore_scene=getattr(self, 'aacore_scene', None))
             self.analytic_view.show()
         analytic_view_action2.triggered.connect(lambda: _require(
-            analytic_available,
-            _open_analytic2,
-            "Analytic renderer not available.\nInstall OpenGL + analytic modules."
+            analytic_available, _open_analytic2, "Analytic renderer not available.\nInstall OpenGL + analytic modules."
         ))
         help_menu.addAction(analytic_view_action2)
-
-        # Capability-gated analytic SDF->STL exporter
         export_analytic_stl_action2 = QAction("Export Analytic (SDF→STL)", self.win)
         def _export_analytic2():
             from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
@@ -1818,21 +1656,15 @@ class MainWindow:
             if sc is None or not getattr(sc, 'prims', []):
                 QMessageBox.information(self.win, "Export", "No analytic objects in the scene.")
                 return
-            path, _ = QFileDialog.getSaveFileName(
-                self.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)"
-            )
+            path, _ = QFileDialog.getSaveFileName(self.win, "Export Analytic STL", "analytic.stl", "STL (*.stl)")
             if not path:
                 return
             export_isosurface_to_stl(sc, path, bbox=((-2,-2,-2),(2,2,2)), res=180)
             self.win.statusBar().showMessage(f"Exported: {path}", 4000)
         export_analytic_stl_action2.triggered.connect(lambda: _require(
-            exporter_available,
-            _export_analytic2,
-            "Exporter needs: pip install scikit-image numpy-stl"
+            exporter_available, _export_analytic2, "Exporter needs: pip install scikit-image numpy-stl"
         ))
         help_menu.addAction(export_analytic_stl_action2)
-
-        # Debug log toggle (updated)
         toggle_log_action = QAction("Enable Debug Logs", self.win, checkable=True)
         def _toggle_logs(checked):
             import logging as _lg
@@ -1842,8 +1674,6 @@ class MainWindow:
             self.win.statusBar().showMessage(f"Log level: {'DEBUG' if checked else 'WARNING'}", 2000)
         toggle_log_action.triggered.connect(_toggle_logs)
         help_menu.addAction(toggle_log_action)
-
-        # Diagnostics action
         diag_action = QAction("Diagnostics…", self.win)
         def _show_diag():
             from PySide6.QtWidgets import QMessageBox
@@ -1858,37 +1688,41 @@ class MainWindow:
         diag_action.triggered.connect(_show_diag)
         help_menu.addAction(diag_action)
 
-        # Conversion menu
         conversion_menu = menubar.addMenu("Conversion")
         convert_action = QAction("Convert OCC → Analytic", self.win)
         def _do_convert():
             try:
-                from adaptivecad.analytic.conversion import OccToAnalyticCmd  # type: ignore
+                from adaptivecad.analytic.conversion import OccToAnalyticCmd
                 self._run_command(OccToAnalyticCmd())
             except Exception:
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.information(self.win, "Conversion", "Conversion module not available.")
-        convert_action.triggered.connect(lambda: _require(
-            conversion_available,
-            _do_convert,
-            "Conversion module not available."
-        ))
+        convert_action.triggered.connect(lambda: _require(conversion_available, _do_convert, "Conversion module not available."))
         conversion_menu.addAction(convert_action)
 
-        # (Original debug log toggle replaced above)
-        
-        # Add Documentation links
         docs_menu = help_menu.addMenu("Documentation")
-        
         adaptive_pi_action = QAction("Adaptive Pi Axioms", self.win)
-        adaptive_pi_action.triggered.connect(lambda: self._show_doc_message("Adaptive Pi Axioms", 
-            "Please see ADAPTIVE_PI_AXIOMS.md in the project root directory for the complete formal axiom set."))
+        adaptive_pi_action.triggered.connect(lambda: self._show_doc_message("Adaptive Pi Axioms", "Please see ADAPTIVE_PI_AXIOMS.md in the project root directory for the complete formal axiom set."))
         docs_menu.addAction(adaptive_pi_action)
-        
         modeling_tools_action = QAction("Modeling Tools Reference", self.win)
-        modeling_tools_action.triggered.connect(lambda: self._show_doc_message("Modeling Tools", 
-            "Please see MODELING_TOOLS.md in the project root directory for details on all available modeling tools."))
+        modeling_tools_action.triggered.connect(lambda: self._show_doc_message("Modeling Tools", "Please see MODELING_TOOLS.md in the project root directory for details on all available modeling tools."))
         docs_menu.addAction(modeling_tools_action)
+
+        # Store menus for analytic mode visibility toggling
+        self._menus = {
+            'file': file_menu,
+            'basic': basic_menu,
+            'advanced': adv_menu,
+            'analytic': analytic_menu,
+            'modeling': modeling_menu,
+            'settings': settings_menu,
+            'games': games_menu,
+            'help': help_menu,
+            'conversion': conversion_menu,
+        }
+
+        # Apply toolbar/menu visibility according to mode
+        self._update_toolbars()
 
     # ---------------- Analytic Viewport Persistence & Toggle Helpers ----------------
     def _prefs_path(self):
@@ -1963,6 +1797,44 @@ class MainWindow:
                     self.viewcube.show()
             self._analytic_as_main = False
         self._save_analytic_prefs({'analytic_as_main': self._analytic_as_main})
+        # Update toolbars to reflect new mode
+        self._update_toolbars()
+
+    def _update_toolbars(self):
+        """Show the appropriate toolbar for the current mode.
+        - OCC mode: show `toolbar_occ`, hide `toolbar_analytic`
+        - Analytic-as-main: hide `toolbar_occ`, show `toolbar_analytic`
+        """
+        try:
+            occ_tb = getattr(self, 'toolbar_occ', None)
+            ana_tb = getattr(self, 'toolbar_analytic', None)
+            if occ_tb is None or ana_tb is None:
+                return
+            if getattr(self, '_analytic_as_main', False):
+                occ_tb.setVisible(False)
+                ana_tb.setVisible(True)
+                # In analytic mode hide legacy menus
+                m = getattr(self, '_menus', {})
+                for key in ('basic','advanced','modeling','games'):
+                    menu = m.get(key)
+                    if menu is not None:
+                        menu.menuAction().setVisible(False)
+                for key in ('file','analytic','settings','help','conversion'):
+                    menu = m.get(key)
+                    if menu is not None:
+                        menu.menuAction().setVisible(True)
+            else:
+                ana_tb.setVisible(False)
+                occ_tb.setVisible(True)
+                # In OCC mode show all menus
+                m = getattr(self, '_menus', {})
+                for menu in m.values():
+                    try:
+                        menu.menuAction().setVisible(True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     
     def _run_command(self, cmd):
         try:

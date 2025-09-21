@@ -8,7 +8,7 @@ can operate on the same underlying primitive set.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
-    QScrollArea
+    QScrollArea, QSizePolicy
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
@@ -2400,14 +2400,73 @@ class AnalyticViewportPanel(QWidget):
         self._rig_timer = QTimer(self); self._rig_timer.timeout.connect(self._update_rigs)
         self._rig_timer.start(33)
 
+        # --- Scale Journey (Zoom) ---
+        gb_zoom = QGroupBox("Scale Journey (Zoom)"); fz = QFormLayout(); gb_zoom.setLayout(fz)
+        self._zoom_d0 = QDoubleSpinBox(); self._zoom_d0.setRange(0.1, 1000.0); self._zoom_d0.setDecimals(3)
+        self._zoom_d0.setSingleStep(0.1); self._zoom_d0.setValue(float(getattr(self.view, 'distance', 6.0)))
+        self._zoom_d1 = QDoubleSpinBox(); self._zoom_d1.setRange(0.01, 1000.0); self._zoom_d1.setDecimals(3)
+        self._zoom_d1.setSingleStep(0.01); self._zoom_d1.setValue(0.6)
+        self._zoom_dur = QDoubleSpinBox(); self._zoom_dur.setRange(0.2, 120.0); self._zoom_dur.setDecimals(1)
+        self._zoom_dur.setSingleStep(0.5); self._zoom_dur.setValue(8.0)
+        self._zoom_spawn = QCheckBox("Spawn molecule at end"); self._zoom_spawn.setChecked(True)
+        from PySide6.QtWidgets import QComboBox as _QCB3
+        self._zoom_mol_select = _QCB3(); self._zoom_mol_select.addItems(["Water", "Methane", "Choose File…", "None"]) ; self._zoom_mol_path = None
+        def _choose_custom(idx:int):
+            txt = self._zoom_mol_select.currentText()
+            if txt == "Choose File…":
+                try:
+                    from PySide6.QtWidgets import QFileDialog
+                    p, _ = QFileDialog.getOpenFileName(self, "Choose Molecule (XYZ)", filter="XYZ (*.xyz)")
+                    if p:
+                        self._zoom_mol_path = p
+                        # keep selection as Choose File…; path stored
+                except Exception:
+                    pass
+        self._zoom_mol_select.currentIndexChanged.connect(_choose_custom)
+        btn_start_zoom = QPushButton("Start Zoom")
+        btn_start_zoom.clicked.connect(self._start_zoom_journey)
+        fz.addRow("Start Distance", self._zoom_d0)
+        fz.addRow("End Distance", self._zoom_d1)
+        fz.addRow("Duration (s)", self._zoom_dur)
+        row_msel = self._make_row([self._zoom_spawn, QLabel("Molecule"), self._zoom_mol_select])
+        fz.addRow("At End", row_msel)
+        fz.addRow(btn_start_zoom)
+        side.addWidget(gb_zoom)
+
+        # --- Molecules ---
+        gb_mol = QGroupBox("Molecules"); fmol = QFormLayout(); gb_mol.setLayout(fmol)
+        self._mol_atom_scale = QDoubleSpinBox(); self._mol_atom_scale.setRange(0.1, 5.0); self._mol_atom_scale.setSingleStep(0.1); self._mol_atom_scale.setValue(0.6)
+        self._mol_bond_r = QDoubleSpinBox(); self._mol_bond_r.setRange(0.005, 1.0); self._mol_bond_r.setDecimals(3); self._mol_bond_r.setSingleStep(0.005); self._mol_bond_r.setValue(0.035)
+        self._mol_bond_thresh = QDoubleSpinBox(); self._mol_bond_thresh.setRange(0.0, 1.0); self._mol_bond_thresh.setDecimals(3); self._mol_bond_thresh.setSingleStep(0.02); self._mol_bond_thresh.setValue(0.2)
+        self._mol_autospin = QCheckBox("Auto-Spin"); self._mol_autospin.setChecked(True)
+        self._mol_speed = QDoubleSpinBox(); self._mol_speed.setRange(0.0, 360.0); self._mol_speed.setDecimals(1); self._mol_speed.setSingleStep(5.0); self._mol_speed.setValue(25.0)
+        btn_imp_xyz = QPushButton("Import XYZ…")
+        btn_imp_xyz.clicked.connect(self._import_xyz_molecule)
+        fmol.addRow("Atom Scale", self._mol_atom_scale)
+        fmol.addRow("Bond Radius", self._mol_bond_r)
+        fmol.addRow("Bond Thresh", self._mol_bond_thresh)
+        row_spinmol = self._make_row([self._mol_autospin, QLabel("Speed"), self._mol_speed])
+        fmol.addRow("Spin", row_spinmol)
+        fmol.addRow(btn_imp_xyz)
+        side.addWidget(gb_mol)
+
         # finalize
         side.addStretch(1)
         # Wrap the side widget in a scroll area so overflowing controls
         # become scrollable instead of going off-screen.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(side_widget)
-        scroll.setMinimumWidth(300)
+        # Compute a comfortable minimum width so horizontal scrolling is unnecessary
+        try:
+            content_w = int(side_widget.sizeHint().width()) + 28
+        except Exception:
+            content_w = 480
+        # Widen clamp so horizontal scroll is unnecessary and all controls fit
+        content_w = max(420, min(content_w, 860))
+        scroll.setMinimumWidth(content_w)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         root.addWidget(scroll)
         self._refresh_prim_label()
 
@@ -2460,14 +2519,120 @@ class AnalyticViewportPanel(QWidget):
             return
         dt = 0.033
         for rig in self._rigs:
-            if rig.get('autospin', False):
-                sp = float(rig.get('speed', 0.0))
-                for k in ('xy','xz','xw','yz','yw','zw'):
-                    rig['angs'][k] = float(rig['angs'][k]) + sp*dt
             try:
-                self._update_tesseract_rig(rig)
+                if rig.get('type') == 'tesseract':
+                    if rig.get('autospin', False):
+                        sp = float(rig.get('speed', 0.0))
+                        for k in ('xy','xz','xw','yz','yw','zw'):
+                            rig['angs'][k] = float(rig['angs'][k]) + sp*dt
+                    self._update_tesseract_rig(rig)
+                elif rig.get('type') == 'molecule':
+                    if rig.get('autospin', False):
+                        rig['angle'] = float(rig.get('angle', 0.0)) + float(rig.get('speed', 0.0)) * dt
+                    
+                    # Handle molecule growth animation (for dramatic spawn)
+                    if 'growth' in rig:
+                        growth = rig['growth']
+                        growth['start_time'] += dt
+                        t = growth['start_time']
+                        dur = growth['duration']
+                        
+                        if t < dur:
+                            # Smooth growth curve
+                            k = t / dur
+                            kk = k * k * (3.0 - 2.0 * k)  # smoothstep
+                            
+                            # Scale atoms and bonds from tiny to full size
+                            target_atom = growth['target_atom_scale']
+                            target_bond = growth['target_bond_r']
+                            target_speed = growth['target_speed']
+                            
+                            current_atom_scale = 0.1 * target_atom * (1.0 - kk) + target_atom * kk
+                            current_bond_r = 0.1 * target_bond * (1.0 - kk) + target_bond * kk
+                            current_speed = 60.0 * (1.0 - kk) + target_speed * kk
+                            
+                            # Update molecule size in real-time
+                            for pidx in rig.get('pidx_atoms', []):
+                                if pidx < len(self.view.scene.prims):
+                                    pr = self.view.scene.prims[pidx]
+                                    # Scale radius based on original atom properties
+                                    base_r = pr.params[0] / (current_atom_scale / target_atom) if target_atom > 0 else 0.5
+                                    pr.params[0] = float(base_r * current_atom_scale / target_atom)
+                            
+                            for pidx in rig.get('pidx_bonds', []):
+                                if pidx < len(self.view.scene.prims):
+                                    pr = self.view.scene.prims[pidx]
+                                    pr.params[0] = float(current_bond_r)
+                            
+                            rig['speed'] = current_speed
+                        else:
+                            # Growth complete
+                            del rig['growth']
+                    
+                    self._update_molecule_rig(rig)
+                elif rig.get('type') == 'zoom':
+                    t = rig.get('t', 0.0) + dt
+                    dur = max(1e-3, float(rig.get('dur', 1.0)))
+                    k = min(1.0, t/dur)
+                    # smoothstep easing with slow finish
+                    kk = k*k*k*(k*(k*6.0 - 15.0) + 10.0)  # smootherstep for dramatic pause
+                    d = float(rig['d0']) * (1.0-kk) + float(rig['d1']) * kk
+                    try:
+                        self.view.distance = float(max(0.01, d))
+                        self.view._update_camera()
+                    except Exception:
+                        self.view.update()
+                    rig['t'] = t
+                    
+                    # Enhanced spawn moment - pause and reveal
+                    if k >= 0.95 and not rig.get('spawn_triggered', False):
+                        rig['spawn_triggered'] = True
+                        if rig.get('spawn_molecule', False):
+                            # Brief pause before spawn
+                            rig['spawn_delay'] = 0.5  # half second pause
+                            # Flash background to highlight the moment
+                            try:
+                                orig_bg = self.view.scene.bg_color.copy()
+                                self.view.scene.bg_color[:] = [0.1, 0.1, 0.15]  # darker for contrast
+                                rig['orig_bg'] = orig_bg
+                            except Exception:
+                                pass
+                    
+                    # Handle spawn delay and actual spawning
+                    if rig.get('spawn_triggered', False):
+                        delay = rig.get('spawn_delay', 0.0) - dt
+                        rig['spawn_delay'] = max(0.0, delay)
+                        if delay <= 0.0 and not rig.get('spawned', False):
+                            rig['spawned'] = True
+                            self._spawn_zoom_molecule(rig)
+                            # Restore background gradually
+                            if 'orig_bg' in rig:
+                                rig['bg_restore_t'] = 0.0
+                    
+                    # Gradual background restore
+                    if 'bg_restore_t' in rig:
+                        restore_t = rig.get('bg_restore_t', 0.0) + dt
+                        rig['bg_restore_t'] = restore_t
+                        if restore_t < 1.0:
+                            # Lerp back to original
+                            orig = rig.get('orig_bg', [0.0, 0.0, 0.0])
+                            current = [0.1, 0.1, 0.15]
+                            for i in range(3):
+                                self.view.scene.bg_color[i] = current[i] * (1.0 - restore_t) + orig[i] * restore_t
+                        else:
+                            # Fully restored
+                            if 'orig_bg' in rig:
+                                self.view.scene.bg_color[:] = rig['orig_bg']
+                                del rig['orig_bg']
+                                del rig['bg_restore_t']
+                    
+                    if k >= 1.0 and rig.get('spawned', False):
+                        # mark for removal only after everything is complete
+                        rig['done'] = True
             except Exception as e:
-                log.debug(f"tesseract update failed: {e}")
+                log.debug(f"rig update failed: {e}")
+        # remove finished rigs
+        self._rigs = [r for r in self._rigs if not r.get('done')]
 
     def _update_tesseract_rig(self, rig):
         import math
@@ -2560,6 +2725,221 @@ class AnalyticViewportPanel(QWidget):
                             if i < j:
                                 edges.append((i,j))
         return edges
+
+    # --- Zoom helpers ---
+    def _start_zoom_journey(self):
+        try:
+            d0 = float(self._zoom_d0.value()); d1 = float(self._zoom_d1.value()); dur = float(self._zoom_dur.value())
+            spawn = bool(self._zoom_spawn.isChecked())
+            choice = self._zoom_mol_select.currentText()
+            rig = {
+                'type': 'zoom', 'd0': d0, 'd1': d1, 'dur': dur, 't': 0.0,
+                'spawn_molecule': spawn,
+                'choice': choice,
+                'mol_path': self._zoom_mol_path
+            }
+            # replace existing zoom rigs
+            self._rigs = [r for r in self._rigs if r.get('type') != 'zoom'] + [rig]
+        except Exception as e:
+            log.debug(f"start zoom failed: {e}")
+
+    def _spawn_zoom_molecule(self, rig):
+        try:
+            choice = (rig.get('choice') or 'None').lower()
+            path = None
+            if choice.startswith('water'):
+                path = os.path.join(os.getcwd(), 'examples', 'molecules', 'water.xyz')
+            elif choice.startswith('methane'):
+                path = os.path.join(os.getcwd(), 'examples', 'molecules', 'methane.xyz')
+            elif 'choose' in choice and rig.get('mol_path'):
+                path = rig.get('mol_path')
+            if not path or not os.path.exists(path):
+                return
+            atoms = self._parse_xyz(path)
+            if not atoms:
+                return
+            
+            # Enhanced spawn with dramatic entrance
+            mol_rig = self._build_molecule_rig(atoms,
+                atom_scale=float(self._mol_atom_scale.value()) * 0.1,  # start tiny
+                bond_r=float(self._mol_bond_r.value()) * 0.1,
+                bond_thresh=float(self._mol_bond_thresh.value()),
+                autospin=True,
+                speed=60.0)  # faster spin initially
+            
+            if mol_rig:
+                # Add growth animation to the molecule
+                mol_rig['growth'] = {
+                    'start_time': 0.0,
+                    'duration': 2.0,
+                    'target_atom_scale': float(self._mol_atom_scale.value()),
+                    'target_bond_r': float(self._mol_bond_r.value()),
+                    'target_speed': 30.0
+                }
+                self._rigs.append(mol_rig)
+                log.info(f"Spawned molecule from zoom: {choice}")
+                
+        except Exception as e:
+            log.debug(f"spawn molecule failed: {e}")
+
+    # --- Molecule import ---
+    def _import_xyz_molecule(self):
+        try:
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            path, _ = QFileDialog.getOpenFileName(self, "Import Molecule (XYZ)", filter="XYZ (*.xyz)")
+            if not path:
+                return
+            atoms = self._parse_xyz(path)
+            if not atoms:
+                QMessageBox.information(self, "Import XYZ", "No atoms parsed.")
+                return
+            # Build rig with bonds and add to scene
+            rig = self._build_molecule_rig(atoms,
+                                           atom_scale=float(self._mol_atom_scale.value()),
+                                           bond_r=float(self._mol_bond_r.value()),
+                                           bond_thresh=float(self._mol_bond_thresh.value()),
+                                           autospin=bool(self._mol_autospin.isChecked()),
+                                           speed=float(self._mol_speed.value()))
+            if rig is None:
+                return
+            self._rigs.append(rig)
+            self._refresh_prim_label(); self.view.update()
+        except Exception as e:
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Import XYZ", f"Failed: {e}")
+            except Exception:
+                pass
+
+    def _parse_xyz(self, path: str):
+        atoms = []
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            if not lines:
+                return []
+            try:
+                n = int(lines[0].split()[0])
+                start = 2 if len(lines) > 1 else 1
+            except Exception:
+                n = len(lines)
+                start = 0
+            for ln in lines[start:start+n]:
+                parts = ln.split()
+                if len(parts) < 4:
+                    continue
+                sym = parts[0]
+                try:
+                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                except Exception:
+                    continue
+                color, rcov = self._element_color_radius(sym)
+                atoms.append({'sym': sym, 'pos': np.array([x, y, z], np.float32), 'color': color, 'rcov': rcov})
+        except Exception:
+            return []
+        return atoms
+
+    def _element_color_radius(self, sym: str):
+        s = sym.capitalize()
+        # Simple JMol-like colors and covalent radii (Å) for common elements; defaults otherwise
+        colors = {
+            'H': (1.0, 1.0, 1.0), 'C': (0.3, 0.3, 0.3), 'N': (0.1, 0.1, 0.9), 'O': (0.9, 0.1, 0.1),
+            'S': (0.9, 0.9, 0.2), 'P': (1.0, 0.5, 0.0), 'F': (0.1, 0.9, 0.1), 'Cl': (0.1, 0.8, 0.1)
+        }
+        rcov = {
+            'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'S': 1.05, 'P': 1.07, 'F': 0.57, 'Cl': 1.02
+        }.get(s, 0.8)
+        return colors.get(s, (0.7, 0.7, 0.7)), rcov
+
+    def _build_molecule_rig(self, atoms, atom_scale=0.6, bond_r=0.035, bond_thresh=0.2, autospin=True, speed=25.0):
+        try:
+            pts = np.array([a['pos'] for a in atoms], dtype=np.float32)
+            ctr = pts.mean(axis=0)
+            pts -= ctr
+            # Bond detection by covalent radii sum + threshold (Å)
+            bonds = []
+            N = len(atoms)
+            for i in range(N):
+                for j in range(i+1, N):
+                    rij = np.linalg.norm(pts[i] - pts[j])
+                    if rij <= (atoms[i]['rcov'] + atoms[j]['rcov'] + bond_thresh):
+                        bonds.append((i, j))
+            need = N + len(bonds)
+            if len(self.view.scene.prims) + need > MAX_PRIMS:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Import XYZ", f"Not enough primitive budget for molecule: need {need}, have {MAX_PRIMS-len(self.view.scene.prims)}")
+                return None
+            pidx_atoms = []
+            for i, a in enumerate(atoms):
+                r = float(atom_scale * max(0.2, a.get('rcov', 0.8)) * 0.5)
+                pr = Prim(KIND_SPHERE, [r, 0, 0, 0], beta=0.0, color=tuple(a.get('color', (0.7, 0.7, 0.7))))
+                M = np.eye(4, dtype=np.float32); M[:3,3] = pts[i]
+                pr.xform.M = M
+                try: pr.xform.M_inv = np.linalg.inv(M)
+                except Exception: pr.xform.M_inv = None
+                self.view.scene.add(pr)
+                pidx_atoms.append(len(self.view.scene.prims)-1)
+            pidx_bonds = []
+            for (i, j) in bonds:
+                pr = Prim(KIND_CAPSULE, [float(bond_r), 1.0, 0.0, 0.0], beta=0.0, color=(0.85, 0.85, 0.85))
+                self.view.scene.add(pr)
+                pidx_bonds.append(len(self.view.scene.prims)-1)
+            rig = {
+                'type': 'molecule',
+                'pts': pts,  # Nx3 np.array
+                'bonds': bonds,
+                'pidx_atoms': pidx_atoms,
+                'pidx_bonds': pidx_bonds,
+                'bond_r': float(bond_r),
+                'autospin': bool(autospin),
+                'speed': float(speed),
+                'angle': 0.0
+            }
+            # Apply initial placement
+            self._update_molecule_rig(rig)
+            return rig
+        except Exception as e:
+            log.debug(f"molecule build failed: {e}")
+            return None
+
+    def _update_molecule_rig(self, rig):
+        try:
+            # Simple rotation about Y axis by angle (degrees)
+            ang = float(rig.get('angle', 0.0))
+            ca = np.cos(np.deg2rad(ang)); sa = np.sin(np.deg2rad(ang))
+            R = np.array([[ ca, 0.0,  sa],
+                          [0.0, 1.0, 0.0],
+                          [-sa, 0.0,  ca]], dtype=np.float32)
+            pts_rot = (R @ rig['pts'].T).T
+            # Update atoms
+            for idx, pidx in enumerate(rig['pidx_atoms']):
+                pr = self.view.scene.prims[pidx]
+                M = np.eye(4, dtype=np.float32); M[:3,3] = pts_rot[idx]
+                pr.xform.M = M
+                try: pr.xform.M_inv = np.linalg.inv(M)
+                except Exception: pr.xform.M_inv = None
+            # Update bonds
+            for bidx, (i, j) in enumerate(rig['bonds']):
+                a = pts_rot[i]; b = pts_rot[j]
+                mid = (a + b) * 0.5
+                dirv = b - a
+                h = float(max(1e-6, np.linalg.norm(dirv)))
+                y = dirv / max(1e-6, np.linalg.norm(dirv))
+                tmp = np.array([1.0, 0.0, 0.0], np.float32) if abs(float(y[0])) < 0.9 else np.array([0.0, 0.0, 1.0], np.float32)
+                x = np.cross(tmp, y); x /= max(1e-6, np.linalg.norm(x))
+                z = np.cross(y, x)
+                M = np.eye(4, dtype=np.float32)
+                M[:3,0] = x; M[:3,1] = y; M[:3,2] = z; M[:3,3] = mid
+                pr = self.view.scene.prims[rig['pidx_bonds'][bidx]]
+                pr.params[0] = float(rig['bond_r']); pr.params[1] = float(h)
+                pr.xform.M = M
+                try: pr.xform.M_inv = np.linalg.inv(M)
+                except Exception: pr.xform.M_inv = None
+            try: self.view.scene._notify()
+            except Exception: pass
+            self.view.update()
+        except Exception as e:
+            log.debug(f"molecule update failed: {e}")
 
     def _update_sketch_info(self, sel_key):
         try:
