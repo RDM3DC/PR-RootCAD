@@ -4,7 +4,7 @@ from adaptivecad.sketch.model import SketchDocument, Point, Line, Dimension, Dim
 
 
 def test_unit_conversions():
-    assert to_internal(25.4, Units.IN) == 25.4 * 25.4 / 25.4  # 1 inch -> 25.4 mm
+    assert abs(to_internal(25.4, Units.IN) - (25.4 * 25.4)) < 1e-9
     assert abs(to_internal(1.0, Units.IN) - 25.4) < 1e-9
     assert abs(from_internal(25.4, Units.IN) - 1.0) < 1e-9
     assert abs(from_internal(10.0, Units.MM) - 10.0) < 1e-9

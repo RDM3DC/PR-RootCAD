@@ -24,7 +24,15 @@ __all__ = [
     "QuantumFieldVisualizer",
 ]
 
-from .params import ParamEnv
+try:
+    from .params import ParamEnv
+except Exception as _params_err:  # Optional numpy dependency may be missing
+    import logging as _logging
+
+    _logging.getLogger("adaptivecad").debug(
+        "ParamEnv unavailable due to optional dependency: %s", _params_err
+    )
+    ParamEnv = None  # type: ignore[assignment]
 from .spacetime import (
     Event,
     minkowski_interval,
@@ -32,11 +40,21 @@ from .spacetime import (
     apply_boost,
     light_cone,
 )
-from .cosmic_curve_tools import (
-    BizarreCurveFeature,
-    CosmicSplineFeature,
-    NDFieldExplorerFeature,
-)
+try:
+    from .cosmic_curve_tools import (
+        BizarreCurveFeature,
+        CosmicSplineFeature,
+        NDFieldExplorerFeature,
+    )
+except Exception as _cosmic_err:  # Optional scientific deps
+    import logging as _logging
+
+    _logging.getLogger("adaptivecad").debug(
+        "Cosmic curve tools unavailable (optional): %s", _cosmic_err
+    )
+    BizarreCurveFeature = None  # type: ignore[assignment]
+    CosmicSplineFeature = None  # type: ignore[assignment]
+    NDFieldExplorerFeature = None  # type: ignore[assignment]
 try:
     from .quantum_visualization import (
         QuantumState,
