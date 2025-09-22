@@ -1193,7 +1193,11 @@ class MainWindow:
         # Setup UI
         self._create_menus_and_toolbar()
         
-        # Create status bar        self.win.statusBar().showMessage("AdaptiveCAD Advanced Shapes & Modeling Tools Ready")
+        # Create status bar
+        self.win.statusBar().showMessage("AdaptiveCAD Advanced Shapes & Modeling Tools Ready")
+        
+        # Show welcome screen on first run
+        self._show_welcome_if_first_run()
 
         # Load persisted analytic-main preference and apply if enabled
         try:
@@ -1364,13 +1368,23 @@ class MainWindow:
 
         # File menu
         file_menu = menubar.addMenu("File")
+        
+        # New project action
+        new_action = QAction("New Project", self.win)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(self._new_project)
+        file_menu.addAction(new_action)
+        file_menu.addSeparator()
+        
         import_menu = file_menu.addMenu("Import")
         import_simple_action = QAction("STL/STEP (with Progress)", self.win)
+        import_simple_action.setShortcut("Ctrl+I")
         import_simple_action.triggered.connect(lambda: self._run_command(MinimalImportCmd()))
         import_menu.addAction(import_simple_action)
         file_menu.addSeparator()
         export_menu = file_menu.addMenu("Export")
         export_stl_action = QAction("Export STL", self.win)
+        export_stl_action.setShortcut("Ctrl+E")
         export_stl_action.triggered.connect(lambda: self._run_command(ExportStlCmd()))
         export_menu.addAction(export_stl_action)
         export_ama_action = QAction("Export AMA", self.win)
@@ -1384,13 +1398,16 @@ class MainWindow:
         export_menu.addAction(export_gcode_direct_action)
         file_menu.addSeparator()
         save_action = QAction("Save Project...", self.win)
+        save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(lambda: self._run_command(SaveProjectCmd()))
         file_menu.addAction(save_action)
         open_action = QAction("Open Project...", self.win)
+        open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(lambda: self._run_command(OpenProjectCmd()))
         file_menu.addAction(open_action)
         file_menu.addSeparator()
         exit_action = QAction("Exit", self.win)
+        exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.win.close)
         file_menu.addAction(exit_action)
 
@@ -1514,6 +1531,7 @@ class MainWindow:
         modeling_menu.addAction(shell_action)
         modeling_menu.addSeparator()
         delete_action = QAction("Delete", self.win)
+        delete_action.setShortcut("Del")
         delete_action.triggered.connect(self._delete_selected)
         modeling_menu.addAction(delete_action)
 
@@ -1612,16 +1630,34 @@ class MainWindow:
 
         # Toolbars
         self.toolbar_occ = self.win.addToolBar("Common Shapes")
+        self.toolbar_occ.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        
+        # Add tooltips and better organization
+        box_action.setToolTip("Create a box/cube (Shortcut: B)")
         self.toolbar_occ.addAction(box_action)
+        cyl_action.setToolTip("Create a cylinder (Shortcut: C)")
         self.toolbar_occ.addAction(cyl_action)
+        ball_action.setToolTip("Create a sphere (Shortcut: S)")
+        self.toolbar_occ.addAction(ball_action)
+        analytic_ball_action.setToolTip("Create an analytic sphere using SDF (Shortcut: Shift+S)")
         self.toolbar_occ.addAction(analytic_ball_action)
-        self.toolbar_occ.addAction(super_action)
-        self.toolbar_occ.addAction(pi_shell_action)
+        
         self.toolbar_occ.addSeparator()
+        super_action.setToolTip("Create a superellipse with adjustable parameters")
+        self.toolbar_occ.addAction(super_action)
+        pi_shell_action.setToolTip("Create a Pi Curve Shell using adaptive geometry")
+        self.toolbar_occ.addAction(pi_shell_action)
+        
+        self.toolbar_occ.addSeparator()
+        move_action.setToolTip("Move selected objects")
         self.toolbar_occ.addAction(move_action)
+        mirror_action.setToolTip("Mirror selected objects")
         self.toolbar_occ.addAction(mirror_action)
+        union_action.setToolTip("Union/combine selected objects")
         self.toolbar_occ.addAction(union_action)
+        cut_action.setToolTip("Cut/subtract objects")
         self.toolbar_occ.addAction(cut_action)
+        delete_action.setToolTip("Delete selected objects (Del)")
         self.toolbar_occ.addAction(delete_action)
 
         self.toolbar_analytic = self.win.addToolBar("Analytic Quick")
@@ -2386,6 +2422,69 @@ class MainWindow:
         QMessageBox.information(self.win, "Not Implemented", 
                                f"{feature_name} functionality is not yet implemented.\n"
                                "This feature will be added in a future version.")
+    
+    def _show_welcome_if_first_run(self):
+        """Show welcome dialog with quick tips for new users."""
+        prefs = self._load_analytic_prefs()
+        if not prefs.get('welcomed', False):
+            try:
+                from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QCheckBox
+                
+                class WelcomeDialog(QDialog):
+                    def __init__(self, parent=None):
+                        super().__init__(parent)
+                        self.setWindowTitle("Welcome to AdaptiveCAD")
+                        self.setModal(True)
+                        self.resize(400, 300)
+                        
+                        layout = QVBoxLayout(self)
+                        
+                        # Welcome message
+                        welcome_text = QLabel("""
+<h2>Welcome to AdaptiveCAD!</h2>
+<p>Get started quickly:</p>
+<ul>
+<li><b>Basic Shapes:</b> Use menu or shortcuts (B=Box, C=Cylinder, S=Sphere)</li>
+<li><b>Advanced Shapes:</b> Try Superellipse, Pi Curve Shell, Helix</li>
+<li><b>Analytic View:</b> Use Settings → View → Analytic Viewport for SDF rendering</li>
+<li><b>File Operations:</b> Ctrl+N (New), Ctrl+O (Open), Ctrl+S (Save)</li>
+</ul>
+<p>Need help? Check the Help menu for documentation and examples.</p>
+                        """)
+                        welcome_text.setWordWrap(True)
+                        layout.addWidget(welcome_text)
+                        
+                        # Don't show again checkbox
+                        self.dont_show = QCheckBox("Don't show this welcome screen again")
+                        layout.addWidget(self.dont_show)
+                        
+                        # Close button
+                        close_btn = QPushButton("Get Started")
+                        close_btn.clicked.connect(self.accept)
+                        layout.addWidget(close_btn)
+                
+                dialog = WelcomeDialog(self.win)
+                dialog.exec()
+                
+                # Save preference if user checked the box
+                if dialog.dont_show.isChecked():
+                    self._save_analytic_prefs({'welcomed': True})
+                    
+            except Exception as e:
+                log.debug(f"Could not show welcome dialog: {e}")
+
+    def _new_project(self):
+        """Clear the current project and start fresh."""
+        try:
+            from adaptivecad.command_defs import DOCUMENT
+            DOCUMENT.clear()
+        except Exception:
+            pass
+        
+        if hasattr(self.view, '_display'):
+            self.view._display.EraseAll()
+        
+        self.win.statusBar().showMessage("New project started", 2000)
     
     def run(self):
         if not HAS_GUI:
