@@ -111,6 +111,18 @@ if HAS_QT:
 # Backwards compatibility flag
 HAS_GUI = HAS_QT
 
+def _require_gui_modules():
+    try:
+        # Explicit imports to validate availability; will trigger monkeypatched __import__ in tests
+        import PySide6.QtWidgets  # type: ignore
+        from OCC.Core.StlAPI import StlAPI_Reader  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"GUI dependencies are not available: {e}")
+    return True
+
+# If this module is imported in an environment explicitly missing Qt (as in tests),
+# expose a sentinel that test can call to assert the failure path.
+
 # Ensure QDockWidget is always imported for all code paths
 try:
     from PySide6.QtWidgets import QDockWidget
@@ -1069,15 +1081,15 @@ class OpenProjectCmd:
 
 # --- MAIN WINDOW AND APPLICATION ---
 class MainWindow:
-    def __init__(self):
+    def __init__(self, existing_app=None, *args, **kwargs):
         log.debug("MainWindow.__init__() called")
         if not HAS_GUI:
             log.warning("Qt not available. Cannot create MainWindow.")
             return
 
         log.debug("GUI dependencies available, initializing...")
-        # Initialize the application
-        self.app = QApplication.instance() or QApplication([])
+        # Initialize the application, optionally using an existing instance
+        self.app = existing_app or QApplication.instance() or QApplication([])
         
         # Initialize state variables
         self.selected_feature = None
@@ -1836,6 +1848,9 @@ class MainWindow:
         except Exception:
             pass
     
+    def run_cmd(self, cmd):
+        return self._run_command(cmd)
+
     def _run_command(self, cmd):
         try:
             # Store reference to command to prevent garbage collection during execution

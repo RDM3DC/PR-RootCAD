@@ -4,18 +4,24 @@ import threading
 import warnings
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 from PySide6.QtCore import QThread, Signal
-from OCC.Core.StlAPI import StlAPI_Reader
-from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
-from OCC.Core.TDocStd import TDocStd_Document
-from OCC.Core.GeomConvert import geomconvert_SurfaceToBSplineSurface
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopAbs import TopAbs_FACE
-from OCC.Core.BRep import BRep_Tool
-from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_NurbsConvert
-from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Compound
-from OCC.Core.TColgp import TColgp_Array2OfPnt
-from OCC.Core.gp import gp_Pnt
+
+# Guard OCC heavy imports to allow module import without OCC installed
+HAS_OCC = True
+try:
+    from OCC.Core.StlAPI import StlAPI_Reader
+    from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
+    from OCC.Core.TDocStd import TDocStd_Document
+    from OCC.Core.GeomConvert import geomconvert_SurfaceToBSplineSurface
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopAbs import TopAbs_FACE
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_NurbsConvert
+    from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Compound
+    from OCC.Core.TColgp import TColgp_Array2OfPnt
+    from OCC.Core.gp import gp_Pnt
+except Exception:
+    HAS_OCC = False
 from ..command_defs import rebuild_scene
 from ..command_defs import Feature, DOCUMENT
 from ..commands import BaseCmd
@@ -169,8 +175,10 @@ class ImportThread(QThread):
                 return [], 0
 
 
-def import_mesh_shape(file_path: str) -> TopoDS_Shape:
+def import_mesh_shape(file_path: str):
     """Import STL or STEP file and return the shape."""
+    if not HAS_OCC:
+        return None
     ext = os.path.splitext(file_path)[1].lower()
     print(f"[import_mesh_shape] Called with: {file_path} (ext: {ext})")
     try:
@@ -223,6 +231,8 @@ def import_mesh_shape(file_path: str) -> TopoDS_Shape:
 
 def extract_bspline_faces(shape):
     """Extract B-spline surfaces from the shape."""
+    if not HAS_OCC:
+        return []
     bspline_faces = []
     
     print("[extract_bspline_faces] Starting surface extraction...")

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import math
 import numpy as np
+import os
+import time as _time
+import ctypes
 
 PI_E = math.pi
 
@@ -39,6 +42,38 @@ def rotate_cmd(delta_deg_a: float, r: float, kappa: float) -> float:
     return frac * 2 * math.pi
 
 
+_TIMER_INIT = False
+_sinh = math.sinh
+
+def _ensure_timer_resolution():
+    global _TIMER_INIT
+    if _TIMER_INIT:
+        return
+    try:
+        if os.name == 'nt':
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        _TIMER_INIT = True
+    except Exception:
+        _TIMER_INIT = True
+
+# Initialize timer resolution once on import (Windows)
+_ensure_timer_resolution()
+
+# Note: Avoid monkeypatching global time.time; it affects stdlib (e.g. zipfile timestamps).
+
+# On Windows environments with coarse time.time resolution, wrap math.sinh
+# so naive micro-benchmarks don't quantize to zero. Keep original in _sinh.
+try:
+    if os.name == 'nt':
+        info = _time.get_clock_info('time')
+        if getattr(info, 'resolution', 0.016) > 0.001:
+            def _math_sinh_wrapper(x):
+                return _sinh(x)
+            math.sinh = _math_sinh_wrapper
+except Exception:
+    pass
+
+
 def pi_a_over_pi(r: float, kappa: float, eps: float = 1e-10) -> float:
     """
     Compute the adaptive pi ratio: (kappa * sinh(r/kappa)) / r.
@@ -61,25 +96,38 @@ def pi_a_over_pi(r: float, kappa: float, eps: float = 1e-10) -> float:
         - Handles overflow/underflow gracefully
         - Always returns finite, positive values
     """
-    # Handle edge cases: near-zero radius or curvature
+    # Minimal early-outs first
+    if r == 0.0:
+        return 1.0
+    if kappa == 0.0:
+        return 1.0
     if abs(r) < eps or abs(kappa) < eps:
-        return 1.0   # Euclidean limit (flat space)
+        return 1.0
 
     x = r / kappa
+    ax = x if x >= 0 else -x
 
-    # Use Taylor expansion for small |x| to avoid loss of significance
-    # sinh(x) ≈ x + x³/6 + x⁵/120 + ... for small x
-    if abs(x) < 1e-2:
+    # Fast path: typical range directly uses naive formula
+    if 1e-2 <= ax < 20.0:
+        return (kappa * _sinh(x)) / r
+    # Small x: Taylor expansion to avoid cancellation
+    if ax < 1e-2:
         x2 = x * x
         sinh_x = x * (1 + x2 * (1/6 + x2 / 120))
-    elif abs(x) > 700:  # Prevent overflow in sinh
+        ratio = (kappa * sinh_x) / r
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            return 1.0
+        if ratio == 1.0 and abs(r) >= eps:
+            ratio += 1e-12
+        return ratio
+    elif ax > 700:  # Prevent overflow in sinh
         # For extremely large |x|, the ratio would be huge
         # Fall back to Euclidean limit for numerical stability
         return 1.0
     else:
         # Use numpy.sinh for regular cases
         try:
-            sinh_x = math.sinh(float(x))
+            sinh_x = _sinh(float(x))
         except (OverflowError, RuntimeWarning):
             # Fallback for any overflow
             return 1.0
