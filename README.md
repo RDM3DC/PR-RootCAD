@@ -1,124 +1,259 @@
-# AdaptiveCAD
+﻿# AdaptiveCAD
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Sponsor RDM3DC](https://img.shields.io/badge/Sponsor-RDM3DC-ff69b4?logo=github-sponsors)](https://github.com/sponsors/RDM3DC)
 
-AdaptiveCAD is a next-gen modeling toolkit built on Adaptive π (πₐ). It delivers node-free smooth curves, hyperbolic geometry tools, fast STL repair, and 3D-print exports—wrapped in a friendly Playground app, a FreeCAD Workbench, and a starter Blender add-on.
+AdaptiveCAD is a next-gen modeling toolkit built on Adaptive Ï€ (Ï€â‚). It delivers node-free smooth curves, hyperbolic geometry tools, fast STL repair, and 3D-print exportsâ€”wrapped in a friendly Playground app, a FreeCAD Workbench, and a starter Blender add-on.
 
-**TL;DR:** Import messy meshes → repair → generate smooth πₐ curves/shapes → preview toolpaths → export STL/3MF/G-code. Works great for printable organic shells, architectural panels, and smooth-stress brackets.
+**TL;DR:** Import messy meshes â†’ repair â†’ generate smooth Ï€â‚ curves/shapes â†’ preview toolpaths â†’ export STL/3MF/G-code. Works great for printable organic shells, architectural panels, and smooth-stress brackets.
 
-## ✨ Highlights
+## âœ¨ Highlights
 
 ### Playground App (Standalone)
-Parametric editors (superellipse, rounded-rect, πₐ splines), live viewport, STL→πₐ import & repair, toolpath preview, and one-click exports.
+### Analytic HUD Wheel
+![Radial tool wheel demo](docs/assets/radial_wheel_demo.gif)
+
+All analytic viewports now share a single radial tool wheel overlay with sketch + transform tools, quick utility segments (Center, Reset, Undo), and idle-spin polish. Configure it under *HUD Wheel* in the Analytic panel (enable, edge fit, overshoot, thickness, opacity, text size, auto-spin), and the choices persist via `~/.adaptivecad_analytic.json`.
+
+Parametric editors (superellipse, rounded-rect, Ï€â‚ splines), live viewport, STLâ†’Ï€â‚ import & repair, toolpath preview, and one-click exports.
 
 ### Curve/Shape Libraries
-Superellipse, πₐ splines, advanced shapes, and hyperbolic families (geodesics, horocycles, tilings).
+Superellipse, Ï€â‚ splines, advanced shapes, and hyperbolic families (geodesics, horocycles, tilings).
 
 ### STL Repair & Smoothing
-Fix non-manifold edges, normals, degenerate faces; optional smoothing with πₐ-aware operations.
+Fix non-manifold edges, normals, degenerate faces; optional smoothing with Ï€â‚-aware operations.
 
 ### 3D Printing Ready
 Export STL / 3MF / G-code with layer previews and basic time estimates.
 
 ### FreeCAD Workbench + Blender Add-on
-Generate πₐ objects, import/export, and hand off assets to your DCC/CAD pipeline.
+Generate Ï€â‚ objects, import/export, and hand off assets to your DCC/CAD pipeline.
 
-## 📦 Components in this Repo
+## ðŸ“¦ Whatâ€™s where (top-level)
 
+Key launchers and modules live at repo root and under `adaptivecad/`:
+
+- `run_enhanced_playground.py` / `run_full_playground.py` â€” launch the Playground
+- `adaptivecad/gui/playground.py` â€” main GUI implementation
+- `adaptivecad/gui/analytic_viewport.py` â€” Analytic SDF viewport + panel (Mandelbulb etc.)
+- `adaptivecad/aacore/sdf.py` â€” CPU SDFs and scene packing (kept in sync with shaders)
+- `environment.yml` â€” conda env (PySide6 + pythonocc-core)
+- `check_environment.ps1|.py`, `check_qt.py` â€” diagnostics (optional)
+
+## ðŸ–¥ï¸ Requirements
+
+- Windows 10/11 (primary target)
+- Python 3.10+ (3.12 works fine in venv path)
+- OpenGL-capable GPU/driver (for Analytic viewport)
+- Optional: Miniconda/Conda if you want OCC (`pythonocc-core`)
+## ðŸš€ Quick Start (Windows-first, no OCC required)
+
+Two easy paths. Pick A (simple venv) if you just want the full Analytic shapes (Sphere, Torus, Mobius, Superellipsoid, QuasiCrystal, 4D Torus, Mandelbulb, Klein, Menger, Hyperbolic, Gyroid, Trefoil). Pick B (conda) if you also want OCC-based modeling/import.
+
+### A) Simple venv (Analytic shapes immediately)
+
+1) Create and activate a virtual environment (PowerShell):
+
+```powershell
+python -m venv .venv
+./.venv/Scripts/Activate.ps1
+pip install -U pip wheel
+# Minimal deps for the Enhanced/Full Playground analytic path
+pip install PySide6 numpy PyOpenGL
+# Optional but nice: Pillow (textures), mpmath (high-precision math)
+pip install Pillow mpmath
 ```
-AdaptiveCAD/
-├─ playground/                       # Main app (UI & ops)
-│  ├─ run_advanced_playground.py
-│  ├─ quick_start_demo.py
-│  ├─ adaptivecad_shapes_builder.py
-│  ├─ import_stl_to_pi.py
-│  └─ ... (export_slices.py, ama_to_gcode_converter.py, etc.)
-├─ freecad/AdaptiveCADPIToolpath/    # FreeCAD Workbench (v0.1)
-├─ blender_addons/adaptivecad_pia/   # Blender add-on (starter)
-├─ docs/
-│  ├─ PLAYGROUND_GUIDE.md
-│  ├─ MODELING_TOOLS.md
-│  ├─ IMPORT_SYSTEM_COMPLETE.md
-│  ├─ HYPERBOLIC_GEOMETRY_IMPLEMENTATION.md
-│  └─ MATH_REFERENCE.md
-├─ examples/                         # Sample models, scripts, projects
-├─ gifs_lite_pack/                   # Short loops for README/Kickstarter
-└─ LICENSE
+
+2) Launch the Enhanced or Full Playground (repo root):
+
+```powershell
+# Enhanced UI with all analytic shapes
+./.venv/Scripts/python.exe run_enhanced_playground.py
+
+# Or the Full variant
+./.venv/Scripts/python.exe run_full_playground.py
 ```
 
-## 🖥️ System Requirements
+3) In the app, open the Analytic panel and add shapes:
+    - View â†’ "Show Analytic Viewport (Panel)"
+    - In "Primitives", click: "Add Mandelbulb" (and others)
 
-- **OS:** Windows 10/11 (primary). Linux/macOS planned post-1.0.
-- **Python:** 3.10+ (for source runs).
+Notes:
+- OCC features (B-Rep modeling/import) are optional and will be stubs in this path.
+- If you see a blank/black view, update your GPU driver; the viewport uses OpenGL via PyOpenGL.
+
+### B) Conda env (adds optional OCC integration)
+
+1) Create the environment from the provided `environment.yml` (Windows):
+
+```powershell
+conda env create -f environment.yml
+conda activate adaptivecad
+```
+
+2) Launch the Playground:
+
+```powershell
+python run_enhanced_playground.py
+```
+
+This installs `pythonocc-core` alongside PySide6/numpy for the OCC viewer and modeling commands. Analytic shapes still work the same via the View â†’ Analytic Viewport (Panel).
+
+### Troubleshooting
+
+- PowerShell execution policy blocks Activate.ps1:
+   - Either run the Python exe directly (as shown above), or temporarily use `cmd.exe` with `./.venv/Scripts/activate.bat`.
+- Qt platform plugin error ("could not load platform plugin 'windows'):
+   - Ensure youâ€™re using the venvâ€™s Python and `PySide6` is installed: `pip show PySide6`.
+   - Try upgrading: `pip install -U PySide6`.
+- No OpenGL context / black viewport:
+   - Update graphics drivers; try running on your discrete GPU if you have both iGPU/dGPU.
+- OCC features missing:
+   - Thatâ€™s expected on the venv path. Use the conda path (B) to add `pythonocc-core`.
 - **GPU:** Optional; CPU-only is fine for typical models.
 - **CAD/DCC (optional):** FreeCAD 0.21+ / Blender 4.x for the integrations.
 
-## 🚀 Quick Start (Playground App)
+## ðŸš€ Quick Start (Windows-first, no OCC required)
 
-### Option A — Run from source (recommended for dev)
+Two easy paths. Pick A (simple venv) if you just want the full Analytic shapes (Sphere, Torus, Mobius, Superellipsoid, QuasiCrystal, 4D Torus, Mandelbulb, Klein, Menger, Hyperbolic, Gyroid, Trefoil). Pick B (conda) if you also want OCC-based modeling/import.
 
-Create an environment and install deps:
+### A) Simple venv (Analytic shapes immediately)
 
-```bash
-# from repo root
+1) Create and activate a virtual environment (PowerShell):
+
+```powershell
 python -m venv .venv
-# Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 pip install -U pip wheel
-pip install -r requirements.txt
+# Minimal deps for the Enhanced/Full Playground analytic path
+pip install PySide6 numpy PyOpenGL
+# Optional but nice: Pillow (textures), mpmath (high-precision math)
+pip install Pillow mpmath
 ```
 
-Launch the Playground:
+2) Launch the Enhanced or Full Playground (repo root):
 
-```bash
-cd playground
-python run_advanced_playground.py
+```powershell
+# Enhanced UI with all analytic shapes
+.\.venv\Scripts\python.exe run_enhanced_playground.py
+
+# Or the Full variant
+.\.venv\Scripts\python.exe run_full_playground.py
 ```
 
-Try the demo:
+3) In the app, open the Analytic panel and add shapes:
+    - View â†’ "Show Analytic Viewport (Panel)"
+    - In "Primitives", click: "Add Mandelbulb" (and others)
 
-```bash
-python quick_start_demo.py
+Notes:
+- OCC features (B-Rep modeling/import) are optional and will be stubs in this path.
+- If you see a blank/black view, update your GPU driver; the viewport uses OpenGL via PyOpenGL.
+
+### B) Conda env (adds optional OCC integration)
+
+1) Create the environment from the provided `environment.yml` (Windows):
+
+```powershell
+conda env create -f environment.yml
+conda activate adaptivecad
 ```
 
-### Option B — Use the Windows installer (when available)
+2) Launch the Playground:
 
-Download the latest Playground MSIX from Releases and double-click to install. (We sign builds at each tagged version; see Releases page.)
+```powershell
+python run_enhanced_playground.py
+```
 
-## 🧩 Key Workflows
+This installs `pythonocc-core` alongside PySide6/numpy for the OCC viewer and modeling commands. Analytic shapes still work the same via the View â†’ Analytic Viewport (Panel).
 
-1. **Parametric shapes → export**
-   - Open Playground → Shapes panel.
-   - Pick Superellipse or πₐ Spline, tweak parameters (a, b, n, points).
+### Troubleshooting
+
+- PowerShell execution policy blocks Activate.ps1:
+   - Either run the Python exe directly (as shown above), or temporarily use `cmd.exe` with `.\.venv\Scripts\activate.bat`.
+- Qt platform plugin error ("could not load platform plugin 'windows'):
+   - Ensure youâ€™re using the venvâ€™s Python and `PySide6` is installed: `pip show PySide6`.
+   - Try upgrading: `pip install -U PySide6`.
+- No OpenGL context / black viewport:
+   - Update graphics drivers; try running on your discrete GPU if you have both iGPU/dGPU.
+- OCC features missing:
+   - Thatâ€™s expected on the venv path. Use the conda path (B) to add `pythonocc-core`.
+
+## ðŸ§ª Try it quickly
+
+```powershell
+./.venv/Scripts/python.exe run_enhanced_playground.py
+# View â†’ Show Analytic Viewport (Panel) â†’ Add Mandelbulb
+```
+
+Optional diagnostics (PowerShell):
+
+```powershell
+python check_qt.py     # simple Qt smoke test
+python check_environment.py  # broader environment check
+```
+
+### Radial Tool Wheel (overlay)
+
+A new holographic radial tool wheel overlay is included for quick tool access. Itâ€™s auto-wired into the Playgroundâ€™s main viewport. You can also run the minimal demo:
+
+```powershell
+./.venv/Scripts/python.exe examples/demo_radial_wheel.py
+```
+
+Current mappings focus on existing 3D commands (Move, Sphere, etc.) with placeholders for upcoming 2D sketch tools. The wheel fades near the cursor center and allows right-drag to rotate.
+
+### Anisotropic Distance (plugin)
+
+A compact anisotropic fast-marching (FMM-lite) demo is included as a plugin and CLI.
+
+- In the Playground GUI: Plugins â†’ "Anisotropic Distance (FMM-lite)" â†’ "Compute Demo" or "Trace Geodesic".
+- From the command line (repo root):
+
+```powershell
+./.venv/Scripts/python.exe plugins/aniso_distance_plugin.py --mode demo
+./.venv/Scripts/python.exe plugins/aniso_distance_plugin.py --mode trace
+```
+
+See `README_ANISO_DISTANCE.md` for details and Blender/FreeCAD hooks.
+## ðŸ§© Key Workflows
+
+1. **Parametric shapes â†’ export**
+   - Open Playground â†’ Shapes panel.
+   - Pick Superellipse or Ï€â‚ Spline, tweak parameters (a, b, n, points).
+## ðŸ§° FreeCAD / Blender (optional)
+
+- FreeCAD workbench lives under `freecad/AdaptiveCADPIToolpath/`.
+- Blender add-on starter lives under `blender_addons/`.
+
+These are optional; the Playground runs standalone.
    - Click Export to save STL/3MF, or Generate G-code for printing.
 
-2. **STL → repair → πₐ smoothing**
+2. **STL â†’ repair â†’ Ï€â‚ smoothing**
    - Import a messy STL.
    - Run Repair (non-manifold, normals, decimate).
-   - Enable πₐ Smooth (optional) and preview the toolpath.
+   - Enable Ï€â‚ Smooth (optional) and preview the toolpath.
    - Export ready-to-print output.
 
 3. **Hyperbolic families**
    - Open Hyperbolic tab: create geodesics/horocycles, or tiling presets.
    - Convert curves to meshes, combine with param shapes, and export.
 
-## 🧪 Examples
+## ðŸ§ª Examples
 
-```bash
+```powershell
 # Rebuild a param sweep and export STL
-python playground/quick_start_demo.py --shape superellipse --a 40 --b 25 --n 3.2 --out ./examples/superellipse.stl
+python quick_start_demo.py --shape superellipse --a 40 --b 25 --n 3.2 --out ./examples/superellipse.stl
 
 # Repair an STL and export G-code
-python playground/import_stl_to_pi.py --in ./examples/janky_part.stl --repair --gcode ./examples/janky_part_fixed.gcode
+python import_stl_to_pi.py --in ./examples/janky_part.stl --repair --gcode ./examples/janky_part_fixed.gcode
 ```
 
 More in `examples/` and `docs/PLAYGROUND_GUIDE.md`.
 
-## 📐 Scaling & Smoothness
+## ðŸ“ Scaling & Smoothness
 
-AdaptiveCAD stores geometry as πₐ splines and parametric surfaces, then tessellates at export with adaptive error bounds.
+AdaptiveCAD stores geometry as Ï€â‚ splines and parametric surfaces, then tessellates at export with adaptive error bounds.
 
 - Set `max_angle_err` and `max_chord_err` to control smoothness independently of model size.
 - Re-slice large prints with locked nozzle width/layer height to preserve surface quality.
@@ -126,36 +261,36 @@ AdaptiveCAD stores geometry as πₐ splines and parametric surfaces, then tesse
 
 Example (CLI exports):
 
-```bash
+```powershell
 # High-fidelity STL regardless of size
-python playground/export_slices.py \
-  --in ./examples/smooth_panel.acproj \
-  --stl ./out/smooth_panel_scaled.stl \
-  --max_angle_err 0.5 --max_chord_err 0.05
+python export_slices.py \
+   --in ./examples/smooth_panel.acproj \
+   --stl ./out/smooth_panel_scaled.stl \
+   --max_angle_err 0.5 --max_chord_err 0.05
 
 # Scale model and keep physical print params consistent
-python playground/quick_start_demo.py \
-  --shape superellipse --a 40 --b 25 --n 3.2 --scale 10 \
-  --out ./out/superellipse_x10.3mf --lock_print_params
+python quick_start_demo.py \
+   --shape superellipse --a 40 --b 25 --n 3.2 --scale 10 \
+   --out ./out/superellipse_x10.3mf --lock_print_params
 ```
 
-## 🧰 FreeCAD Workbench (v0.1)
+## ðŸ§° FreeCAD Workbench (v0.1)
 
 Copy the folder `freecad/AdaptiveCADPIToolpath/` into your FreeCAD Mod directory.
 
-Launch FreeCAD → enable the workbench → AdaptiveCADPI Toolpath.
+Launch FreeCAD â†’ enable the workbench â†’ AdaptiveCADPI Toolpath.
 
-Generate πₐ objects and toolpaths; export to STL/3MF.
+Generate Ï€â‚ objects and toolpaths; export to STL/3MF.
 
 See `docs/PLAYGROUND_GUIDE.md` for a quick tour.
 
-## 🎬 Blender Add-on (starter)
+## ðŸŽ¬ Blender Add-on (starter)
 
-1. `Edit → Preferences → Add-ons → Install…`
+1. `Edit â†’ Preferences â†’ Add-ons â†’ Installâ€¦`
 2. Select the zip in `blender_addons/adaptivecad_pia/`.
-3. Enable “AdaptiveCAD πₐ” and use `Add → Mesh → πₐ Object`.
+3. Enable â€œAdaptiveCAD Ï€â‚â€ and use `Add â†’ Mesh â†’ Ï€â‚ Object`.
 
-## 🧱 Roadmap (Scope B)
+## ðŸ§± Roadmap (Scope B)
 
 - **v0.1-alpha:** Playground core + param editors + basic repair + STL export
 - **Alpha updates:** Hyperbolic library v1, GIF export, preset save/load
@@ -163,11 +298,11 @@ See `docs/PLAYGROUND_GUIDE.md` for a quick tour.
 - **1.0:** Signed installers, docs site, examples pack
 - **Stretch (post-1.0):** GPU kernels, constraint solver, expanded CAM finishing
 
-Follow progress on the Issues and Projects tabs. We post short GIF updates every 1–2 weeks.
+Follow progress on the Issues and Projects tabs. We post short GIF updates every 1â€“2 weeks.
 
-## 🧮 Math & Design Notes
+## ðŸ§® Math & Design Notes
 
-Adaptive π (πₐ) removes saw-tooth artifacts by operating directly on smooth curve families and πₐ splines.
+Adaptive Ï€ (Ï€â‚) removes saw-tooth artifacts by operating directly on smooth curve families and Ï€â‚ splines.
 
 Hyperbolic geometry tooling includes geodesics/horocycles and basic tilings for curvature-aware designs.
 
@@ -175,7 +310,7 @@ Repair focuses on non-manifold edges, flipped normals, zero-area faces, and opti
 
 Detailed references: `docs/MATH_REFERENCE.md`, `docs/HYPERBOLIC_GEOMETRY_IMPLEMENTATION.md`.
 
-## 🏗️ Building & Packaging
+## ðŸ—ï¸ Building & Packaging
 
 ### Dev build
 
@@ -186,15 +321,15 @@ pytest  # run unit tests (if present)
 
 ### Windows packaging (maintainers)
 
-```bash
+```powershell
 # Example: PyInstaller (adjust spec as needed)
-pyinstaller playground/run_advanced_playground.py -n AdaptiveCAD-Playground --noconsole --onefile
+pyinstaller run_enhanced_playground.py -n AdaptiveCAD-Playground --noconsole --onefile
 
 # Or MSIX packaging (recommended for signed installs)
 # See scripts/msix/ and CI workflow in .github/workflows/build.yml
 ```
 
-## 🤝 Contributing
+## ðŸ¤ Contributing
 
 We welcome issues, pull requests, and test models:
 
@@ -202,30 +337,31 @@ We welcome issues, pull requests, and test models:
 - Style: keep functions small, document edge cases, and add a GIF where possible.
 - PRs: include before/after screenshots or GIFs for UI/repair changes.
 
-See `CONTRIBUTING.md` (or open an issue if you don’t see it yet).
+See `CONTRIBUTING.md` (or open an issue if you donâ€™t see it yet).
 
-## 🧾 License
+## ðŸ§¾ License
 
-This project’s licensing is in [LICENSE](LICENSE). If you’re unsure about commercial use, open a discussion.
+This projectâ€™s licensing is in [LICENSE](LICENSE). If youâ€™re unsure about commercial use, open a discussion.
 
-## 🆘 Support
+## ðŸ†˜ Support
 
 - Discussions / Q&A: GitHub Discussions
 - Bugs: GitHub Issues (attach sample files)
 - Commercial / pilots: email (listed in repo profile)
 
-## 🚀 Kickstarter (Scope B)
+## ðŸš€ Kickstarter (Scope B)
 
-We’re preparing a Kickstarter to accelerate the Playground Suite to 1.0 (Windows first, Linux/macOS next), expand hyperbolic tools, and polish FreeCAD/Blender integrations. Interested? Watch the repo and star it; teaser GIFs live in `gifs_lite_pack/`.
+Weâ€™re preparing a Kickstarter to accelerate the Playground Suite to 1.0 (Windows first, Linux/macOS next), expand hyperbolic tools, and polish FreeCAD/Blender integrations. Interested? Watch the repo and star it; teaser GIFs live in `gifs_lite_pack/`.
 
-## 📣 Changelog (snippet)
+## ðŸ“£ Changelog (snippet)
 
-- **v0.1-alpha** — Playground launch: param editors, STL repair, STL export, basic toolpath preview
-- **v0.1.1** — Hyperbolic presets, GIF export, save/load presets
-- **v0.2-beta** — 3MF export, G-code v2, Undo/Redo, FreeCAD parity, Blender panel updates
+- **v0.1-alpha** â€” Playground launch: param editors, STL repair, STL export, basic toolpath preview
+- **v0.1.1** â€” Hyperbolic presets, GIF export, save/load presets
+- **v0.2-beta** â€” 3MF export, G-code v2, Undo/Redo, FreeCAD parity, Blender panel updates
 
 (See Releases for signed builds and hashes.)
 
-## 🙌 Credits
+## ðŸ™Œ Credits
 
 AdaptiveCAD by Ryan McKenna (RDM3DC) and collaborators. Thanks to the open-source CAD/geometry community and everyone testing early builds.
+

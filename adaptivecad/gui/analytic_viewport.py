@@ -28,10 +28,19 @@ import json
 import logging
 log = logging.getLogger("adaptivecad.gui")
 try:
-    from PIL import Image
+    from PIL import Image  # type: ignore
     _HAVE_PIL = True
 except Exception:
     _HAVE_PIL = False
+
+# Optional radial tool wheel overlay (used as a HUD over the viewport)
+try:
+    from adaptivecad.ui.radial_tool_wheel import RadialToolWheelOverlay, ToolSpec
+    _HAVE_WHEEL = True
+except Exception:
+    RadialToolWheelOverlay = None  # type: ignore
+    ToolSpec = None  # type: ignore
+    _HAVE_WHEEL = False
 
     # --- 2D Sketch Overlay (Polyline + Snaps) ---------------------------------
     SNAP_PX = 10  # pixel radius for snapping
@@ -415,6 +424,8 @@ except Exception:
             self.dimensions = []  # list of DimOverlay
             self._dim_pick = None  # first ref for dimension tools
             self._dim_preview = None  # transient preview overlay
+            self._dim_placing = False  # after picking A and B, placing offset
+            self._dim_place_data = None  # {'type': str, 'a': ref, 'b': ref}
         def all_snap_points(self):
             pts = []
             for e in self.entities:
@@ -479,8 +490,8 @@ except Exception:
             p.drawText(int(s[0]+6), int(s[1]-6), text)
 
     class DimLinear2D(DimBase2D):
-        def __init__(self, ref_a, ref_b, panel):
-            super().__init__(); self.ref_a = ref_a; self.ref_b = ref_b; self.panel = panel
+        def __init__(self, ref_a, ref_b, panel, offset: float = 0.0):
+            super().__init__(); self.ref_a = ref_a; self.ref_b = ref_b; self.panel = panel; self.offset = float(offset)
         def _xy(self, ref):
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
                 ent, idx = ref; return ent.pts[idx]
@@ -510,13 +521,29 @@ except Exception:
             import numpy as _np
             a = self._xy(self.ref_a); b = self._xy(self.ref_b)
             if a is None or b is None: return
-            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
-            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            # baseline and normal
+            v = b - a
+            L = float(np.linalg.norm(v))
+            if L < 1e-6: return
+            n = _np.array([-v[1], v[0]], _np.float32) / L
+            # shifted dimension line
+            p0 = a + n * self.offset
+            p1 = b + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            # extension lines from anchors to dim line
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
+            # main dimension line
             pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
             p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            # label
             val = float(np.linalg.norm(b - a))
             text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
-            mid = (a + b) * 0.5
+            mid = (p0 + p1) * 0.5
             self.draw_text(p, view, mid, text)
 
     class DimHorizontal2D(DimLinear2D):
@@ -524,13 +551,23 @@ except Exception:
             import numpy as _np
             a = self._xy(self.ref_a); b = self._xy(self.ref_b)
             if a is None or b is None: return
-            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
-            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            # normal for horizontal is +Y
+            n = _np.array([0.0, 1.0], _np.float32)
+            p0 = _np.array([a[0], a[1]], _np.float32) + n * self.offset
+            p1 = _np.array([b[0], b[1]], _np.float32) + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            # extensions
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
             pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
             p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
             val = abs(float(b[0] - a[0]))
             text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
-            mid = (a + b) * 0.5
+            mid = (p0 + p1) * 0.5
             self.draw_text(p, view, mid, text)
 
     class DimVertical2D(DimLinear2D):
@@ -538,13 +575,23 @@ except Exception:
             import numpy as _np
             a = self._xy(self.ref_a); b = self._xy(self.ref_b)
             if a is None or b is None: return
-            sa = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
-            sb = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            # normal for vertical is +X
+            n = _np.array([1.0, 0.0], _np.float32)
+            p0 = _np.array([a[0], a[1]], _np.float32) + n * self.offset
+            p1 = _np.array([b[0], b[1]], _np.float32) + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            # extensions
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
             pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
             p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
             val = abs(float(b[1] - a[1]))
             text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
-            mid = (a + b) * 0.5
+            mid = (p0 + p1) * 0.5
             self.draw_text(p, view, mid, text)
 
     class DimRadius2D(DimBase2D):
@@ -701,8 +748,12 @@ try:
 except NameError:  # define overlay classes (PIL present path)
     SNAP_PX = 10
     class SketchEntity:
+        def __init__(self):
+            self.construction = False
         def draw(self, p: QPainter, view): ...
         def snap_points(self): return []
+        def snap_points_typed(self):
+            return [(pt, 'other') for pt in self.snap_points()]
     class Polyline2D(SketchEntity):
         def __init__(self, pts=None):
             import numpy as _np
@@ -735,6 +786,12 @@ except NameError:  # define overlay classes (PIL present path)
                 pts.append(self.p1)
                 pts.append((self.p0 + self.p1)/2.0)
             return pts
+        def snap_points_typed(self):
+            out=[(self.p0,'end')]
+            if self.p1 is not None:
+                out.append((self.p1,'end'))
+                out.append(((self.p0+self.p1)/2.0,'mid'))
+            return out
         def draw(self, p: QPainter, view):
             import numpy as _np
             s0 = view._world_to_screen(_np.array([self.p0[0], self.p0[1], 0.0], _np.float32))
@@ -758,6 +815,8 @@ except NameError:  # define overlay classes (PIL present path)
                     a=_m.radians(ang)
                     pts.append(self.center + self.radius * _np.array([_np.cos(a), _np.sin(a)], _np.float32))
             return pts
+        def snap_points_typed(self):
+            return [(self.center,'center')]
         def draw(self, p: QPainter, view):
             import numpy as _np, math as _m
             if self.radius <= 0: return
@@ -790,6 +849,15 @@ except NameError:  # define overlay classes (PIL present path)
                 cx=sum(c[0] for c in cs)/4.0; cy=sum(c[1] for c in cs)/4.0
                 pts.append(_np.array([cx,cy], _np.float32))
             return pts
+        def snap_points_typed(self):
+            import numpy as _np
+            cs = self.corners()
+            out=[(c,'end') for c in cs]
+            if len(cs)==4:
+                for a,b in zip(cs, cs[1:]+cs[:1]): out.append(((a+b)/2.0,'mid'))
+                cx = sum(c[0] for c in cs)/4.0; cy = sum(c[1] for c in cs)/4.0
+                out.append((_np.array([cx,cy], _np.float32),'center'))
+            return out
         def draw(self, p: QPainter, view):
             import numpy as _np
             cs=self.corners()
@@ -830,6 +898,16 @@ except NameError:  # define overlay classes (PIL present path)
             if self.p0 is not None and self.p2 is not None:
                 pts.append((self.p0 + self.p2)/2.0)
             return pts
+        def snap_points_typed(self):
+            out=[]
+            if self.p0 is not None: out.append((self.p0,'end'))
+            if self.p2 is not None: out.append((self.p2,'end'))
+            circ = self._circle_from_3pts()
+            if circ is not None:
+                c,_ = circ; out.append((c,'center'))
+            if self.p0 is not None and self.p2 is not None:
+                out.append(((self.p0+self.p2)/2.0,'mid'))
+            return out
         def draw(self, p: QPainter, view):
             import numpy as _np, math as _m
             if self.p0 is None:
@@ -876,19 +954,183 @@ except NameError:  # define overlay classes (PIL present path)
             s0=view._world_to_screen(_np.array([self.p0[0], self.p0[1],0.0], _np.float32)); p.drawPoint(int(s0[0]), int(s0[1]))
             s2=view._world_to_screen(_np.array([self.p2[0], self.p2[1],0.0], _np.float32)); p.drawPoint(int(s2[0]), int(s2[1]))
             sc=view._world_to_screen(_np.array([c[0], c[1],0.0], _np.float32)); p.drawPoint(int(sc[0]), int(sc[1]))
+    # --- Dimension overlays (fallback path) ---
+    class DimBase2D:
+        def __init__(self):
+            self.label_override = None
+        def _fmt(self, val: float, panel) -> str:
+            try:
+                prec = int(getattr(panel, '_dim_precision', 2))
+            except Exception:
+                prec = 2
+            return f"{val:.{prec}f}"
+        def draw_text(self, p: QPainter, view, pos_xy, text):
+            import numpy as _np
+            s = view._world_to_screen(_np.array([pos_xy[0], pos_xy[1], 0.0], _np.float32))
+            p.setPen(QPen(QColor(250, 250, 210)))
+            p.drawText(int(s[0]+6), int(s[1]-6), text)
+
+    class DimLinear2D(DimBase2D):
+        def __init__(self, ref_a, ref_b, panel, offset: float = 0.0):
+            super().__init__(); self.ref_a = ref_a; self.ref_b = ref_b; self.panel = panel; self.offset = float(offset)
+        def _xy(self, ref):
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
+                ent, idx = ref; return ent.pts[idx]
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Line2D):
+                ent, idx = ref
+                if idx == 0: return ent.p0
+                if idx == 1 and ent.p1 is not None: return ent.p1
+                return None
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Rect2D):
+                ent, idx = ref
+                cs = ent.corners()
+                if 0 <= idx < len(cs): return cs[idx]
+                return None
+            if isinstance(ref, tuple) and ref[0]=='circle' and isinstance(ref[1], Circle2D):
+                return ref[1].center
+            try:
+                import numpy as _np
+                if isinstance(ref, (list, tuple)) and len(ref)==2 and all(isinstance(v, (int,float)) for v in ref):
+                    return _np.array([float(ref[0]), float(ref[1])], _np.float32)
+                if hasattr(ref, 'shape') and getattr(ref, 'shape', None) is not None and len(ref.shape)==1 and ref.shape[0]==2:
+                    return ref
+            except Exception:
+                pass
+            return None
+        def draw(self, p: QPainter, view):
+            import numpy as _np, numpy as np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            v = b - a
+            L = float(np.linalg.norm(v))
+            if L < 1e-6: return
+            n = _np.array([-v[1], v[0]], _np.float32) / L
+            p0 = a + n * self.offset
+            p1 = b + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = float(np.linalg.norm(b - a))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (p0 + p1) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimHorizontal2D(DimLinear2D):
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            n = _np.array([0.0, 1.0], _np.float32)
+            p0 = _np.array([a[0], a[1]], _np.float32) + n * self.offset
+            p1 = _np.array([b[0], b[1]], _np.float32) + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = abs(float(b[0] - a[0]))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (p0 + p1) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimVertical2D(DimLinear2D):
+        def draw(self, p: QPainter, view):
+            import numpy as _np
+            a = self._xy(self.ref_a); b = self._xy(self.ref_b)
+            if a is None or b is None: return
+            n = _np.array([1.0, 0.0], _np.float32)
+            p0 = _np.array([a[0], a[1]], _np.float32) + n * self.offset
+            p1 = _np.array([b[0], b[1]], _np.float32) + n * self.offset
+            sa = view._world_to_screen(_np.array([p0[0], p0[1], 0.0], _np.float32))
+            sb = view._world_to_screen(_np.array([p1[0], p1[1], 0.0], _np.float32))
+            ea0 = view._world_to_screen(_np.array([a[0], a[1], 0.0], _np.float32))
+            eb0 = view._world_to_screen(_np.array([b[0], b[1], 0.0], _np.float32))
+            pen = QPen(QColor(180, 200, 220)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(int(ea0[0]), int(ea0[1]), int(sa[0]), int(sa[1]))
+            p.drawLine(int(eb0[0]), int(eb0[1]), int(sb[0]), int(sb[1]))
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(2); p.setPen(pen)
+            p.drawLine(int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1]))
+            val = abs(float(b[1] - a[1]))
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            mid = (p0 + p1) * 0.5
+            self.draw_text(p, view, mid, text)
+
+    class DimRadius2D(DimBase2D):
+        def __init__(self, circle_ref, panel):
+            super().__init__(); self.circle_ref = circle_ref; self.panel = panel
+        def draw(self, p: QPainter, view):
+            if not (isinstance(self.circle_ref, tuple) and self.circle_ref[0]=='circle' and isinstance(self.circle_ref[1], Circle2D)):
+                return
+            c = self.circle_ref[1]
+            val = float(c.radius)
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
+            self.draw_text(p, view, pos, f"R {text}")
+
+    class DimDiameter2D(DimRadius2D):
+        def draw(self, p: QPainter, view):
+            if not (isinstance(self.circle_ref, tuple) and self.circle_ref[0]=='circle' and isinstance(self.circle_ref[1], Circle2D)):
+                return
+            c = self.circle_ref[1]
+            val = float(c.radius*2.0)
+            text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
+            pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
+            pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
+            self.draw_text(p, view, pos, f"⌀ {text}")
+
     class SketchLayer:
         def __init__(self):
             self.entities=[]; self.active_poly=None; self.active_shape=None; self.hover_snap=None
+            self.dimensions = []
+            self._dim_pick = None
+            self._dim_preview = None
+            self._dim_placing = False
+            self._dim_place_data = None
         def all_snap_points(self):
             pts=[]
             for e in self.entities: pts+=e.snap_points()
             if self.active_poly: pts+=self.active_poly.snap_points()
             if self.active_shape and hasattr(self.active_shape,'snap_points'): pts+=self.active_shape.snap_points()
             return pts
+        def all_snap_points_typed(self):
+            pts=[]
+            for e in self.entities:
+                if hasattr(e,'snap_points_typed'):
+                    pts += e.snap_points_typed()
+                else:
+                    pts += [(pt,'other') for pt in e.snap_points()]
+            if self.active_poly and hasattr(self.active_poly,'snap_points_typed'):
+                pts += self.active_poly.snap_points_typed()
+            if self.active_shape and hasattr(self.active_shape,'snap_points_typed'):
+                pts += self.active_shape.snap_points_typed()
+            return pts
         def draw(self, p: QPainter, view):
             for e in self.entities: e.draw(p, view)
             if self.active_poly: self.active_poly.draw(p, view)
             if self.active_shape: self.active_shape.draw(p, view)
+            # draw dimensions
+            for d in getattr(self, 'dimensions', []):
+                try:
+                    d.draw(p, view)
+                except Exception:
+                    pass
+            # draw preview dim if any
+            try:
+                if self._dim_preview is not None:
+                    self._dim_preview.draw(p, view)
+            except Exception:
+                pass
             if self.hover_snap is not None:
                 import numpy as _np
                 s=view._world_to_screen(_np.array([self.hover_snap[0], self.hover_snap[1],0.0], _np.float32))
@@ -956,6 +1198,35 @@ class AnalyticViewport(QOpenGLWidget):
         # Overlay editing state
         self._sk_point_sel = None  # (entity, index) for Polyline2D point or ('circle', entity) for circle center
         self._sk_dragging = False
+        # Lightweight 2D polyline overlays (for algorithm visuals)
+        # Each entry: { 'pts': [(x,y),...], 'color': (r,g,b), 'width': int, 'scale': (sx,sy), 'offset': (ox,oy) }
+        self._poly_overlays = []
+
+    # Resolve a sketch reference used by dimension tools into a world XY np.array([x,y], float32)
+    def _ref_to_xy(self, ref):
+        import numpy as _np
+        try:
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
+                ent, idx = ref; return ent.pts[idx]
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Line2D):
+                ent, idx = ref
+                if idx == 0: return ent.p0
+                if idx == 1 and ent.p1 is not None: return ent.p1
+                return None
+            if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Rect2D):
+                ent, idx = ref
+                cs = ent.corners()
+                if 0 <= idx < len(cs): return cs[idx]
+                return None
+            if isinstance(ref, tuple) and ref[0]=='circle' and isinstance(ref[1], Circle2D):
+                return ref[1].center
+            if isinstance(ref, (list, tuple)) and len(ref)==2 and all(isinstance(v, (int,float)) for v in ref):
+                return _np.array([float(ref[0]), float(ref[1])], _np.float32)
+            if hasattr(ref, 'shape') and getattr(ref, 'shape', None) is not None and len(ref.shape)==1 and ref.shape[0]==2:
+                return ref
+        except Exception:
+            return None
+        return None
 
     def _on_scene_changed(self):
         self._scene_dirty = True
@@ -1077,6 +1348,33 @@ class AnalyticViewport(QOpenGLWidget):
             except Exception:
                 pass
             panel._sketch.draw(p, self)
+            p.end()
+        # Algorithm overlays (polylines)
+        if self._poly_overlays:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            for ov in self._poly_overlays:
+                try:
+                    pts = ov.get('pts') or []
+                    if len(pts) < 2:
+                        continue
+                    col = ov.get('color', (120,255,160))
+                    width = int(ov.get('width', 2))
+                    sx, sy = ov.get('scale', (1.0, 1.0))
+                    ox, oy = ov.get('offset', (0.0, 0.0))
+                    pen = QPen(QColor(int(col[0]), int(col[1]), int(col[2]))); pen.setWidth(width)
+                    p.setPen(pen)
+                    # world z fixed at 0 for overlay
+                    last = None
+                    for (x,y) in pts:
+                        wx = float(x)*float(sx) + float(ox)
+                        wy = float(y)*float(sy) + float(oy)
+                        spt = self._world_to_screen(np.array([wx, wy, 0.0], np.float32))
+                        if last is not None:
+                            p.drawLine(int(last[0]), int(last[1]), int(spt[0]), int(spt[1]))
+                        last = spt
+                except Exception:
+                    continue
             p.end()
 
     # --- Sketch projection helpers ---
@@ -1258,6 +1556,13 @@ class AnalyticViewport(QOpenGLWidget):
                         if not panel._sketch.active_poly.pts:
                             panel._sketch.active_poly = None
                         self.update(); return
+            # Cancel dimension placing with ESC
+            if panel is not None and getattr(panel,'_sketch_on',False) and k == Qt.Key_Escape:
+                try:
+                    panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None; panel._sketch._dim_preview = None
+                except Exception:
+                    pass
+                self.update(); return
             # Sketch delete selected vertex/entity
             if panel is not None and getattr(panel,'_sketch_on',False) and k in (Qt.Key_Delete, Qt.Key_Backspace):
                 if self._delete_selected_sketch():
@@ -1313,6 +1618,27 @@ class AnalyticViewport(QOpenGLWidget):
                     self._apply_panel_move(pos_vec)
                     return
             super().keyPressEvent(event)
+
+    # --- Polyline overlay API ---
+    def clear_polyline_overlays(self):
+        try:
+            self._poly_overlays.clear()
+        except Exception:
+            self._poly_overlays = []
+        self.update()
+
+    def add_polyline_overlay(self, pts, color=(120,255,160), width=3, scale=(1.0,1.0), offset=(0.0,0.0)):
+        try:
+            self._poly_overlays.append({
+                'pts': list(pts) if pts is not None else [],
+                'color': tuple(color),
+                'width': int(width),
+                'scale': tuple(scale),
+                'offset': tuple(offset),
+            })
+        except Exception:
+            pass
+        self.update()
 
     # --- Mouse Interaction ---
     def mousePressEvent(self, event: QMouseEvent):
@@ -1414,7 +1740,43 @@ class AnalyticViewport(QOpenGLWidget):
                     panel._sketch.active_shape = None
                 self.update(); return
             elif mode=='dimension':
-                # Typed placement: Linear/H/V use two picks; Radius/Diameter use circle center
+                # Typed placement: Linear/H/V = pick A, pick B, then click to set offset; Radius/Diameter use circle center
+                # If we are in placing phase, compute offset and finalize
+                if panel._sketch._dim_placing and isinstance(panel._sketch._dim_place_data, dict):
+                    dt = panel._sketch._dim_place_data.get('type','linear')
+                    a = panel._sketch._dim_place_data.get('a'); b = panel._sketch._dim_place_data.get('b')
+                    # current mouse world point
+                    hit = self._screen_to_world_xy(event.position().x(), event.position().y())
+                    wpt = np.array([hit[0], hit[1]], np.float32)
+                    # derive offset along normal
+                    if dt == 'horizontal':
+                        pa = self._ref_to_xy(a); pb = self._ref_to_xy(b)
+                        if pa is None or pb is None:
+                            panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None; return
+                        off = float(wpt[1] - pa[1])
+                        panel._sketch.dimensions.append(DimHorizontal2D(a, b, panel, offset=off))
+                    elif dt == 'vertical':
+                        pa = self._ref_to_xy(a); pb = self._ref_to_xy(b)
+                        if pa is None or pb is None:
+                            panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None; return
+                        off = float(wpt[0] - pa[0])
+                        panel._sketch.dimensions.append(DimVertical2D(a, b, panel, offset=off))
+                    else:
+                        # general: offset is signed distance from mouse to AB line along its normal
+                        pa = self._ref_to_xy(a); pb = self._ref_to_xy(b)
+                        if pa is None or pb is None:
+                            panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None; return
+                        v = pb - pa; L = float(np.linalg.norm(v))
+                        if L < 1e-6:
+                            panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None; return
+                        n = np.array([-v[1], v[0]], np.float32) / L
+                        off = float(np.dot(wpt - pa, n))
+                        panel._sketch.dimensions.append(DimLinear2D(a, b, panel, offset=off))
+                    # reset state
+                    panel._sketch._dim_pick = None; panel._sketch._dim_preview = None
+                    panel._sketch._dim_placing = False; panel._sketch._dim_place_data = None
+                    self.update(); return
+                # Otherwise proceed with picking references
                 sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
                 if sel is None:
                     return
@@ -1428,18 +1790,20 @@ class AnalyticViewport(QOpenGLWidget):
                         self.update(); return
                     else:
                         return
-                # two-point dims
+                # two-point dims: pick A then B, then enter placing phase
                 if panel._sketch._dim_pick is None:
                     panel._sketch._dim_pick = sel
                 else:
                     a = panel._sketch._dim_pick; b = sel
+                    panel._sketch._dim_place_data = {'type': dt, 'a': a, 'b': b}
+                    panel._sketch._dim_placing = True
+                    # create a preview with zero offset first
                     if dt=='horizontal':
-                        panel._sketch.dimensions.append(DimHorizontal2D(a, b, panel))
+                        panel._sketch._dim_preview = DimHorizontal2D(a, b, panel, offset=0.0)
                     elif dt=='vertical':
-                        panel._sketch.dimensions.append(DimVertical2D(a, b, panel))
+                        panel._sketch._dim_preview = DimVertical2D(a, b, panel, offset=0.0)
                     else:
-                        panel._sketch.dimensions.append(DimLinear2D(a, b, panel))
-                    panel._sketch._dim_pick = None; panel._sketch._dim_preview = None
+                        panel._sketch._dim_preview = DimLinear2D(a, b, panel, offset=0.0)
                     self.update(); return
             elif mode=='insert_vertex':
                 # Insert on nearest polyline segment or split a line
@@ -1534,25 +1898,48 @@ class AnalyticViewport(QOpenGLWidget):
                     panel._sketch.active_shape.p2 = wpt.copy()
             # dimension live preview
             if panel._sketch_mode=='dimension':
-                sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
-                dt = getattr(panel, '_dim_type', 'linear')
-                panel._sketch._dim_preview = None
-                if dt in ('radius','diameter'):
-                    if isinstance(sel, tuple) and sel[0]=='circle' and isinstance(sel[1], Circle2D):
-                        if dt=='radius':
-                            panel._sketch._dim_preview = DimRadius2D(('circle', sel[1]), panel)
-                        else:
-                            panel._sketch._dim_preview = DimDiameter2D(('circle', sel[1]), panel)
+                # If in placing phase, update preview offset dynamically
+                if panel._sketch._dim_placing and isinstance(panel._sketch._dim_place_data, dict):
+                    hit = self._screen_to_world_xy(event.position().x(), event.position().y())
+                    wpt2 = np.array([hit[0], hit[1]], np.float32)
+                    dt = panel._sketch._dim_place_data.get('type','linear')
+                    a = panel._sketch._dim_place_data.get('a'); b = panel._sketch._dim_place_data.get('b')
+                    if dt == 'horizontal':
+                        pa = self._ref_to_xy(a)
+                        off = float(wpt2[1] - (pa[1] if pa is not None else wpt2[1]))
+                        panel._sketch._dim_preview = DimHorizontal2D(a, b, panel, offset=off)
+                    elif dt == 'vertical':
+                        pa = self._ref_to_xy(a)
+                        off = float(wpt2[0] - (pa[0] if pa is not None else wpt2[0]))
+                        panel._sketch._dim_preview = DimVertical2D(a, b, panel, offset=off)
+                    else:
+                        pa = self._ref_to_xy(a); pb = self._ref_to_xy(b)
+                        if pa is not None and pb is not None:
+                            v = pb - pa; L = float(np.linalg.norm(v))
+                            if L > 1e-6:
+                                n = np.array([-v[1], v[0]], np.float32) / L
+                                off = float(np.dot(wpt2 - pa, n))
+                                panel._sketch._dim_preview = DimLinear2D(a, b, panel, offset=off)
                 else:
-                    a = panel._sketch._dim_pick
-                    b = sel if sel is not None else (panel._sketch.hover_snap if panel._sketch.hover_snap is not None else wpt)
-                    if a is not None and b is not None:
-                        if dt=='horizontal':
-                            panel._sketch._dim_preview = DimHorizontal2D(a, b, panel)
-                        elif dt=='vertical':
-                            panel._sketch._dim_preview = DimVertical2D(a, b, panel)
-                        else:
-                            panel._sketch._dim_preview = DimLinear2D(a, b, panel)
+                    sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
+                    dt = getattr(panel, '_dim_type', 'linear')
+                    panel._sketch._dim_preview = None
+                    if dt in ('radius','diameter'):
+                        if isinstance(sel, tuple) and sel[0]=='circle' and isinstance(sel[1], Circle2D):
+                            if dt=='radius':
+                                panel._sketch._dim_preview = DimRadius2D(('circle', sel[1]), panel)
+                            else:
+                                panel._sketch._dim_preview = DimDiameter2D(('circle', sel[1]), panel)
+                    else:
+                        a = panel._sketch._dim_pick
+                        b = sel if sel is not None else (panel._sketch.hover_snap if panel._sketch.hover_snap is not None else wpt)
+                        if a is not None and b is not None:
+                            if dt=='horizontal':
+                                panel._sketch._dim_preview = DimHorizontal2D(a, b, panel)
+                            elif dt=='vertical':
+                                panel._sketch._dim_preview = DimVertical2D(a, b, panel)
+                            else:
+                                panel._sketch._dim_preview = DimLinear2D(a, b, panel)
             self.update()
             # Drag selected vertex (if any)
             if self._sk_dragging and self._sk_point_sel is not None and (event.buttons() & Qt.MouseButton.LeftButton):
@@ -1941,6 +2328,29 @@ class AnalyticViewportPanel(QWidget):
     """Composite widget: analytic SDF viewport + control panel."""
     def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
+        # Radial wheel defaults (updated before controls are created)
+        self._wheel_enabled: bool = True
+        self._wheel_edge_fit: bool = True
+        self._wheel_edge_overshoot: int = 14
+        self._wheel_thickness: float = 0.10
+        self._wheel_opacity: float = 1.0
+        self._wheel_text_scale: float = 1.0
+        self._wheel_auto_spin: bool = False
+        self._wheel_auto_spin_speed: float = 0.0
+        self._radial_wheel = None
+        self._cb_wheel_enabled = None
+        self._cb_wheel_edge_fit = None
+        self._spin_wheel_overshoot = None
+        self._slider_wheel_thickness = None
+        self._label_wheel_thickness = None
+        self._slider_wheel_opacity = None
+        self._label_wheel_opacity = None
+        self._slider_wheel_text = None
+        self._label_wheel_text = None
+        self._cb_wheel_autospin = None
+        self._slider_wheel_spin = None
+        self._label_wheel_spin = None
+
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
         self._sketch_on: bool = False
@@ -1953,6 +2363,10 @@ class AnalyticViewportPanel(QWidget):
         self._space_local = True    # True local, False world
         self._snap_angle_deg = 5.0
         self._snap_scale_step = 0.1
+        # References to select UI controls we want to drive programmatically
+        self._cb_sketch = None
+        self._btn_showcase = None
+        self._btn_clear_scene = None
         self._build_ui()
         self.setWindowTitle("Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1962,6 +2376,48 @@ class AnalyticViewportPanel(QWidget):
             QTimer.singleShot(150, self._ensure_on_screen)
         except Exception:
             pass
+
+        # --- Radial Tool Wheel (overlay) ---
+        if _HAVE_WHEEL:
+            try:
+                tools = [
+                    ToolSpec("Polyline", "polyline"),
+                    ToolSpec("Line", "line"),
+                    ToolSpec("Arc 3pt", "arc3"),
+                    ToolSpec("Circle", "circle"),
+                    ToolSpec("Rect", "rect"),
+                    ToolSpec("Insert Vtx", "insert_vertex"),
+                    ToolSpec("Dim", "dimension"),
+                    ToolSpec("Move", "move"),
+                    ToolSpec("Rotate", "rotate"),
+                    ToolSpec("Scale", "scale"),
+                    ToolSpec("Center", "center_selected"),
+                    ToolSpec("Reset", "reset_camera"),
+                    ToolSpec("Undo", "delete_last"),
+                    ToolSpec("Showcase", "showcase"),
+                    ToolSpec("Clear", "clear"),
+                ]
+                self._radial_wheel = RadialToolWheelOverlay(
+                    self.view,
+                    tools=tools,
+                    outer_radius_ratio=0.46,  # used when fit_to_viewport_edge=False
+                    thickness_ratio=0.10,
+                    fade_full_at_center_ratio=0.06,
+                    fade_full_at_edge_ratio=0.48,
+                    idle_rotate_deg_per_sec=0.0,
+                    # New: expand diameter so the outer edge sits just
+                    # beyond the viewport and is nicely clipped by it.
+                    fit_to_viewport_edge=True,
+                    edge_overshoot_px=14,
+                )
+                self._radial_wheel.toolActivated.connect(self._on_wheel_tool)
+                self._apply_wheel_settings()
+                self._sync_wheel_controls()
+            except Exception as e:
+                try:
+                    log.debug(f"radial wheel init failed: {e}")
+                except Exception:
+                    pass
 
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -2004,6 +2460,78 @@ class AnalyticViewportPanel(QWidget):
         fs.addRow("β Scale", self.slider_beta_scale)
         fs.addRow("β Colormap", self.cmap_box)
         side.addWidget(gb_sliders)
+
+        if _HAVE_WHEEL:
+            def _make_slider(min_v: int, max_v: int, value: int, formatter):
+                row = QWidget()
+                hl = QHBoxLayout(row)
+                hl.setContentsMargins(0, 0, 0, 0)
+                slider = QSlider(Qt.Orientation.Horizontal)
+                slider.setRange(min_v, max_v)
+                slider.setValue(value)
+                slider.setSingleStep(1)
+                slider.setTracking(True)
+                label = QLabel()
+                label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                label.setFixedWidth(64)
+                def _update_label(val: int) -> None:
+                    try:
+                        label.setText(formatter(val))
+                    except Exception:
+                        label.setText(str(val))
+                _update_label(value)
+                slider.valueChanged.connect(_update_label)
+                hl.addWidget(slider, 1)
+                hl.addWidget(label)
+                return slider, label, row
+
+            gb_wheel = QGroupBox("HUD Wheel")
+            fw = QFormLayout()
+            gb_wheel.setLayout(fw)
+
+            self._cb_wheel_enabled = QCheckBox("Enabled")
+            self._cb_wheel_enabled.setChecked(self._wheel_enabled)
+            self._cb_wheel_enabled.toggled.connect(self._on_wheel_enabled)
+            fw.addRow(self._cb_wheel_enabled)
+
+            self._cb_wheel_edge_fit = QCheckBox("Fit To Edge")
+            self._cb_wheel_edge_fit.setChecked(self._wheel_edge_fit)
+            self._cb_wheel_edge_fit.toggled.connect(self._on_wheel_edge_fit)
+            fw.addRow(self._cb_wheel_edge_fit)
+
+            self._spin_wheel_overshoot = QSpinBox()
+            self._spin_wheel_overshoot.setRange(0, 64)
+            self._spin_wheel_overshoot.setValue(int(self._wheel_edge_overshoot))
+            self._spin_wheel_overshoot.valueChanged.connect(self._on_wheel_overshoot)
+            fw.addRow("Overshoot (px)", self._spin_wheel_overshoot)
+
+            thickness_val = max(6, min(40, int(round(self._wheel_thickness * 100))))
+            self._slider_wheel_thickness, self._label_wheel_thickness, row_thickness = _make_slider(6, 40, thickness_val, lambda v: f"{v}%")
+            self._slider_wheel_thickness.valueChanged.connect(self._on_wheel_thickness)
+            fw.addRow("Thickness (%)", row_thickness)
+
+            opacity_val = max(0, min(100, int(round(self._wheel_opacity * 100))))
+            self._slider_wheel_opacity, self._label_wheel_opacity, row_opacity = _make_slider(0, 100, opacity_val, lambda v: f"{v}%")
+            self._slider_wheel_opacity.valueChanged.connect(self._on_wheel_opacity)
+            fw.addRow("Opacity", row_opacity)
+
+            text_val = max(60, min(200, int(round(self._wheel_text_scale * 100))))
+            self._slider_wheel_text, self._label_wheel_text, row_text = _make_slider(60, 200, text_val, lambda v: f"{v/100:.2f}x")
+            self._slider_wheel_text.valueChanged.connect(self._on_wheel_text_scale)
+            fw.addRow("Text Size", row_text)
+
+            self._cb_wheel_autospin = QCheckBox("Auto Spin")
+            self._cb_wheel_autospin.setChecked(self._wheel_auto_spin)
+            self._cb_wheel_autospin.toggled.connect(self._on_wheel_autospin)
+            fw.addRow(self._cb_wheel_autospin)
+
+            spin_val = max(0, min(360, int(round(self._wheel_auto_spin_speed))))
+            self._slider_wheel_spin, self._label_wheel_spin, row_spin = _make_slider(0, 360, spin_val, lambda v: f"{v} deg/s")
+            self._slider_wheel_spin.valueChanged.connect(self._on_wheel_spin_speed)
+            fw.addRow("Spin Speed", row_spin)
+
+            side.addWidget(gb_wheel)
+            self._sync_wheel_controls()
 
         # --- Gizmo / Transform Controls ---
         gb_gizmo = QGroupBox("Gizmo / Transform"); fg = QFormLayout(); gb_gizmo.setLayout(fg)
@@ -2074,6 +2602,8 @@ class AnalyticViewportPanel(QWidget):
                 else:
                     self.view.update()
         cb_sketch.stateChanged.connect(_toggle_sk)
+        # store for programmatic toggling
+        self._cb_sketch = cb_sketch
         fs.addRow(cb_sketch)
         # Lock top view while sketching
         row_lock = QWidget(); hlk = QHBoxLayout(row_lock); hlk.setContentsMargins(0,0,0,0)
@@ -2210,7 +2740,13 @@ class AnalyticViewportPanel(QWidget):
                 self._sketch_mode = 'dimension'
                 self._sketch._dim_pick = None
             else:
-                if self._sketch_mode=='dimension': self._sketch_mode = None
+                if self._sketch_mode=='dimension':
+                    self._sketch_mode = None
+                    # reset any in-progress placing state
+                    try:
+                        self._sketch._dim_placing = False; self._sketch._dim_place_data = None; self._sketch._dim_preview = None
+                    except Exception:
+                        pass
             self.view.update()
         btn_dim.clicked.connect(_choose_dim)
         for b in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect, btn_insv, btn_dim, cb_ins_mid):
@@ -2258,7 +2794,45 @@ class AnalyticViewportPanel(QWidget):
         gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
         btn_save = QPushButton("Save G-Buffers [G]"); btn_save.setEnabled(False)
         btn_help = QPushButton("Print Shortcuts [H]"); btn_help.clicked.connect(lambda: log.info(self.view._shortcuts_help()))
-        va.addWidget(btn_save); va.addWidget(btn_help); side.addWidget(gb_act)
+        btn_showcase = QPushButton("Showcase Primitives")
+        btn_clear_scene = QPushButton("Clear Scene")
+        def _do_showcase():
+            try:
+                # Add a small curated set if budget allows
+                if len(self.view.scene.prims) < MAX_PRIMS - 6:
+                    self.view.scene.add(Prim(KIND_SPHERE, [0.7,0,0,0], beta=0.08, color=(0.95,0.45,0.35)))
+                    self.view.scene.add(Prim(KIND_TORUS, [1.0,0.22,0,0], beta=0.03, color=(0.6,0.85,0.5)))
+                    self.view.scene.add(Prim(KIND_MOBIUS, [1.4,0.25,0,0], beta=0.02, color=(0.7,0.55,0.95)))
+                    self.view.scene.add(Prim(KIND_SUPERELLIPSOID, [1.1,3.5,0,0], beta=0.0, color=(0.95,0.9,0.85)))
+                    self.view.scene.add(Prim(KIND_GYROID, [2.2,0.0,0.035,0], beta=0.0, color=(0.65,0.9,0.3)))
+                    self.view.scene.add(Prim(KIND_TREFOIL, [0.8,0.08,96,0], beta=0.0, color=(0.95,0.6,0.25)))
+                    # Offset for variety
+                    try:
+                        for i, pr in enumerate(self.view.scene.prims[-6:]):
+                            pr.xform.M[:3,3] += np.array([ (i%3-1)*1.6, (i//3-0.5)*1.4, 0.0 ], np.float32)
+                    except Exception:
+                        pass
+                    try: self.view.scene._notify()
+                    except Exception: pass
+                    self.view.update()
+            except Exception as e:
+                log.debug(f"showcase failed: {e}")
+        def _do_clear_scene():
+            try:
+                self.view.scene.prims.clear()
+                try: self.view.scene._notify()
+                except Exception: pass
+                try: self.view.clear_polyline_overlays()
+                except Exception: pass
+                self._refresh_prim_label(); self.view.update()
+            except Exception:
+                pass
+        btn_showcase.clicked.connect(_do_showcase)
+        btn_clear_scene.clicked.connect(_do_clear_scene)
+        # keep references so the wheel can trigger them
+        self._btn_showcase = btn_showcase
+        self._btn_clear_scene = btn_clear_scene
+        va.addWidget(btn_save); va.addWidget(btn_help); va.addWidget(btn_showcase); va.addWidget(btn_clear_scene); side.addWidget(gb_act)
 
         # --- Environment ---
         gb_env = QGroupBox("Environment"); fe = QFormLayout(); gb_env.setLayout(fe)
@@ -2961,6 +3535,124 @@ class AnalyticViewportPanel(QWidget):
                 pass
 
     # --- UI callbacks ---
+
+    def _sync_wheel_controls(self) -> None:
+        if not _HAVE_WHEEL:
+            return
+        if self._cb_wheel_enabled is not None:
+            self._cb_wheel_enabled.blockSignals(True)
+            self._cb_wheel_enabled.setChecked(bool(self._wheel_enabled))
+            self._cb_wheel_enabled.blockSignals(False)
+        if self._cb_wheel_edge_fit is not None:
+            self._cb_wheel_edge_fit.blockSignals(True)
+            self._cb_wheel_edge_fit.setChecked(bool(self._wheel_edge_fit))
+            self._cb_wheel_edge_fit.blockSignals(False)
+        if self._spin_wheel_overshoot is not None:
+            self._spin_wheel_overshoot.blockSignals(True)
+            self._spin_wheel_overshoot.setValue(int(self._wheel_edge_overshoot))
+            self._spin_wheel_overshoot.setEnabled(bool(self._wheel_edge_fit))
+            self._spin_wheel_overshoot.blockSignals(False)
+        if self._slider_wheel_thickness is not None:
+            val = int(round(self._wheel_thickness * 100))
+            self._slider_wheel_thickness.blockSignals(True)
+            self._slider_wheel_thickness.setValue(val)
+            self._slider_wheel_thickness.blockSignals(False)
+            if self._label_wheel_thickness is not None:
+                self._label_wheel_thickness.setText(f"{val}%")
+        if self._slider_wheel_opacity is not None:
+            val = int(round(self._wheel_opacity * 100))
+            self._slider_wheel_opacity.blockSignals(True)
+            self._slider_wheel_opacity.setValue(val)
+            self._slider_wheel_opacity.blockSignals(False)
+            if self._label_wheel_opacity is not None:
+                self._label_wheel_opacity.setText(f"{val}%")
+        if self._slider_wheel_text is not None:
+            val = int(round(self._wheel_text_scale * 100))
+            self._slider_wheel_text.blockSignals(True)
+            self._slider_wheel_text.setValue(val)
+            self._slider_wheel_text.blockSignals(False)
+            if self._label_wheel_text is not None:
+                self._label_wheel_text.setText(f"{val/100:.2f}x")
+        if self._cb_wheel_autospin is not None:
+            self._cb_wheel_autospin.blockSignals(True)
+            self._cb_wheel_autospin.setChecked(bool(self._wheel_auto_spin))
+            self._cb_wheel_autospin.blockSignals(False)
+        if self._slider_wheel_spin is not None:
+            val = int(round(self._wheel_auto_spin_speed))
+            self._slider_wheel_spin.blockSignals(True)
+            self._slider_wheel_spin.setValue(val)
+            self._slider_wheel_spin.blockSignals(False)
+            self._slider_wheel_spin.setEnabled(bool(self._wheel_auto_spin))
+            if self._label_wheel_spin is not None:
+                self._label_wheel_spin.setText(f"{val} deg/s")
+
+    def _apply_wheel_settings(self, persist: bool = False) -> None:
+        if not _HAVE_WHEEL:
+            return
+        wheel = getattr(self, '_radial_wheel', None)
+        if wheel is None:
+            return
+        wheel.setVisible(bool(self._wheel_enabled))
+        wheel.set_fit_to_viewport_edge(bool(self._wheel_edge_fit))
+        wheel.set_edge_overshoot(int(self._wheel_edge_overshoot))
+        wheel.set_thickness_ratio(float(self._wheel_thickness))
+        wheel.set_opacity(float(self._wheel_opacity))
+        wheel.set_text_scale(float(self._wheel_text_scale))
+        spin_speed = float(self._wheel_auto_spin_speed) if self._wheel_auto_spin else 0.0
+        wheel.set_idle_rotation(spin_speed)
+        if persist:
+            self._persist_wheel_settings()
+
+    def _persist_wheel_settings(self) -> None:
+        try:
+            self.view._save_settings()
+        except Exception:
+            pass
+
+    def _on_wheel_enabled(self, checked: bool) -> None:
+        self._wheel_enabled = bool(checked)
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_edge_fit(self, checked: bool) -> None:
+        self._wheel_edge_fit = bool(checked)
+        if self._spin_wheel_overshoot is not None:
+            self._spin_wheel_overshoot.setEnabled(self._wheel_edge_fit)
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_overshoot(self, value: int) -> None:
+        self._wheel_edge_overshoot = int(value)
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_thickness(self, value: int) -> None:
+        self._wheel_thickness = max(0.02, min(0.40, value / 100.0))
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_opacity(self, value: int) -> None:
+        self._wheel_opacity = max(0.0, min(1.0, value / 100.0))
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_text_scale(self, value: int) -> None:
+        self._wheel_text_scale = max(0.5, min(2.5, value / 100.0))
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_autospin(self, checked: bool) -> None:
+        self._wheel_auto_spin = bool(checked)
+        if self._slider_wheel_spin is not None:
+            self._slider_wheel_spin.setEnabled(self._wheel_auto_spin)
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
+    def _on_wheel_spin_speed(self, value: int) -> None:
+        self._wheel_auto_spin_speed = float(max(0, value))
+        self._apply_wheel_settings()
+        self._persist_wheel_settings()
+
     def _on_mode(self, idx:int):
         self.view.debug_mode = idx
         self.view._update_title(); self.view.update()
@@ -3007,6 +3699,80 @@ class AnalyticViewportPanel(QWidget):
         for i,s in enumerate(self._env_sliders):
             self.view.scene.env_light[i] = s.value()/100.0
         self.view.update()
+
+    # --- Radial wheel handler ---
+    def _delete_last_sketch_item(self) -> None:
+        layer = getattr(self, '_sketch', None)
+        if layer is None:
+            return
+        removed = False
+        active_poly = getattr(layer, 'active_poly', None)
+        if active_poly is not None and getattr(active_poly, 'pts', None):
+            if active_poly.pts:
+                active_poly.pts.pop()
+                if not active_poly.pts:
+                    layer.active_poly = None
+                removed = True
+        elif getattr(layer, 'dimensions', None):
+            if layer.dimensions:
+                layer.dimensions.pop()
+                removed = True
+        if not removed and getattr(layer, 'entities', None):
+            if layer.entities:
+                layer.entities.pop()
+                removed = True
+        if removed:
+            try:
+                self.view.update()
+            except Exception:
+                pass
+
+    def _on_wheel_tool(self, tool_id: str, _label: str):
+        try:
+            # Ensure sketch overlay is enabled for sketch tools
+            def enable_sketch():
+                if self._cb_sketch is not None and not self._cb_sketch.isChecked():
+                    self._cb_sketch.setChecked(True)
+                    # stateChanged handler will update view
+            if tool_id in ("polyline","line","arc3","circle","rect","insert_vertex","dimension"):
+                enable_sketch()
+                self._sketch_mode = tool_id
+                # reset active shape/poly for a clean start
+                if tool_id == 'polyline':
+                    self._sketch.active_shape = None
+                    self._sketch.active_poly = None
+                else:
+                    self._sketch.active_poly = None
+                    self._sketch.active_shape = None
+                # lock to top if desired
+                if getattr(self, '_sketch_lock_top', False):
+                    try:
+                        self.view.yaw = 0.0; self.view.pitch = 0.0
+                        self.view._update_camera()
+                    except Exception:
+                        pass
+                self.view.update()
+                return
+            # Gizmo modes
+            if tool_id in ("move","rotate","scale"):
+                self._gizmo_mode = tool_id
+                self.view.update(); return
+            # Actions
+            if tool_id == 'showcase' and self._btn_showcase is not None:
+                self._btn_showcase.click(); return
+            if tool_id == 'clear' and self._btn_clear_scene is not None:
+                self._btn_clear_scene.click(); return
+            if tool_id == 'center_selected':
+                self._center_on_selected(); return
+            if tool_id == 'reset_camera':
+                self._reset_camera(); return
+            if tool_id == 'delete_last':
+                self._delete_last_sketch_item(); return
+        except Exception as e:
+            try:
+                log.debug(f"wheel action failed: {e}")
+            except Exception:
+                pass
 
     # --- Primitive management ---
     def _add_prim(self, kind:str):
@@ -3323,7 +4089,11 @@ class AnalyticViewportPanel(QWidget):
                     elif isinstance(d, DimLinear2D):
                         a = d._xy(d.ref_a); b = d._xy(d.ref_b)
                         if a is not None and b is not None:
-                            extra['dimensions'].append({'type':'linear', 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])]})
+                            # type discrimination for H/V vs general
+                            t = 'linear'
+                            if isinstance(d, DimHorizontal2D): t='horizontal'
+                            elif isinstance(d, DimVertical2D): t='vertical'
+                            extra['dimensions'].append({'type': t, 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])], 'offset': float(getattr(d,'offset',0.0))})
                 except Exception:
                     pass
             # Merge extra into doc JSON
@@ -3397,7 +4167,13 @@ class AnalyticViewportPanel(QWidget):
                     if a is not None and b is not None:
                         pa = np.array([float(a[0]), float(a[1])], np.float32)
                         pb = np.array([float(b[0]), float(b[1])], np.float32)
-                        self._sketch.dimensions.append(DimLinear2D(pa, pb, self))
+                        off = float(d.get('offset', 0.0))
+                        if t=='horizontal':
+                            self._sketch.dimensions.append(DimHorizontal2D(pa, pb, self, offset=off))
+                        elif t=='vertical':
+                            self._sketch.dimensions.append(DimVertical2D(pa, pb, self, offset=off))
+                        else:
+                            self._sketch.dimensions.append(DimLinear2D(pa, pb, self, offset=off))
             # restore precision if present
             try:
                 self._dim_precision = int(raw.get('dim_precision', getattr(self,'_dim_precision',2)))
@@ -3430,7 +4206,15 @@ def _analytic_settings_defaults():
         'show_beta_overlay':0,
         'beta_overlay_intensity':0.65,
         'beta_scale':1.0,
-        'beta_cmap':0
+        'beta_cmap':0,
+        'wheel_enabled': True,
+        'wheel_edge_fit': True,
+        'wheel_overshoot_px': 14,
+        'wheel_thickness_ratio': 0.10,
+        'wheel_opacity': 1.0,
+        'wheel_text_scale': 1.0,
+        'wheel_auto_spin': False,
+        'wheel_auto_spin_speed': 0.0
     }
 
 def _clamp(v, lo, hi):
@@ -3453,6 +4237,19 @@ def _apply_settings(self, data):
         if panel is not None:
             setattr(panel, '_dim_precision', int(data.get('dim_precision', getattr(panel,'_dim_precision',2))))
             setattr(panel, '_dim_type', str(data.get('dim_type', getattr(panel,'_dim_type','linear'))))
+            if hasattr(panel, '_wheel_enabled'):
+                panel._wheel_enabled = bool(data.get('wheel_enabled', panel._wheel_enabled))
+                panel._wheel_edge_fit = bool(data.get('wheel_edge_fit', panel._wheel_edge_fit))
+                panel._wheel_edge_overshoot = int(data.get('wheel_overshoot_px', panel._wheel_edge_overshoot))
+                panel._wheel_thickness = float(_clamp(data.get('wheel_thickness_ratio', panel._wheel_thickness), 0.02, 0.40))
+                panel._wheel_opacity = float(_clamp(data.get('wheel_opacity', panel._wheel_opacity), 0.0, 1.0))
+                panel._wheel_text_scale = float(_clamp(data.get('wheel_text_scale', panel._wheel_text_scale), 0.5, 2.5))
+                panel._wheel_auto_spin = bool(data.get('wheel_auto_spin', panel._wheel_auto_spin))
+                panel._wheel_auto_spin_speed = float(_clamp(data.get('wheel_auto_spin_speed', panel._wheel_auto_spin_speed), 0.0, 360.0))
+                if hasattr(panel, '_sync_wheel_controls'):
+                    panel._sync_wheel_controls()
+                if hasattr(panel, '_apply_wheel_settings'):
+                    panel._apply_wheel_settings()
     except Exception:
         pass
 
@@ -3509,7 +4306,13 @@ def _load_settings(self):
                             if a is not None and b is not None:
                                 pa = np.array([float(a[0]), float(a[1])], np.float32)
                                 pb = np.array([float(b[0]), float(b[1])], np.float32)
-                                panel._sketch.dimensions.append(DimLinear2D(pa, pb, panel))
+                                off = float(d.get('offset', 0.0))
+                                if t=='horizontal':
+                                    panel._sketch.dimensions.append(DimHorizontal2D(pa, pb, panel, offset=off))
+                                elif t=='vertical':
+                                    panel._sketch.dimensions.append(DimVertical2D(pa, pb, panel, offset=off))
+                                else:
+                                    panel._sketch.dimensions.append(DimLinear2D(pa, pb, panel, offset=off))
                 except Exception:
                     pass
                 # grid settings
@@ -3538,6 +4341,18 @@ def _save_settings(self):
             'beta_scale': self.beta_scale,
             'beta_cmap': self.beta_cmap
         }
+        panel = self.parent() if hasattr(self, 'parent') else None
+        if panel is not None and hasattr(panel, '_wheel_enabled'):
+            data_update.update({
+                'wheel_enabled': bool(panel._wheel_enabled),
+                'wheel_edge_fit': bool(panel._wheel_edge_fit),
+                'wheel_overshoot_px': int(panel._wheel_edge_overshoot),
+                'wheel_thickness_ratio': float(panel._wheel_thickness),
+                'wheel_opacity': float(panel._wheel_opacity),
+                'wheel_text_scale': float(panel._wheel_text_scale),
+                'wheel_auto_spin': bool(panel._wheel_auto_spin),
+                'wheel_auto_spin_speed': float(panel._wheel_auto_spin_speed),
+            })
         # Preserve unrelated preference keys (e.g., 'analytic_as_main') by merging
         existing = {}
         if os.path.exists(self._settings_path):
@@ -3575,7 +4390,10 @@ def _save_settings(self):
                         elif isinstance(d, DimLinear2D):
                             a = d._xy(d.ref_a); b = d._xy(d.ref_b)
                             if a is not None and b is not None:
-                                sk['dimensions'].append({'type':'linear', 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])]})
+                                t = 'linear'
+                                if isinstance(d, DimHorizontal2D): t='horizontal'
+                                elif isinstance(d, DimVertical2D): t='vertical'
+                                sk['dimensions'].append({'type': t, 'a':[float(a[0]), float(a[1])], 'b':[float(b[0]), float(b[1])], 'offset': float(getattr(d,'offset',0.0))})
                     except Exception:
                         pass
                 data_update['sketch_overlay'] = sk

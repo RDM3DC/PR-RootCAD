@@ -1,0 +1,588 @@
+diff --git a/adaptive_pi/aniso_fmm.py b/adaptive_pi/aniso_fmm.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/adaptive_pi/aniso_fmm.py
+@@ -0,0 +1,250 @@
++
++"""
++adaptive_pi.aniso_fmm
++---------------------
++A compact anisotropic geodesic distance solver ("FMM-lite") and backtracer.
++
++Solves: sqrt(∇Tᵀ G⁻¹(x,y) ∇T) = 1 with T(source)=0 over a 2D grid.
++
++Exports
++-------
++- anisotropic_fmm(Gfield, source, hx=1.0, hy=1.0, use_diagonals=True) -> T
++- trace_geodesic(T, Gfield, start, src, hx=1.0, hy=1.0, step=0.8, ... ) -> [(x,y)]
++- metric_const_aniso(nx, ny, a=1.3, b=1.0) -> (nx,ny,2,2) SPD field
++- metric_conformal(nx, ny, s) -> SPD field for G = s(x,y) I, where s is scalar or callable
++- metric_from_unit_vector(nx, ny, ufield, s_para=1.3, s_perp=1.0) -> SPD field aligned to u(x,y)
++
++Notes
++-----
++- This is a practical, stable baseline (ordered method with a two-neighbor PDE
++  update + one-sided fallback). It soft-lands to isotropic FMM when G = s I.
++- Keep anisotropy ratio moderate (κ ≲ 10–20) for best behavior.
++"""
++
++from __future__ import annotations
++
++import math, heapq
++import numpy as np
++from typing import Callable, Tuple, List
++
++# --------------------------- Metric helpers -----------------------------
++
++def ensure_spd(G: np.ndarray) -> np.ndarray:
++    S = 0.5*(G + G.T)
++    w, V = np.linalg.eigh(S)
++    w = np.maximum(w, 1e-12)
++    return (V * w) @ V.T
++
++def inv2(G: np.ndarray) -> np.ndarray:
++    a, b, c, d = G[0,0], G[0,1], G[1,0], G[1,1]
++    det = a*d - b*c
++    if det <= 0:
++        raise ValueError("Metric not SPD (det<=0).")
++    return (1.0/det) * np.array([[ d, -b],
++                                 [-c,  a]], dtype=float)
++
++def riemann_step_cost(G: np.ndarray, dx: np.ndarray) -> float:
++    return float(np.sqrt(dx @ G @ dx))
++
++# --------------------------- Neighborhoods ------------------------------
++
++def neighbors8(i, j, nx, ny):
++    for di, dj in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
++        ii, jj = i+di, j+dj
++        if 0 <= ii < nx and 0 <= jj < ny:
++            yield ii, jj
++
++def axial_neighbors(i, j, nx, ny):
++    for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
++        ii, jj = i+di, j+dj
++        if 0 <= ii < nx and 0 <= jj < ny:
++            yield ii, jj
++
++# --------------------------- Core solver --------------------------------
++
++def anisotropic_fmm(Gfield: np.ndarray,
++                    source: Tuple[int,int],
++                    hx: float=1.0, hy: float=1.0,
++                    use_diagonals: bool=True) -> np.ndarray:
++    nx, ny = Gfield.shape[:2]
++    T = np.full((nx, ny), np.inf, dtype=float)
++    state = np.zeros((nx, ny), dtype=np.uint8)  # 0=FAR,1=TRIAL,2=ACCEPTED
++    heap: List[Tuple[float,int,int]] = []
++
++    i0, j0 = source
++    T[i0, j0] = 0.0
++    state[i0, j0] = 2  # ACCEPTED
++
++    # Initialize neighbors
++    for ii, jj in (neighbors8 if use_diagonals else axial_neighbors)(i0, j0, nx, ny):
++        cand = one_sided_candidates((ii, jj), T, Gfield, hx, hy)
++        if cand < T[ii, jj]:
++            T[ii, jj] = cand
++            state[ii, jj] = 1
++            heapq.heappush(heap, (T[ii, jj], ii, jj))
++
++    while heap:
++        val, i, j = heapq.heappop(heap)
++        if val != T[i, j]:
++            continue  # stale
++        state[i, j] = 2  # ACCEPTED
++        for ii, jj in (neighbors8 if use_diagonals else axial_neighbors)(i, j, nx, ny):
++            if state[ii, jj] == 2:  # already ACCEPTED
++                continue
++            cand_pde  = two_neighbor_update((ii, jj), T, Gfield, hx, hy)
++            cand_edge = one_sided_candidates((ii, jj), T, Gfield, hx, hy)
++            cand = min(c for c in (cand_pde, cand_edge) if math.isfinite(c))
++            if cand < T[ii, jj]:
++                T[ii, jj] = cand
++                state[ii, jj] = 1
++                heapq.heappush(heap, (T[ii, jj], ii, jj))
++    return T
++
++def one_sided_candidates(node, T, Gfield, hx, hy):
++    i, j = node
++    nx, ny = T.shape
++    best = np.inf
++    G = ensure_spd(Gfield[i, j])
++    for ii, jj in neighbors8(i, j, nx, ny):
++        if not np.isfinite(T[ii, jj]):
++            continue
++        dx = np.array([(i-ii)*hx, (j-jj)*hy], dtype=float)
++        w = riemann_step_cost(G, dx)
++        best = min(best, T[ii, jj] + w)
++    return best
++
++def two_neighbor_update(node, T, Gfield, hx, hy):
++    i, j = node
++    nx, ny = T.shape
++    Tx_candidates = []
++    if i-1 >= 0 and np.isfinite(T[i-1, j]): Tx_candidates.append(T[i-1, j])
++    if i+1 < nx and np.isfinite(T[i+1, j]): Tx_candidates.append(T[i+1, j])
++    Ty_candidates = []
++    if j-1 >= 0 and np.isfinite(T[i, j-1]): Ty_candidates.append(T[i, j-1])
++    if j+1 < ny and np.isfinite(T[i, j+1]): Ty_candidates.append(T[i, j+1])
++    if len(Tx_candidates) == 0 or len(Ty_candidates) == 0:
++        return np.inf
++
++    Tp = min(Tx_candidates)  # upwind x
++    Tq = min(Ty_candidates)  # upwind y
++
++    G = ensure_spd(Gfield[i, j])
++    A = inv2(G)
++    a = A[0,0] / (hx*hx)
++    b = A[0,1] / (hx*hy)
++    c = A[1,1] / (hy*hy)
++
++    S = a + 2.0*b + c
++    P = a*Tp + b*(Tp + Tq) + c*Tq
++    Q = a*Tp*Tp + 2.0*b*Tp*Tq + c*Tq*Tq - 1.0
++
++    disc = P*P - S*Q
++    if disc < 0:
++        return np.inf
++    X = (P + math.sqrt(max(0.0, disc))) / S  # larger root (upwind)
++    if X < max(Tp, Tq) - 1e-12:
++        return np.inf
++    return X
++
++# --------------------------- Backtracer ---------------------------------
++
++def trace_geodesic(T: np.ndarray, Gfield: np.ndarray, start: Tuple[int,int], src: Tuple[int,int],
++                   hx: float=1.0, hy: float=1.0, step: float=0.8, max_steps: int=10000, tol: float=1e-3):
++    nx, ny = T.shape
++    x, y = float(start[0]), float(start[1])
++    xs, ys = float(src[0]), float(src[1])
++
++    def sample_T(xf, yf):
++        i0 = int(np.clip(np.floor(xf), 0, nx-2))
++        j0 = int(np.clip(np.floor(yf), 0, ny-2))
++        tx = xf - i0; ty = yf - j0
++        T00 = T[i0, j0]; T10 = T[i0+1, j0]
++        T01 = T[i0, j0+1]; T11 = T[i0+1, j0+1]
++        return (1-tx)*(1-ty)*T00 + tx*(1-ty)*T10 + (1-tx)*ty*T01 + tx*ty*T11
++
++    def sample_gradT(xf, yf):
++        eps = 0.5
++        Tx1 = sample_T(np.clip(xf+eps, 0, nx-1), yf)
++        Tx0 = sample_T(np.clip(xf-eps, 0, nx-1), yf)
++        Ty1 = sample_T(xf, np.clip(yf+eps, 0, ny-1))
++        Ty0 = sample_T(xf, np.clip(yf-eps, 0, ny-1))
++        return np.array([(Tx1-Tx0)/(2*eps*hx), (Ty1-Ty0)/(2*eps*hy)], dtype=float)
++
++    def sample_A(xf, yf):
++        i = int(np.clip(round(xf), 0, nx-1))
++        j = int(np.clip(round(yf), 0, ny-1))
++        G = ensure_spd(Gfield[i, j])
++        return inv2(G)
++
++    path = [(x, y)]
++    for _ in range(max_steps):
++        if (x-xs)**2 + (y-ys)**2 <= tol*tol:
++            break
++        g = sample_gradT(x, y)
++        A = sample_A(x, y)
++        v = -A @ g
++        nv = float(np.linalg.norm(v)) + 1e-12
++        x += (step * v[0]) / nv
++        y += (step * v[1]) / nv
++        x = float(np.clip(x, 0, nx-1)); y = float(np.clip(y, 0, ny-1))
++        path.append((x, y))
++    return path
++
++# --------------------------- Metric builders ----------------------------
++
++def metric_const_aniso(nx: int, ny: int, a: float=1.3, b: float=1.0) -> np.ndarray:
++    G = np.zeros((nx, ny, 2, 2), dtype=float)
++    G[...,0,0] = a; G[...,1,1] = b
++    return G
++
++def metric_conformal(nx: int, ny: int, s) -> np.ndarray:
++    """
++    Build G = s(x,y) I, where s is:
++      - float: constant scale
++      - np.ndarray (nx,ny): scalar field
++      - callable(x_idx, y_idx) -> float
++    """
++    G = np.zeros((nx, ny, 2, 2), dtype=float)
++    if isinstance(s, (int, float)):
++        G[...,0,0] = s; G[...,1,1] = s; return G
++    if callable(s):
++        for i in range(nx):
++            for j in range(ny):
++                val = float(s(i, j))
++                G[i,j,0,0] = val; G[i,j,1,1] = val
++        return G
++    # assume array-like
++    s_arr = np.asarray(s, dtype=float)
++    assert s_arr.shape == (nx, ny)
++    G[...,0,0] = s_arr; G[...,1,1] = s_arr
++    return G
++
++def metric_from_unit_vector(nx: int, ny: int, ufield, s_para: float=1.3, s_perp: float=1.0) -> np.ndarray:
++    """
++    Build G aligned to unit vector field u(x,y) ∈ R²:
++      G = s_perp I + (s_para - s_perp) u u^T.
++    ufield can be:
++      - callable(i,j) -> (ux, uy) assumed unit
++      - ndarray (nx,ny,2) already unit
++    """
++    G = np.zeros((nx, ny, 2, 2), dtype=float)
++    if callable(ufield):
++        for i in range(nx):
++            for j in range(ny):
++                ux, uy = ufield(i, j)
++                u = np.array([ux, uy], dtype=float)
++                u /= max(1e-12, np.linalg.norm(u))
++                M = s_perp*np.eye(2) + (s_para - s_perp)*np.outer(u, u)
++                G[i,j] = M
++    else:
++        U = np.asarray(ufield, dtype=float)
++        assert U.shape == (nx, ny, 2)
++        for i in range(nx):
++            for j in range(ny):
++                u = U[i,j]
++                n = max(1e-12, np.linalg.norm(u))
++                u = u / n
++                M = s_perp*np.eye(2) + (s_para - s_perp)*np.outer(u, u)
++                G[i,j] = M
++    return G
+
+diff --git a/plugins/aniso_distance_plugin.py b/plugins/aniso_distance_plugin.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/plugins/aniso_distance_plugin.py
+@@ -0,0 +1,69 @@
++
++"""
++plugins/aniso_distance_plugin.py
++
++Anisotropic Distance (FMM-lite) plugin/CLI for AdaptiveCAD.
++- CLI: compute distance map for a small grid and print samples
++- register_plugin(app): stub for Playground integration
++"""
++from __future__ import annotations
++import argparse, sys, json, math
++import numpy as np
++
++from adaptive_pi.aniso_fmm import (
++    anisotropic_fmm, trace_geodesic,
++    metric_const_aniso, metric_conformal, metric_from_unit_vector
++)
++
++PLUGIN_META = {
++    "name": "Anisotropic Distance (FMM-lite)",
++    "slug": "aniso_distance",
++    "version": "0.1.0",
++    "entrypoints": ["compute_demo", "trace_demo"],
++}
++
++def compute_demo(nx=129, ny=129, a=1.3, b=1.0):
++    G = metric_const_aniso(nx, ny, a=a, b=b)
++    src = (nx//2, ny//2)
++    T = anisotropic_fmm(G, src, use_diagonals=True)
++    # print a few samples along axes
++    mid = src[1]
++    xs = [0,5,10,20,30,40]
++    ys = [0,5,10,20,30,40]
++    row_x = [round(float(T[src[0]+k, mid]), 4) for k in xs]
++    row_y = [round(float(T[src[0], mid+k]), 4) for k in ys]
++    print("Sample T along +x:", row_x)
++    print("Sample T along +y:", row_y)
++    print(f"Expected unit costs: sqrt(a)={math.sqrt(a):.4f}, sqrt(b)={math.sqrt(b):.4f}")
++
++def trace_demo(nx=129, ny=129, a=1.3, b=1.0):
++    G = metric_const_aniso(nx, ny, a=a, b=b)
++    src = (nx//2, ny//2)
++    T = anisotropic_fmm(G, src, use_diagonals=True)
++    start = (nx-5, ny//2)
++    path = trace_geodesic(T, G, start, src, step=0.8)
++    print(json.dumps({"path_len": len(path), "start": start, "end": path[-1]}, indent=2))
++
++def build_parser():
++    p = argparse.ArgumentParser(description="Anisotropic Distance (FMM-lite)")
++    p.add_argument("--mode", choices=["demo","trace"], default="demo")
++    p.add_argument("--nx", type=int, default=129)
++    p.add_argument("--ny", type=int, default=129)
++    p.add_argument("--a", type=float, default=1.3, help="G=diag(a,b)")
++    p.add_argument("--b", type=float, default=1.0, help="G=diag(a,b)")
++    return p
++
++def main(argv=None):
++    args = build_parser().parse_args(argv)
++    if args.mode == "demo":
++        compute_demo(args.nx, args.ny, args.a, args.b)
++    else:
++        trace_demo(args.nx, args.ny, args.a, args.b)
++
++def register_plugin(app=None):
++    # Playground can import this and wire buttons to `compute_demo`/`trace_demo`
++    return PLUGIN_META
++
++if __name__ == "__main__":
++    main()
+
+diff --git a/examples/aniso_distance_playground_demo.py b/examples/aniso_distance_playground_demo.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/examples/aniso_distance_playground_demo.py
+@@ -0,0 +1,66 @@
++
++"""
++examples/aniso_distance_playground_demo.py
++
++Tiny demo: tries PySide6/PyQt5 to expose two actions (compute / trace).
++Falls back to console if Qt isn't available.
++"""
++import sys, math, json
++try:
++    import numpy as np
++except Exception:
++    print("NumPy required for this demo.")
++    sys.exit(1)
++
++from adaptive_pi.aniso_fmm import (
++    anisotropic_fmm, trace_geodesic, metric_const_aniso
++)
++
++def console_demo():
++    nx, ny, a, b = 129, 129, 1.3, 1.0
++    G = metric_const_aniso(nx, ny, a=a, b=b)
++    src = (nx//2, ny//2)
++    T = anisotropic_fmm(G, src, use_diagonals=True)
++    mid = src[1]
++    xs = [0,5,10,20,30,40]
++    row_x = [round(float(T[src[0]+k, mid]), 4) for k in xs]
++    print("Sample T(+x):", row_x)
++    start = (nx-5, ny//2)
++    path = trace_geodesic(T, G, start, src, step=0.8)
++    print("Trace length:", len(path), "end≈", path[-1])
++
++def qt_demo():
++    try:
++        from PySide6 import QtWidgets
++    except Exception:
++        try:
++            from PyQt5 import QtWidgets  # type: ignore
++        except Exception:
++            return False
++    app = QtWidgets.QApplication(sys.argv)
++    w = QtWidgets.QWidget(); w.setWindowTitle("Anisotropic Distance (FMM-lite)")
++    layout = QtWidgets.QFormLayout(w)
++    a_sp = QtWidgets.QDoubleSpinBox(); a_sp.setRange(0.01, 100.0); a_sp.setValue(1.3)
++    b_sp = QtWidgets.QDoubleSpinBox(); b_sp.setRange(0.01, 100.0); b_sp.setValue(1.0)
++    out = QtWidgets.QPlainTextEdit(); out.setReadOnly(True); out.setFixedHeight(140)
++    def run_demo():
++        nx, ny = 129, 129
++        a, b = a_sp.value(), b_sp.value()
++        G = metric_const_aniso(nx, ny, a=a, b=b)
++        src = (nx//2, ny//2)
++        T = anisotropic_fmm(G, src, use_diagonals=True)
++        mid = src[1]
++        xs = [0,5,10,20,30,40]
++        row_x = [round(float(T[src[0]+k, mid]), 4) for k in xs]
++        start = (nx-5, ny//2)
++        path = trace_geodesic(T, G, start, src, step=0.8)
++        out.setPlainText(f"T(+x)={row_x}\nGeodesic len={len(path)} end≈{path[-1]}")
++    btn = QtWidgets.QPushButton("Run"); btn.clicked.connect(run_demo)
++    layout.addRow("G=diag(a,b) a:", a_sp); layout.addRow("b:", b_sp)
++    layout.addRow(btn); layout.addRow("Output:", out)
++    w.setLayout(layout); w.resize(360, 240); w.show(); app.exec(); return True
++
++if __name__ == "__main__":
++    if not qt_demo():
++        console_demo()
+
+diff --git a/freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py b/freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py
+@@ -0,0 +1,46 @@
++
++# freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py
++import math, json
++try:
++    import FreeCAD as App, FreeCADGui as Gui
++except Exception:
++    App = None; Gui = None
++
++from adaptive_pi.aniso_fmm import anisotropic_fmm, trace_geodesic, metric_const_aniso
++
++class _CmdAnisoDistance:
++    def GetResources(self):
++        return {
++            "Pixmap": "",
++            "MenuText": "Anisotropic Distance (FMM-lite)",
++            "ToolTip": "Compute an anisotropic distance map on a small grid and report sample values",
++        }
++    def Activated(self):
++        if Gui is None:
++            print("[AnisoDistance] FreeCAD GUI not available.")
++            return
++        try:
++            from PySide6 import QtWidgets
++        except Exception:
++            from PyQt5 import QtWidgets  # type: ignore
++        w = QtWidgets.QInputDialog
++        a, ok = w.getDouble(None, "Metric a", "a (G11):", 1.3, 0.01, 100.0, 3)
++        if not ok: return
++        b, ok = w.getDouble(None, "Metric b", "b (G22):", 1.0, 0.01, 100.0, 3)
++        if not ok: return
++        nx = ny = 129
++        G = metric_const_aniso(nx, ny, a=a, b=b)
++        src = (nx//2, ny//2)
++        T = anisotropic_fmm(G, src, use_diagonals=True)
++        mid = src[1]
++        xs = [0,5,10,20,30,40]
++        row_x = [round(float(T[src[0]+k, mid]), 4) for k in xs]
++        msg = f"[AnisoDistance] T(+x)={row_x}  (sqrt(a)~{math.sqrt(a):.4f}, sqrt(b)~{math.sqrt(b):.4f})\n"
++        try:
++            Gui.PrintMessage(msg + "\n")
++        except Exception:
++            print(msg)
++    def IsActive(self): return True
++
++GuiCommand = _CmdAnisoDistance
+
+diff --git a/freecad/AdaptiveCADPIToolpath/README_ANISO_DISTANCE.md b/freecad/AdaptiveCADPIToolpath/README_ANISO_DISTANCE.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/freecad/AdaptiveCADPIToolpath/README_ANISO_DISTANCE.md
+@@ -0,0 +1,11 @@
++
++# Anisotropic Distance — FreeCAD Workbench Hook
++
++Add this command to `freecad/AdaptiveCADPIToolpath/InitGui.py`:
++
++```python
++from .commands.CommandAnisoDistance import GuiCommand as _CmdAnisoDistance
++Gui.addCommand("Adaptive_Aniso_Distance", _CmdAnisoDistance())
++```
++Restart FreeCAD; the command appears under the workbench menu.
+
+diff --git a/blender_addons/adaptivecad_pia_aniso.py b/blender_addons/adaptivecad_pia_aniso.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/blender_addons/adaptivecad_pia_aniso.py
+@@ -0,0 +1,60 @@
++
++# blender_addons/adaptivecad_pia_aniso.py
++bl_info = {
++    "name": "AdaptiveCAD Anisotropic Distance (FMM-lite)",
++    "author": "AdaptiveCAD",
++    "version": (0, 1, 0),
++    "blender": (4, 0, 0),
++    "location": "View3D > Sidebar > AdaptiveCAD",
++    "description": "Compute a small anisotropic distance map and print samples",
++    "category": "3D View",
++}
++
++import bpy, math
++from bpy.props import FloatProperty
++try:
++    import numpy as np
++    from adaptive_pi.aniso_fmm import anisotropic_fmm, metric_const_aniso
++except Exception:
++    np = None
++
++class ADAP_OP_AnisoDistance(bpy.types.Operator):
++    bl_idname = "adaptivecad.aniso_distance"
++    bl_label = "Run Aniso Distance"
++    a: FloatProperty(name="a (G11)", default=1.3, min=0.01, max=100.0)
++    b: FloatProperty(name="b (G22)", default=1.0, min=0.01, max=100.0)
++    def execute(self, ctx):
++        if np is None:
++            self.report({'ERROR'}, "NumPy/adaptive_pi not available")
++            return {'CANCELLED'}
++        nx = ny = 129
++        G = metric_const_aniso(nx, ny, a=self.a, b=self.b)
++        src = (nx//2, ny//2)
++        T = anisotropic_fmm(G, src, use_diagonals=True)
++        mid = src[1]
++        xs = [0,5,10,20,30,40]
++        row_x = [round(float(T[src[0]+k, mid]), 4) for k in xs]
++        self.report({'INFO'}, f"T(+x)={row_x}")
++        return {'FINISHED'}
++
++class ADAP_PT_AnisoDistance(bpy.types.Panel):
++    bl_label = "Anisotropic Distance"
++    bl_idname = "ADAPTIVECAD_PT_ANISO_DISTANCE"
++    bl_space_type = 'VIEW_3D'
++    bl_region_type = 'UI'
++    bl_category = 'AdaptiveCAD'
++    def draw(self, ctx):
++        col = self.layout.column(align=True)
++        op = col.operator(ADAP_OP_AnisoDistance.bl_idname, text="Run Demo")
++        col.prop(op, "a")
++        col.prop(op, "b")
++
++classes = (ADAP_OP_AnisoDistance, ADAP_PT_AnisoDistance)
++
++def register():
++    for c in classes: bpy.utils.register_class(c)
++def unregister():
++    for c in reversed(classes): bpy.utils.unregister_class(c)
++if __name__ == "__main__":
++    register()
+
+diff --git a/README_ANISO_DISTANCE.md b/README_ANISO_DISTANCE.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/README_ANISO_DISTANCE.md
+@@ -0,0 +1,45 @@
++
++# Anisotropic Distance (FMM-lite) — Integration Bundle
++
++This adds a compact **anisotropic fast-marching** baseline to AdaptiveCAD and exposes it in:
++- **Playground/CLI**: `plugins/aniso_distance_plugin.py`
++- **FreeCAD**: `freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py`
++- **Blender**: `blender_addons/adaptivecad_pia_aniso.py`
++
++## Files
++
++- `adaptive_pi/aniso_fmm.py` — library: ordered solver + geodesic backtracer
++- `plugins/aniso_distance_plugin.py` — CLI / plugin hook
++- `examples/aniso_distance_playground_demo.py` — Qt/console demo
++- `freecad/AdaptiveCADPIToolpath/commands/CommandAnisoDistance.py` — FreeCAD command
++- `blender_addons/adaptivecad_pia_aniso.py` — Blender add-on panel
++
++## Quick start
++
++```bash
++# From repo root
++python plugins/aniso_distance_plugin.py --mode demo --a 1.3 --b 1.0
++python plugins/aniso_distance_plugin.py --mode trace
++python examples/aniso_distance_playground_demo.py
++```
++
++## FreeCAD
++
++Edit `freecad/AdaptiveCADPIToolpath/InitGui.py` and add:
++
++```python
++from .commands.CommandAnisoDistance import GuiCommand as _CmdAnisoDistance
++Gui.addCommand("Adaptive_Aniso_Distance", _CmdAnisoDistance())
++```
++
++## Blender
++
++Install `blender_addons/adaptivecad_pia_aniso.py` via **Edit → Preferences → Add-ons → Install...**
++
++## Notes
++
++- Uses NumPy only; no SciPy required.
++- Solver uses a two-neighbor PDE update + one-sided fallback; soft-lands to isotropic FMM.
++- Best with moderate anisotropy (κ ≲ 10–20); for extreme ratios consider rotated stencils/FM-LBR.
++- Geodesic backtracer follows \(-G^-1\nabla T\) with bilinear sampling, good for visuals.

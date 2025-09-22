@@ -1,8 +1,8 @@
-"""Simplified GUI playground with optional dependencies.
+﻿"""Simplified GUI playground with optional dependencies.
 
 This playground implements advanced parametric shapes including Pi Curve Shell,
 Superellipse, Helix, Tapered Cylinder, Capsule and Ellipsoid that demonstrate the
-Adaptive Pi Geometry (πₐ) principles.
+Adaptive Pi Geometry (Ï€â‚) principles.
 
 Now supports an OCC-free fallback mode: if `pythonocc-core` is unavailable, the
 application will still start using a minimal placeholder viewer and analytic viewport.
@@ -40,7 +40,7 @@ if HAS_QT:
     import numpy as np
     from adaptivecad import settings
     from adaptivecad.gui.viewcube_widget import ViewCubeWidget
-    # Optional ND Chess widget
+        # Optional ND Chess widget
     try:
         from adaptivecad.gui.nd_chess_widget import NDChessWidget
     except Exception:  # pragma: no cover - missing deps
@@ -78,8 +78,8 @@ if HAS_QT:
                     QMessageBox.information(mw.win, self._name, f"Module 'adaptivecad.analytic' not available; {self._name} disabled.")
                 except Exception:
                     log.info("%s: analytic module not available.", self._name)
-        ConvertMeshToAnalyticCmd = lambda : _StubCmd("Convert Mesh → Analytic")
-        ConvertAnalyticToMeshCmd = lambda : _StubCmd("Convert Analytic → Mesh")
+        ConvertMeshToAnalyticCmd = lambda : _StubCmd("Convert Mesh â†’ Analytic")
+        ConvertAnalyticToMeshCmd = lambda : _StubCmd("Convert Analytic â†’ Mesh")
     from adaptivecad.command_defs import (
         Feature,
         NewBoxCmd, NewCylCmd,
@@ -148,7 +148,7 @@ def require(cap_fn, ok_fn, mw, msg: str):
     except Exception:
         log.warning(f"Feature unavailable (no UI): {msg}")
 
-# --- PI CURVE SHELL SHAPE TOOL (Parametric πₐ-based surface) ---
+# --- PI CURVE SHELL SHAPE TOOL (Parametric Ï€â‚-based surface) ---
 class PiCurveShellFeature(Feature):
     def __init__(self, base_radius, height, freq, amp, phase, n_u=60, n_v=30):
         params = {
@@ -183,7 +183,7 @@ class PiCurveShellFeature(Feature):
         us = np.linspace(0, 2 * np.pi, n_u)
         vs = np.linspace(0, height, n_v)
         def pi_curve(u):
-            # Example: πₐ curve as a sine deformation
+            # Example: Ï€â‚ curve as a sine deformation
             return amp * np.sin(freq * u + phase)
         pts = []
         for v in vs:
@@ -240,7 +240,7 @@ class NewPiCurveShellCmd:
                 self.n_v.setValue(30)
                 layout.addRow("Base Radius", self.base_radius)
                 layout.addRow("Height", self.height)
-                layout.addRow("Frequency (πₐ)", self.freq)
+                layout.addRow("Frequency (Ï€â‚)", self.freq)
                 layout.addRow("Amplitude", self.amp)
                 layout.addRow("Phase", self.phase)
                 layout.addRow("Segments U", self.n_u)
@@ -683,15 +683,15 @@ class NewEllipsoidCmd:
         mw.view._display.FitAll()
         mw.win.statusBar().showMessage(f"Ellipsoid created: rx={rx}, ry={ry}, rz={rz}", 3000)
 
-# --- ANALYTIC (SDF/πₐ) BALL DOCK + COMMAND ---
+# --- ANALYTIC (SDF/Ï€â‚) BALL DOCK + COMMAND ---
 if HAS_QT and QDockWidget:
     class SDFAnalyticBallDock(QDockWidget):
-        """Docked viewer that renders a triangle-free analytic ball (SDF) with optional πₐ scaling."""
+        """Docked viewer that renders a triangle-free analytic ball (SDF) with optional Ï€â‚ scaling."""
         def __init__(self, mw):
             from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QImage, QPixmap
-            super().__init__("Analytic Ball (SDF/πₐ)", mw.win)
+            super().__init__("Analytic Ball (SDF/Ï€â‚)", mw.win)
             self.setObjectName("SDFAnalyticBallDock")
             self.mw = mw
             self._res = 512
@@ -700,7 +700,7 @@ if HAS_QT and QDockWidget:
 
             container = QWidget()
             v = QVBoxLayout(container)
-            self.image_label = QLabel("(rendering…)")
+            self.image_label = QLabel("(renderingâ€¦)")
             self.image_label.setAlignment(Qt.AlignCenter)
             v.addWidget(self.image_label)
 
@@ -711,7 +711,7 @@ if HAS_QT and QDockWidget:
             hr.addWidget(self.slider_r); v.addWidget(row_r)
 
             row_b = QWidget(); hb = QHBoxLayout(row_b); hb.setContentsMargins(0,0,0,0)
-            hb.addWidget(QLabel("πₐ β:"))
+            hb.addWidget(QLabel("Ï€â‚ Î²:"))
             self.slider_b = QSlider(Qt.Horizontal); self.slider_b.setRange(0, 200); self.slider_b.setValue(int(self._beta*100))
             self.slider_b.valueChanged.connect(self._on_change)
             hb.addWidget(self.slider_b); v.addWidget(row_b)
@@ -889,7 +889,7 @@ class NewAnalyticTorusCmd:
             log.error("Failed to create analytic torus: %s", e)
 
     class NewAnalyticMobiusCmd:
-        """Creates a new analytic Möbius strip in the scene."""
+        """Creates a new analytic MÃ¶bius strip in the scene."""
         def __init__(self): pass
         def run(self, mw):
             try:
@@ -1134,6 +1134,11 @@ class MainWindow:
         else:
             self.view = self._make_fallback_view(central, layout)
         self.win.setCentralWidget(central)
+        if getattr(self, "view", None) is not None:
+            # Radial tool wheel: include common sketch + transform tools
+            # (Playground keeps this empty; Analytic Viewport panel owns the wheel.)
+            pass
+
         # Keep reference to original central widget for swapping
         self._occ_central = central
         # Explicitly enable shape selection mode (fix for lost selection after repo update)
@@ -1400,7 +1405,7 @@ class MainWindow:
         ball_action = QAction("Ball", self.win)
         ball_action.triggered.connect(lambda: self._create_ball_via_backend(20.0))
         basic_menu.addAction(ball_action)
-        analytic_ball_action = QAction("Analytic Ball (SDF/πₐ)", self.win)
+        analytic_ball_action = QAction("Analytic Ball (SDF/Ï€â‚)", self.win)
         analytic_ball_action.triggered.connect(lambda: self._run_command(NewAnalyticBallCmd()))
         basic_menu.addAction(analytic_ball_action)
         torus_action = QAction("Torus", self.win)
@@ -1415,7 +1420,7 @@ class MainWindow:
         super_action = QAction("Superellipse", self.win)
         super_action.triggered.connect(lambda: self._run_command(NewSuperellipseCmd()))
         adv_menu.addAction(super_action)
-        pi_shell_action = QAction("Pi Curve Shell (πₐ)", self.win)
+        pi_shell_action = QAction("Pi Curve Shell (Ï€â‚)", self.win)
         pi_shell_action.triggered.connect(lambda: self._run_command(NewPiCurveShellCmd()))
         adv_menu.addAction(pi_shell_action)
         helix_action = QAction("Helix/Spiral", self.win)
@@ -1576,6 +1581,26 @@ class MainWindow:
                 pass
         triedron_action.triggered.connect(_toggle_triedron)
         view_menu.addAction(triedron_action)
+        # Clear Analytic Overlays
+        def _clear_overlays():
+            try:
+                panel = self._ensure_analytic_panel()
+                if panel is None:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(self.win, "Analytic Overlays", "Analytic panel not open.")
+                    return
+                if hasattr(panel, 'view') and hasattr(panel.view, 'clear_polyline_overlays'):
+                    panel.view.clear_polyline_overlays()
+                    self.win.statusBar().showMessage("Cleared analytic overlays", 2000)
+            except Exception as e:
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(self.win, "Analytic Overlays", f"Could not clear overlays: {e}")
+                except Exception:
+                    pass
+        clear_overlay_action = QAction("Clear Analytic Overlays", self.win)
+        clear_overlay_action.triggered.connect(_clear_overlays)
+        view_menu.addAction(clear_overlay_action)
         backend_menu = settings_menu.addMenu("Rendering Backend")
         use_analytic_action = QAction("Use Analytic/SDF for default shapes", self.win, checkable=True)
         use_analytic_action.setChecked(settings.USE_ANALYTIC_BACKEND)
@@ -1625,7 +1650,7 @@ class MainWindow:
             act.triggered.connect(lambda _=False, name=act.text(): self._run_command(mapper[name]()))
             self.toolbar_analytic.addAction(act)
         self.toolbar_analytic.addSeparator()
-        a_export_act = QAction("Export SDF→STL", self.win)
+        a_export_act = QAction("Export SDFâ†’STL", self.win)
         a_export_act.triggered.connect(lambda: self._run_command(ConvertAnalyticToMeshCmd()))
         self.toolbar_analytic.addAction(a_export_act)
         self.toolbar_analytic.setVisible(False)
@@ -1660,7 +1685,7 @@ class MainWindow:
             analytic_available, _open_analytic2, "Analytic renderer not available.\nInstall OpenGL + analytic modules."
         ))
         help_menu.addAction(analytic_view_action2)
-        export_analytic_stl_action2 = QAction("Export Analytic (SDF→STL)", self.win)
+        export_analytic_stl_action2 = QAction("Export Analytic (SDFâ†’STL)", self.win)
         def _export_analytic2():
             from adaptivecad.aacore.extract.marching_export import export_isosurface_to_stl
             from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -1686,22 +1711,22 @@ class MainWindow:
             self.win.statusBar().showMessage(f"Log level: {'DEBUG' if checked else 'WARNING'}", 2000)
         toggle_log_action.triggered.connect(_toggle_logs)
         help_menu.addAction(toggle_log_action)
-        diag_action = QAction("Diagnostics…", self.win)
+        diag_action = QAction("Diagnosticsâ€¦", self.win)
         def _show_diag():
             from PySide6.QtWidgets import QMessageBox
             caps = caps_summary()
             msg = (
                 "Capabilities:\n"
-                f"• Analytic renderer: {'Yes' if caps.get('analytic') else 'No'}\n"
-                f"• Exporter (SDF→STL): {'Yes' if caps.get('exporter') else 'No'}\n"
-                f"• OCC→Analytic Conversion: {'Yes' if caps.get('conversion') else 'No'}\n"
+                f"â€¢ Analytic renderer: {'Yes' if caps.get('analytic') else 'No'}\n"
+                f"â€¢ Exporter (SDFâ†’STL): {'Yes' if caps.get('exporter') else 'No'}\n"
+                f"â€¢ OCCâ†’Analytic Conversion: {'Yes' if caps.get('conversion') else 'No'}\n"
             )
             QMessageBox.information(self.win, "AdaptiveCAD Diagnostics", msg)
         diag_action.triggered.connect(_show_diag)
         help_menu.addAction(diag_action)
 
         conversion_menu = menubar.addMenu("Conversion")
-        convert_action = QAction("Convert OCC → Analytic", self.win)
+        convert_action = QAction("Convert OCC â†’ Analytic", self.win)
         def _do_convert():
             try:
                 from adaptivecad.analytic.conversion import OccToAnalyticCmd
@@ -1720,6 +1745,92 @@ class MainWindow:
         modeling_tools_action.triggered.connect(lambda: self._show_doc_message("Modeling Tools", "Please see MODELING_TOOLS.md in the project root directory for details on all available modeling tools."))
         docs_menu.addAction(modeling_tools_action)
 
+        # Plugins menu (lightweight integration points)
+        plugins_menu = menubar.addMenu("Plugins")
+        aniso_menu = plugins_menu.addMenu("Anisotropic Distance (FMM-lite)")
+        aniso_demo_action = QAction("Compute Demo", self.win)
+        def _run_aniso_demo():
+            try:
+                import io, contextlib
+                from PySide6.QtWidgets import QMessageBox
+                try:
+                    from plugins import aniso_distance_plugin as aniso
+                except Exception:
+                    # Fallback import path if running as a package
+                    import importlib
+                    aniso = importlib.import_module('plugins.aniso_distance_plugin')
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    aniso.compute_demo()
+                out = buf.getvalue().strip() or "No output"
+                QMessageBox.information(self.win, "Anisotropic Distance â€“ Demo", out)
+            except Exception as e:
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(self.win, "Anisotropic Distance", f"Demo failed: {e}")
+                except Exception:
+                    log.debug(f"Aniso demo failed: {e}")
+        aniso_demo_action.triggered.connect(_run_aniso_demo)
+        aniso_menu.addAction(aniso_demo_action)
+        aniso_trace_action = QAction("Trace Geodesic", self.win)
+        def _run_aniso_trace():
+            try:
+                # Parameter dialog (nx, ny, a, b)
+                from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QSpinBox, QDoubleSpinBox, QMessageBox
+                class _Param(QDialog):
+                    def __init__(self, parent=None):
+                        super().__init__(parent)
+                        self.setWindowTitle("Trace Geodesic â€“ Parameters")
+                        fm = QFormLayout(self)
+                        self.nx = QSpinBox(); self.nx.setRange(16, 1025); self.nx.setValue(129)
+                        self.ny = QSpinBox(); self.ny.setRange(16, 1025); self.ny.setValue(129)
+                        self.a = QDoubleSpinBox(); self.a.setRange(0.01, 1000.0); self.a.setDecimals(4); self.a.setValue(1.3)
+                        self.b = QDoubleSpinBox(); self.b.setRange(0.01, 1000.0); self.b.setDecimals(4); self.b.setValue(1.0)
+                        fm.addRow("nx", self.nx); fm.addRow("ny", self.ny)
+                        fm.addRow("a (diag x)", self.a); fm.addRow("b (diag y)", self.b)
+                        btn = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                        btn.accepted.connect(self.accept); btn.rejected.connect(self.reject)
+                        fm.addWidget(btn)
+                dlg = _Param(self.win)
+                if not dlg.exec():
+                    return
+                nx, ny = int(dlg.nx.value()), int(dlg.ny.value())
+                a, b = float(dlg.a.value()), float(dlg.b.value())
+                # Compute and trace
+                import numpy as _np
+                from adaptive_pi.aniso_fmm import anisotropic_fmm, trace_geodesic, metric_const_aniso
+                G = metric_const_aniso(nx, ny, a=a, b=b)
+                src = (nx//2, ny//2)
+                T = anisotropic_fmm(G, src, use_diagonals=True)
+                start = (nx-5, ny//2)
+                path = trace_geodesic(T, G, start, src, step=0.8)
+                # Show summary in dialog
+                QMessageBox.information(self.win, "Aniso Trace",
+                    f"Grid {nx}Ã—{ny}\nG=diag({a:.4f},{b:.4f})\nPath length: {len(path)}\nStart: {start}\nEndâ‰ˆ: {path[-1] if path else start}")
+                # Draw overlay in Analytic Viewport (panel)
+                try:
+                    panel = self._ensure_analytic_panel()
+                    if panel is None:
+                        return
+                    panel.show()
+                    # Clear and add overlay
+                    if hasattr(panel.view, 'clear_polyline_overlays'):
+                        panel.view.clear_polyline_overlays()
+                    if hasattr(panel.view, 'add_polyline_overlay'):
+                        # Default mapping: treat grid indices as XY world coords
+                        col = (255, 120, 40)
+                        panel.view.add_polyline_overlay(path, color=col, width=3, scale=(1.0,1.0), offset=(0.0,0.0))
+                except Exception as _e:
+                    log.debug(f"Could not draw aniso overlay: {_e}")
+            except Exception as e:
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(self.win, "Anisotropic Distance", f"Trace failed: {e}")
+                except Exception:
+                    log.debug(f"Aniso trace failed: {e}")
+        aniso_trace_action.triggered.connect(_run_aniso_trace)
+        aniso_menu.addAction(aniso_trace_action)
+
         # Store menus for analytic mode visibility toggling
         self._menus = {
             'file': file_menu,
@@ -1731,6 +1842,7 @@ class MainWindow:
             'games': games_menu,
             'help': help_menu,
             'conversion': conversion_menu,
+            'plugins': plugins_menu,
         }
 
         # Apply toolbar/menu visibility according to mode
@@ -1857,9 +1969,37 @@ class MainWindow:
             self._current_command = cmd
             cmd.run(self)
         except Exception as e:
-            QMessageBox.critical(self.win, "Error", f"Error running command: {str(e)}")
-            print(f"Command error: {str(e)}")
-            print(traceback.format_exc())
+            # Friendly handling when OCC is not installed (analytic-only path)
+            msg = str(e)
+            occ_missing = isinstance(e, ModuleNotFoundError) and getattr(e, 'name', '') in ('OCC', 'OCC.Core')
+            occ_missing = occ_missing or ('No module named' in msg and 'OCC' in msg)
+            if occ_missing:
+                try:
+                    QMessageBox.information(
+                        self.win,
+                        "OCC Not Available",
+                        "This action requires the OCC backend.\n"
+                        "Use the Analytic Viewport and analytic tools in this environment,\n"
+                        "or run the conda/OCC path (see README)."
+                    )
+                except Exception:
+                    pass
+                # Status bar hint without noisy traceback
+                try:
+                    self.win.statusBar().showMessage("OCC backend not available in this environment", 3000)
+                except Exception:
+                    pass
+            else:
+                try:
+                    QMessageBox.critical(self.win, "Error", f"Error running command: {msg}")
+                except Exception:
+                    pass
+                # Retain minimal console context for non-OCC errors
+                try:
+                    print(f"Command error: {msg}")
+                    print(traceback.format_exc())
+                except Exception:
+                    pass
         finally:
             # Clear the reference after some delay to allow signals to complete
             # Don't clear immediately as async operations might still be running
@@ -2293,7 +2433,7 @@ class MainWindow:
             """<h2>AdaptiveCAD</h2>
 <p>A curvature-first CAD/CAM system based on the Adaptive Pi Geometry.</p>
 <p>This application demonstrates parametric shapes and modeling tools
-that implement the πₐ (Adaptive Pi) geometry principles.</p>
+that implement the Ï€â‚ (Adaptive Pi) geometry principles.</p>
 <p>For more information, see the documentation files in the project root.</p>
 """)
             
@@ -2303,7 +2443,7 @@ that implement the πₐ (Adaptive Pi) geometry principles.</p>
     def _create_ball_via_backend(self, r: float = 20.0):
         from adaptivecad import settings
         if settings.USE_ANALYTIC_BACKEND:
-            # open/focus the Analytic dock and set sliders to r / β
+            # open/focus the Analytic dock and set sliders to r / Î²
             cmd = NewAnalyticBallCmd()
             cmd.run(self)
             try:
@@ -2321,3 +2461,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+

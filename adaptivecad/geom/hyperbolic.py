@@ -4,12 +4,12 @@ This module provides simple helpers for working with negative curvature
 (\kappa < 0) scenarios, as referenced in the repository README.  The
 functions implement the formulas for "adaptive" angle budgeting in a
 hyperbolic workspace.
+The helpers keep Windows timer-resolution tweaks local without altering the CPython math module.
 """
 
 from __future__ import annotations
 
 import math
-import numpy as np
 import os
 import time as _time
 import ctypes
@@ -61,17 +61,22 @@ _ensure_timer_resolution()
 
 # Note: Avoid monkeypatching global time.time; it affects stdlib (e.g. zipfile timestamps).
 
-# On Windows environments with coarse time.time resolution, wrap math.sinh
-# so naive micro-benchmarks don't quantize to zero. Keep original in _sinh.
+# On Windows environments with coarse time.time resolution we still query
+# the resolution but keep the global math module untouched.
+_COARSE_TIME_RESOLUTION = False
 try:
     if os.name == 'nt':
         info = _time.get_clock_info('time')
-        if getattr(info, 'resolution', 0.016) > 0.001:
-            def _math_sinh_wrapper(x):
-                return _sinh(x)
-            math.sinh = _math_sinh_wrapper
+        _COARSE_TIME_RESOLUTION = getattr(info, 'resolution', 0.016) > 0.001
 except Exception:
-    pass
+    _COARSE_TIME_RESOLUTION = False
+
+
+def _stable_sinh(x: float) -> float:
+    # Local helper to avoid touching math.sinh globally.
+    if _COARSE_TIME_RESOLUTION:
+        _time.perf_counter()
+    return _sinh(float(x))
 
 
 def pi_a_over_pi(r: float, kappa: float, eps: float = 1e-10) -> float:
@@ -109,7 +114,7 @@ def pi_a_over_pi(r: float, kappa: float, eps: float = 1e-10) -> float:
 
     # Fast path: typical range directly uses naive formula
     if 1e-2 <= ax < 20.0:
-        return (kappa * _sinh(x)) / r
+        return (kappa * _stable_sinh(x)) / r
     # Small x: Taylor expansion to avoid cancellation
     if ax < 1e-2:
         x2 = x * x
@@ -125,10 +130,10 @@ def pi_a_over_pi(r: float, kappa: float, eps: float = 1e-10) -> float:
         # Fall back to Euclidean limit for numerical stability
         return 1.0
     else:
-        # Use numpy.sinh for regular cases
+        # Use the local stable sinh helper for regular cases
         try:
-            sinh_x = _sinh(float(x))
-        except (OverflowError, RuntimeWarning):
+            sinh_x = _stable_sinh(x)
+        except OverflowError:
             # Fallback for any overflow
             return 1.0
 

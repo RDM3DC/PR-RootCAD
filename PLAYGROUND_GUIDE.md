@@ -114,3 +114,39 @@ For additional help, refer to:
 - [README.md](README.md) - General overview of the project
 - [ADVANCED_SHAPES.md](ADVANCED_SHAPES.md) - Details on advanced shape parameters
 - [MODELING_TOOLS.md](MODELING_TOOLS.md) - Details on modeling operations
+
+## Analytic Viewport Overlays (Anisotropic Distance)
+
+
+## Radial Tool Wheel (Analytic Viewport)
+
+The Analytic viewport now exposes a shared radial HUD wheel so every panel uses the same tool map. Hover near the viewport edge to fade it in, spin with the mouse wheel or right-drag to rotate, and click to trigger a tool.
+
+### Default Segments
+- Sketch: Polyline, Line, Arc 3pt, Circle, Rect, Insert Vertex, Dim
+- Gizmo: Move, Rotate, Scale
+- Utilities: Center on Selected, Reset Camera, Undo Last
+- Scene: Showcase, Clear
+
+### Panel Settings
+Open the Analytic panel and expand **HUD Wheel** to tweak behaviour:
+- **Enabled** toggles the overlay without removing your last configuration
+- **Fit To Edge / Overshoot** decides whether the ring hugs the viewport border
+- **Thickness / Opacity / Text Size** control readability and footprint
+- **Auto Spin + Speed** adds or disables ambient rotation (defaults off)
+
+Settings persist in `~/.adaptivecad_analytic.json`, so the wheel keeps your preferences between sessions.
+
+### Quick Tips
+- The wheel fades out near the centre so it never hides sketch geometry
+- Labels dim except the hovered segment for quick targeting
+- If you do not see the wheel, ensure **HUD Wheel > Enabled** is checked and the cursor is near the viewport edge
+
+### Quick demo actions
+
+Inside the Analytic Viewport panel, the Actions group now includes:
+
+- Showcase Primitives: instantly populates a small curated set of SDF shapes (Sphere, Torus, Mobius, Superellipsoid, Gyroid, Trefoil), positioned for visibility.
+- Clear Scene: removes all SDF primitives and clears any polyline overlays.
+
+These help you demo the analytic renderer quickly or reset between tests.
