@@ -45,6 +45,8 @@ if HAS_QT:
         from adaptivecad.gui.nd_chess_widget import NDChessWidget
     except Exception:  # pragma: no cover - missing deps
         NDChessWidget = None
+    from adaptivecad.ai.intent_router import CADActionBus
+    from adaptivecad.ui.ai_dock import AICopilotDock
     # Capability probe (may or may not exist yet when partially installed)
     try:
         from adaptivecad.analytic.capabilities import (
@@ -1100,6 +1102,10 @@ class MainWindow:
         self._analytic_panel = None  # AnalyticViewportPanel instance (when used as main)
         self._occ_central = None     # Original OCC/fallback central widget
         self._analytic_as_main = False  # Persistence flag
+        # AI helper state (for simple OCC-backed actions)
+        self._ai_profile_shape = None  # Last 2D profile (face) created by AI for extrusion
+        self._ai_last_solid = None     # Last solid created by AI
+        self._ai_pending_circle = None  # (cx, cy, r) when created in analytic mode
         log.debug("State variables initialized")
         
         # Create the main window
@@ -1138,6 +1144,227 @@ class MainWindow:
             # Radial tool wheel: include common sketch + transform tools
             # (Playground keeps this empty; Analytic Viewport panel owns the wheel.)
             pass
+
+        self._ai_available_tools = ["select", "line", "circle", "move", "rotate", "measure", "extrude"]
+        self._ai_bus = CADActionBus()
+
+        def _ai_select_tool(tool_id: str) -> dict:
+            """Set a logical tool selection (visual only for now)."""
+            log.info("AI copilot selecting tool: %s", tool_id)
+            try:
+                self.win.statusBar().showMessage(f"AI selected tool: {tool_id}", 2000)
+            except Exception:
+                pass
+            return {"selected": tool_id}
+
+        def _ai_create_circle(radius: float, cx: float | None = None, cy: float | None = None) -> dict:
+            """Create a planar circular profile.
+            - OCC mode: builds a Face and displays it; stores as profile for prism.
+            - Analytic mode: draws a 2D overlay ring and stores pending (cx,cy,r) for later extrude.
+            """
+            log.info("AI copilot create_circle radius=%s cx=%s cy=%s", radius, cx, cy)
+            # Analytic fallback path
+            if not HAS_OCC:
+                try:
+                    panel = self._ensure_analytic_panel()
+                    if panel is None or not hasattr(panel, 'view'):
+                        raise RuntimeError("Analytic panel not available")
+                    cxv = float(cx) if cx is not None else 0.0
+                    cyv = float(cy) if cy is not None else 0.0
+                    r = max(0.01, float(radius))
+                    # Approximate circle with polyline
+                    import math
+                    N = 64
+                    pts = [(cxv + r*math.cos(2*math.pi*i/N), cyv + r*math.sin(2*math.pi*i/N)) for i in range(N+1)]
+                    if hasattr(panel.view, 'add_polyline_overlay'):
+                        panel.view.add_polyline_overlay(pts, color=(200,220,255), width=2)
+                    self._ai_pending_circle = (cxv, cyv, r)
+                    self._ai_profile_shape = None
+                    self._ai_last_solid = None
+                    try:
+                        self.win.statusBar().showMessage(f"AI: Circle overlay r={r:g} at ({cxv:g},{cyv:g})", 2500)
+                    except Exception:
+                        pass
+                    return {"ok": True, "profile": "circle_overlay", "radius": r, "center": [cxv, cyv]}
+                except Exception as e:
+                    log.debug(f"AI circle (analytic) failed: {e}")
+                    return {"ok": False, "error": str(e)}
+            # OCC path
+            if not hasattr(self, 'view') or not hasattr(self.view, '_display'):
+                msg = "Viewer not ready"
+                try:
+                    self.win.statusBar().showMessage(msg, 3000)
+                except Exception:
+                    pass
+                return {"ok": False, "error": msg}
+            try:
+                from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Ax2, gp_Circ  # type: ignore
+                from OCC.Core.BRepBuilderAPI import (
+                    BRepBuilderAPI_MakeEdge,
+                    BRepBuilderAPI_MakeWire,
+                    BRepBuilderAPI_MakeFace,
+                )  # type: ignore
+                cxv = float(cx) if cx is not None else 0.0
+                cyv = float(cy) if cy is not None else 0.0
+                r = max(0.01, float(radius))
+                circ = gp_Circ(gp_Ax2(gp_Pnt(cxv, cyv, 0.0), gp_Dir(0.0, 0.0, 1.0)), r)
+                edge = BRepBuilderAPI_MakeEdge(circ).Edge()
+                wire = BRepBuilderAPI_MakeWire(edge).Wire()
+                face = BRepBuilderAPI_MakeFace(wire).Face()
+                self.view._display.DisplayShape(face, update=True)
+                self.view._display.FitAll()
+                self._ai_profile_shape = face
+                try:
+                    self.win.statusBar().showMessage(f"AI: Circle face r={r:g} at ({cxv:g},{cyv:g})", 2500)
+                except Exception:
+                    pass
+                return {"ok": True, "profile": "circle_face", "radius": r, "center": [cxv, cyv]}
+            except Exception as e:
+                log.debug(f"AI circle create failed: {e}")
+                return {"ok": False, "error": str(e)}
+
+        def _ai_create_line(x1: float, y1: float, x2: float, y2: float) -> dict:
+            """Create a straight 2D line.
+            - OCC mode: displays an Edge at Z=0.
+            - Analytic mode: draws a 2D overlay segment.
+            """
+            log.info("AI copilot create_line (%s,%s)->(%s,%s)", x1, y1, x2, y2)
+            if not HAS_OCC:
+                try:
+                    panel = self._ensure_analytic_panel()
+                    if panel is None or not hasattr(panel, 'view'):
+                        raise RuntimeError("Analytic panel not available")
+                    pts = [(float(x1), float(y1)), (float(x2), float(y2))]
+                    if hasattr(panel.view, 'add_polyline_overlay'):
+                        panel.view.add_polyline_overlay(pts, color=(255,180,90), width=3)
+                    try:
+                        self.win.statusBar().showMessage("AI: Line overlay created", 2000)
+                    except Exception:
+                        pass
+                    return {"ok": True, "line": {"start": [float(x1), float(y1)], "end": [float(x2), float(y2)]}}
+                except Exception as e:
+                    log.debug(f"AI line (analytic) failed: {e}")
+                    return {"ok": False, "error": str(e)}
+            # OCC path
+            if not hasattr(self, 'view') or not hasattr(self.view, '_display'):
+                msg = "Viewer not ready"
+                try:
+                    self.win.statusBar().showMessage(msg, 3000)
+                except Exception:
+                    pass
+                return {"ok": False, "error": msg}
+            try:
+                from OCC.Core.gp import gp_Pnt  # type: ignore
+                from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge  # type: ignore
+                p1 = gp_Pnt(float(x1), float(y1), 0.0)
+                p2 = gp_Pnt(float(x2), float(y2), 0.0)
+                edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                self.view._display.DisplayShape(edge, update=True)
+                self.view._display.Repaint()
+                try:
+                    self.win.statusBar().showMessage("AI: Line created", 2000)
+                except Exception:
+                    pass
+                return {"ok": True, "line": {"start": [float(x1), float(y1)], "end": [float(x2), float(y2)]}}
+            except Exception as e:
+                log.debug(f"AI line create failed: {e}")
+                return {"ok": False, "error": str(e)}
+
+        def _ai_extrude(distance: float) -> dict:
+            """Extrude the last AI-created circle/profile.
+            - OCC mode: prisms the last Face.
+            - Analytic mode: adds a cylinder-like SDF (capsule with small round caps).
+            """
+            log.info("AI copilot extrude distance=%s", distance)
+            if not HAS_OCC:
+                # Use analytic SDF scene: create a cylinder-like solid from pending circle
+                try:
+                    if self._ai_pending_circle is None:
+                        raise RuntimeError("No circle profile available to extrude")
+                    cx, cy, r = self._ai_pending_circle
+                    dz = float(distance)
+                    # Map to an analytic capsule aligned with Z: params [radius, height]
+                    from adaptivecad.aacore.sdf import Prim, KIND_CAPSULE
+                    sc = getattr(self, 'aacore_scene', None)
+                    if sc is None:
+                        from adaptivecad.aacore.sdf import Scene as _Scene
+                        sc = _Scene(); self.aacore_scene = sc
+                    # Create at origin; center offsets (cx,cy) can be encoded via transform if supported
+                    prim = Prim(KIND_CAPSULE, [float(r), max(0.01, float(dz)), 0, 0], beta=0.0, color=(0.7,0.8,0.95))
+                    sc.add(prim)
+                    # Best-effort center via transform if available
+                    try:
+                        if hasattr(prim, 'xform') and hasattr(prim.xform, 'translate'):
+                            prim.xform.translate([float(cx), float(cy), 0.0])
+                    except Exception:
+                        pass
+                    if hasattr(self, '_sync_analytic_scene'):
+                        self._sync_analytic_scene()
+                    panel = self._ensure_analytic_panel()
+                    if panel:
+                        panel.show(); panel.raise_()
+                    self._ai_last_solid = prim
+                    self._ai_profile_shape = None
+                    self._ai_pending_circle = None
+                    try:
+                        self.win.statusBar().showMessage(f"AI: Analytic extrude by {dz:g}", 2500)
+                    except Exception:
+                        pass
+                    return {"ok": True, "extruded": dz, "mode": "analytic"}
+                except Exception as e:
+                    log.debug(f"AI extrude (analytic) failed: {e}")
+                    return {"ok": False, "error": str(e)}
+            # OCC path
+            if not hasattr(self, 'view') or not hasattr(self.view, '_display'):
+                msg = "Viewer not ready"
+                try:
+                    self.win.statusBar().showMessage(msg, 3000)
+                except Exception:
+                    pass
+                return {"ok": False, "error": msg}
+            if getattr(self, '_ai_profile_shape', None) is None:
+                msg = "No AI-created profile available to extrude. Create a circle first."
+                try:
+                    self.win.statusBar().showMessage(msg, 3000)
+                except Exception:
+                    pass
+                return {"ok": False, "error": msg}
+            try:
+                from OCC.Core.gp import gp_Vec  # type: ignore
+                from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism  # type: ignore
+                dz = float(distance)
+                vec = gp_Vec(0.0, 0.0, dz)
+                solid = BRepPrimAPI_MakePrism(self._ai_profile_shape, vec).Shape()
+                self.view._display.DisplayShape(solid, update=True)
+                self.view._display.FitAll()
+                self._ai_last_solid = solid
+                # Clear profile to avoid repeated extrudes unless another is created
+                self._ai_profile_shape = None
+                try:
+                    self.win.statusBar().showMessage(f"AI: Extruded by {dz:g}", 2500)
+                except Exception:
+                    pass
+                return {"ok": True, "extruded": dz}
+            except Exception as e:
+                log.debug(f"AI extrude failed: {e}")
+                return {"ok": False, "error": str(e)}
+
+        self._ai_bus.on("select_tool", _ai_select_tool)
+        self._ai_bus.on("create_circle", _ai_create_circle)
+        self._ai_bus.on("create_line", _ai_create_line)
+        self._ai_bus.on("extrude", _ai_extrude)
+
+        try:
+            self.ai_copilot = AICopilotDock(
+                self.win,
+                available_tools=self._ai_available_tools,
+                bus=self._ai_bus,
+                model="gpt-4o-mini",
+            )
+            self.win.addDockWidget(Qt.RightDockWidgetArea, self.ai_copilot)
+        except Exception as exc:
+            log.debug("AI copilot dock unavailable: %s", exc)
+            self.ai_copilot = None
 
         # Keep reference to original central widget for swapping
         self._occ_central = central
@@ -1546,6 +1773,23 @@ class MainWindow:
         dimension_action.setChecked(False)
         dimension_action.triggered.connect(self._toggle_dimension_panel)
         view_menu.addAction(dimension_action)
+        # Show/Hide AI Copilot dock
+        ai_view_action = QAction("Show AI Copilot", self.win, checkable=True)
+        ai_view_action.setChecked(bool(getattr(self, 'ai_copilot', None)))
+        def _toggle_ai(checked: bool):
+            dock = getattr(self, 'ai_copilot', None)
+            if not dock:
+                try:
+                    self.win.statusBar().showMessage("AI Copilot unavailable (missing dependencies or init error)", 3000)
+                except Exception:
+                    pass
+                ai_view_action.setChecked(False)
+                return
+            dock.setVisible(bool(checked))
+            if checked:
+                dock.raise_()
+        ai_view_action.triggered.connect(_toggle_ai)
+        view_menu.addAction(ai_view_action)
         view_menu.addAction(QAction("Show Analytic Viewport", self.win, triggered=lambda: self._run_command(NewAnalyticViewportCmd())))
         view_menu.addAction(QAction("Show Analytic Viewport (Panel)", self.win, triggered=lambda: self._run_command(NewAnalyticViewportPanelCmd())))
         view_menu.addSeparator()

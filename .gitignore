@@ -59,3 +59,12 @@ renders/
 # Local logs and debug outputs
 *.log
 playground_debug.log
+
+# Secrets and environment files
+.env
+.env.*
+*.env
+*.secret
+secrets/*.json
+secrets/*.yaml
+secrets/*.yml

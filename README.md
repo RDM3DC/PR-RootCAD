@@ -179,6 +179,44 @@ This installs `pythonocc-core` alongside PySide6/numpy for the OCC viewer and mo
 - OCC features missing:
    - Thatâ€™s expected on the venv path. Use the conda path (B) to add `pythonocc-core`.
 
+## 🔑 API keys (OpenAI)
+
+AdaptiveCAD reads the OpenAI API key from the `OPENAI_API_KEY` environment variable (see `adaptivecad/ai/openai_client.py`). Keys should never be committed to the repo.
+
+### Local (Windows PowerShell)
+
+Temporary for the current terminal session:
+
+```powershell
+$env:OPENAI_API_KEY = 'sk-your-key'
+```
+
+Persist for new terminals (User environment variables):
+
+```powershell
+setx OPENAI_API_KEY "sk-your-key"
+# Close and reopen the terminal to take effect
+```
+
+Notes:
+- `.gitignore` already excludes `.env`, `.env.*`, and common secret folders.
+- If a key may have leaked, rotate it in your OpenAI account and update your env/secrets.
+
+### CI (GitHub Actions)
+
+Store the key as a repository Secret named `OPENAI_API_KEY` (Settings → Secrets and variables → Actions), then reference it in workflow steps that need it:
+
+```yaml
+- name: Run tests that require OpenAI
+   if: ${{ secrets.OPENAI_API_KEY != '' }}
+   env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+   run: |
+      pytest -q tests/test_ai_bridge.py
+```
+
+Prefer mocking network calls in CI; gate any live calls behind the `if:` check above so the pipeline still passes when the secret isn’t present.
+
 ## ðŸ§ª Try it quickly
 
 ```powershell

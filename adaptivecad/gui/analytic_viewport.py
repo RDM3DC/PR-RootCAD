@@ -1344,7 +1344,8 @@ class AnalyticViewport(QOpenGLWidget):
             # Draw grid if enabled
             try:
                 if getattr(panel, '_sketch_grid_on', False):
-                    self._draw_grid(p, getattr(panel, '_sketch_grid_step', 10.0))
+                    # Draw grid with constant on-screen spacing (pixels) and contrast color
+                    self._draw_grid(p, panel)
             except Exception:
                 pass
             panel._sketch.draw(p, self)
@@ -1399,8 +1400,25 @@ class AnalyticViewport(QOpenGLWidget):
         wpt_snapped[1] = round(wpt[1] / step) * step
         return wpt_snapped
 
-    def _draw_grid(self, painter: QPainter, step: float):
-        if step <= 0:
+    def _grid_step_world_for_panel(self, panel) -> float:
+        """Return effective grid step in world units. If panel requests screen-locked grid,
+        interpret panel._sketch_grid_step as pixel spacing and convert using current zoom."""
+        try:
+            step_cfg = float(getattr(panel, '_sketch_grid_step', 10.0))
+        except Exception:
+            step_cfg = 10.0
+        lock_to_screen = bool(getattr(panel, '_sketch_grid_screen_lock', True))
+        if lock_to_screen:
+            # _world_to_screen uses s = 80 / distance, so 1 world unit = s pixels
+            s = 80.0 / max(1e-5, float(self.distance))
+            # desired pixel spacing -> world spacing
+            return max(1e-8, float(step_cfg) / float(s))
+        return max(1e-8, float(step_cfg))
+
+    def _draw_grid(self, painter: QPainter, panel):
+        # Compute world step from panel settings (optionally screen-locked)
+        step_world = self._grid_step_world_for_panel(panel)
+        if step_world <= 0:
             return
         w, h = self.width(), self.height()
         # Compute world bbox corners at Z≈0
@@ -1409,9 +1427,22 @@ class AnalyticViewport(QOpenGLWidget):
         xmin, xmax = sorted([tl[0], br[0]])
         ymin, ymax = sorted([tl[1], br[1]])
         import math
-        x0 = math.floor(xmin/step)*step
-        y0 = math.floor(ymin/step)*step
-        pen = QPen(QColor(60,70,85)); pen.setWidth(1)
+        x0 = math.floor(xmin/step_world)*step_world
+        y0 = math.floor(ymin/step_world)*step_world
+        # Choose grid color as high-contrast inverse of background
+        try:
+            br_, bg_, bb_ = self.scene.bg_color
+        except Exception:
+            br_, bg_, bb_ = (0.1, 0.1, 0.12)
+        # Luminance to decide black/white, then apply slight transparency
+        lum = 0.2126*br_ + 0.7152*bg_ + 0.0722*bb_
+        if lum < 0.5:
+            # dark background -> light grid
+            cr, cg, cb, ca = 240, 240, 240, 110
+        else:
+            # light background -> dark grid
+            cr, cg, cb, ca = 20, 20, 20, 110
+        pen = QPen(QColor(int(cr), int(cg), int(cb), int(ca))); pen.setWidth(1)
         painter.setPen(pen)
         # verticals
         x = x0
@@ -1419,14 +1450,14 @@ class AnalyticViewport(QOpenGLWidget):
             s1 = self._world_to_screen(np.array([x, ymin, 0.0], np.float32))
             s2 = self._world_to_screen(np.array([x, ymax, 0.0], np.float32))
             painter.drawLine(int(s1[0]), int(s1[1]), int(s2[0]), int(s2[1]))
-            x += step
+            x += step_world
         # horizontals
         y = y0
         while y <= ymax:
             s1 = self._world_to_screen(np.array([xmin, y, 0.0], np.float32))
             s2 = self._world_to_screen(np.array([xmax, y, 0.0], np.float32))
             painter.drawLine(int(s1[0]), int(s1[1]), int(s2[0]), int(s2[1]))
-            y += step
+            y += step_world
 
     def _screen_to_world_xy(self, sx, sy):
         # Map screen to world on Z≈0 plane
@@ -1673,7 +1704,7 @@ class AnalyticViewport(QOpenGLWidget):
         if panel is not None and getattr(panel,'_sketch_on',False) and event.button()==Qt.MouseButton.LeftButton:
             mode = panel._sketch_mode
             if getattr(panel, '_sketch_snap_grid', False):
-                step = float(getattr(panel, '_sketch_grid_step', 10.0))
+                step = self._grid_step_world_for_panel(panel)
                 w3 = self._screen_to_world_grid_snap(event.position().x(), event.position().y(), step)
             else:
                 w3 = self._screen_to_world_xy(event.position().x(), event.position().y())
@@ -1944,7 +1975,7 @@ class AnalyticViewport(QOpenGLWidget):
             # Drag selected vertex (if any)
             if self._sk_dragging and self._sk_point_sel is not None and (event.buttons() & Qt.MouseButton.LeftButton):
                 if getattr(panel, '_sketch_snap_grid', False):
-                    step = float(getattr(panel, '_sketch_grid_step', 10.0))
+                    step = self._grid_step_world_for_panel(panel)
                     w3 = self._screen_to_world_grid_snap(event.position().x(), event.position().y(), step)
                 else:
                     w3 = self._screen_to_world_xy(event.position().x(), event.position().y())
@@ -2626,12 +2657,17 @@ class AnalyticViewportPanel(QWidget):
         self._sketch_grid_on = False
         self._sketch_snap_grid = False
         self._sketch_grid_step = 10.0
+        # If True: interpret grid_step as pixel spacing (screen-locked); if False: world units
+        self._sketch_grid_screen_lock = True
         row_grid = QWidget(); hg = QHBoxLayout(row_grid); hg.setContentsMargins(0,0,0,0)
         cb_grid = QCheckBox("Show Grid"); cb_grid.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_on', cb_grid.isChecked()) or self.view.update())
         cb_snapg= QCheckBox("Snap Grid"); cb_snapg.stateChanged.connect(lambda _v: setattr(self, '_sketch_snap_grid', cb_snapg.isChecked()))
+        # Toggle: screen-lock (pixels) vs world units
+        cb_lock = QCheckBox("Screen-locked spacing"); cb_lock.setChecked(self._sketch_grid_screen_lock)
+        cb_lock.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_screen_lock', cb_lock.isChecked()) or self.view.update())
         sp_grid = QDoubleSpinBox(); sp_grid.setRange(0.1, 1000.0); sp_grid.setDecimals(2); sp_grid.setSingleStep(0.5); sp_grid.setValue(self._sketch_grid_step)
         sp_grid.valueChanged.connect(lambda v: setattr(self, '_sketch_grid_step', float(v)))
-        hg.addWidget(cb_grid); hg.addWidget(cb_snapg); hg.addWidget(QLabel("Step")); hg.addWidget(sp_grid)
+        hg.addWidget(cb_grid); hg.addWidget(cb_snapg); hg.addWidget(cb_lock); hg.addWidget(QLabel("Step")); hg.addWidget(sp_grid)
         fs.addRow("Grid/Snap", row_grid)
         # Kernel Sync (optional)
         row_sync = QWidget(); hsync = QHBoxLayout(row_sync); hsync.setContentsMargins(0,0,0,0)
@@ -4320,6 +4356,7 @@ def _load_settings(self):
                     panel._sketch_grid_on = bool(sk.get('grid_on', panel._sketch_grid_on))
                     panel._sketch_snap_grid = bool(sk.get('snap_grid', panel._sketch_snap_grid))
                     panel._sketch_grid_step = float(sk.get('grid_step', panel._sketch_grid_step))
+                    panel._sketch_grid_screen_lock = bool(sk.get('grid_screen_lock', getattr(panel,'_sketch_grid_screen_lock', True)))
                 except Exception:
                     pass
         except Exception:
@@ -4365,7 +4402,7 @@ def _save_settings(self):
         try:
             panel = self.parent() if hasattr(self, 'parent') else None
             if panel is not None and hasattr(panel, '_sketch'):
-                sk = {'polylines': [], 'circles': [], 'lines': [], 'rects': [], 'arcs3': [], 'dimensions': [], 'grid_on': bool(getattr(panel,'_sketch_grid_on', False)), 'snap_grid': bool(getattr(panel,'_sketch_snap_grid', False)), 'grid_step': float(getattr(panel,'_sketch_grid_step', 10.0))}
+                sk = {'polylines': [], 'circles': [], 'lines': [], 'rects': [], 'arcs3': [], 'dimensions': [], 'grid_on': bool(getattr(panel,'_sketch_grid_on', False)), 'snap_grid': bool(getattr(panel,'_sketch_snap_grid', False)), 'grid_step': float(getattr(panel,'_sketch_grid_step', 10.0)), 'grid_screen_lock': bool(getattr(panel,'_sketch_grid_screen_lock', True))}
                 for ent in getattr(panel, '_sketch').entities:
                     if isinstance(ent, Polyline2D):
                         sk['polylines'].append([[float(p[0]), float(p[1])] for p in ent.pts])
