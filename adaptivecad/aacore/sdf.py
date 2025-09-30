@@ -386,12 +386,6 @@ class Prim:
         self.xform.M = M
         self.euler[:] = euler
         self.scale[:] = scale
-        try:
-            import logging
-            logging.getLogger("adaptivecad.gui").debug(
-                f"Prim transform updated kind={self.kind} pos={pos} euler={euler} scale={scale}\nM=\n{M}")
-        except Exception:
-            pass
         # Optional: precompute inverse for shader (future optimization)
         try:
             self.xform.M_inv = np.linalg.inv(self.xform.M)
@@ -597,14 +591,14 @@ class Scene:
             op[i]     = OP_SUBTRACT if pr.op == 'subtract' else OP_SOLID
             beta[i]   = np.float32(pr.beta + self.global_beta)
             color[i]  = pr.color[:3].astype(np.float32)
-            # Pack transforms row-major to match test expectations
+            # Pack transforms column-major for GLSL compatibility
             fwd = pr.xform.M.astype(np.float32)
             try:
                 inv = np.linalg.inv(fwd)
             except Exception:
                 inv = np.eye(4, dtype=np.float32)
-            xform[i]     = fwd.reshape(16)
-            xform_inv[i] = inv.reshape(16)
+            xform[i]     = fwd.flatten(order="F")
+            xform_inv[i] = inv.flatten(order="F")
 
         return {
             "count": np.int32(n),

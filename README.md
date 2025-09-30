@@ -47,11 +47,51 @@ Key launchers and modules live at repo root and under `adaptivecad/`:
 - Python 3.10+ (3.12 works fine in venv path)
 - OpenGL-capable GPU/driver (for Analytic viewport)
 - Optional: Miniconda/Conda if you want OCC (`pythonocc-core`)
+
 ## ðŸš€ Quick Start (Windows-first, no OCC required)
 
-Two easy paths. Pick A (simple venv) if you just want the full Analytic shapes (Sphere, Torus, Mobius, Superellipsoid, QuasiCrystal, 4D Torus, Mandelbulb, Klein, Menger, Hyperbolic, Gyroid, Trefoil). Pick B (conda) if you also want OCC-based modeling/import.
+### ⚡ Fastest Path: Analytic Viewport Only
 
-### A) Simple venv (Analytic shapes immediately)
+**Want just the 3D analytic shapes viewer? Start here:**
+
+1) Create a virtual environment (navigate to repo first):
+
+```powershell
+cd AdaptiveCAD  # Navigate to project directory
+python -m venv .venv
+```
+
+2) Install minimal dependencies (skip activation if blocked by execution policy):
+
+```powershell
+..\.venv\Scripts\python.exe -m pip install -U pip wheel
+..\.venv\Scripts\python.exe -m pip install PySide6 numpy PyOpenGL Pillow mpmath
+```
+
+3) Launch the Analytic Viewport directly:
+
+```cmd
+cmd /c "cd /d YOUR_PATH\AdaptiveCAD && ..\.venv\Scripts\python.exe analytic_viewport_launcher.py"
+```
+
+**Or create a batch file** `launch_analytic.bat` in the AdaptiveCAD directory:
+```batch
+@echo off
+cd /d "%~dp0"
+call ..\.venv\Scripts\activate.bat
+python analytic_viewport_launcher.py
+pause
+```
+
+**What you get:** Standalone 3D analytic shapes viewer with Mandelbulb, Klein Bottle, Gyroid, Trefoil, Sphere, Torus, and more - all with real-time OpenGL rendering.
+
+---
+
+### Full Playground Options
+
+Pick A (simple venv) if you want parametric editors plus analytic shapes. Pick B (conda) if you also want OCC-based modeling/import.
+
+### A) Simple venv (Full playground with analytic shapes)
 
 1) Create and activate a virtual environment (PowerShell):
 
@@ -102,17 +142,28 @@ This installs `pythonocc-core` alongside PySide6/numpy for the OCC viewer and mo
 
 ### Troubleshooting
 
-- PowerShell execution policy blocks Activate.ps1:
-   - Either run the Python exe directly (as shown above), or temporarily use `cmd.exe` with `./.venv/Scripts/activate.bat`.
-- Qt platform plugin error ("could not load platform plugin 'windows'):
-   - Ensure youâ€™re using the venvâ€™s Python and `PySide6` is installed: `pip show PySide6`.
-   - Try upgrading: `pip install -U PySide6`.
-- No OpenGL context / black viewport:
-   - Update graphics drivers; try running on your discrete GPU if you have both iGPU/dGPU.
-- OCC features missing:
-   - Thatâ€™s expected on the venv path. Use the conda path (B) to add `pythonocc-core`.
-- **GPU:** Optional; CPU-only is fine for typical models.
-- **CAD/DCC (optional):** FreeCAD 0.21+ / Blender 4.x for the integrations.
+- **PowerShell execution policy blocks Activate.ps1:**
+   - Use the direct Python executable path as shown above: `..\.venv\Scripts\python.exe`
+   - Or use `cmd.exe` with `..\.venv\Scripts\activate.bat`
+   
+- **"Can't open file" errors:**
+   - Make sure you're in the correct directory (AdaptiveCAD subfolder, not root)
+   - Use `cd AdaptiveCAD` first, then run commands with `..\.venv\...` paths
+   
+- **Qt platform plugin error:**
+   - Ensure you're using the venv's Python: `..\.venv\Scripts\python.exe -c "import PySide6; print('OK')"`
+   - Try upgrading: `..\.venv\Scripts\python.exe -m pip install -U PySide6`
+   
+- **No OpenGL context / black viewport:**
+   - Update graphics drivers; try running on your discrete GPU if you have both iGPU/dGPU
+   - For analytic viewport only: Use the direct launcher `analytic_viewport_launcher.py`
+   
+- **OCC features missing:**
+   - That's expected on the venv path. Use the conda path (B) to add `pythonocc-core`
+   
+- **Path confusion:**
+   - Repository structure: `YOUR_PATH\AdaptiveCAD\` (venv here) and `YOUR_PATH\AdaptiveCAD\AdaptiveCAD\` (scripts here)
+   - Always run from the inner AdaptiveCAD directory for script execution
 
 ## ðŸš€ Quick Start (Windows-first, no OCC required)
 
@@ -124,22 +175,19 @@ Two easy paths. Pick A (simple venv) if you just want the full Analytic shapes (
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -U pip wheel
-# Minimal deps for the Enhanced/Full Playground analytic path
-pip install PySide6 numpy PyOpenGL
-# Optional but nice: Pillow (textures), mpmath (high-precision math)
-pip install Pillow mpmath
+# Use direct python path if PowerShell execution policy blocks activation
+..\.venv\Scripts\python.exe -m pip install -U pip wheel
+..\.venv\Scripts\python.exe -m pip install PySide6 numpy PyOpenGL Pillow mpmath
 ```
 
 2) Launch the Enhanced or Full Playground (repo root):
 
 ```powershell
 # Enhanced UI with all analytic shapes
-.\.venv\Scripts\python.exe run_enhanced_playground.py
+..\.venv\Scripts\python.exe run_enhanced_playground.py
 
 # Or the Full variant
-.\.venv\Scripts\python.exe run_full_playground.py
+..\.venv\Scripts\python.exe run_full_playground.py
 ```
 
 3) In the app, open the Analytic panel and add shapes:

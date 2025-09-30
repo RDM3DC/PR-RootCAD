@@ -8,11 +8,12 @@ can operate on the same underlying primitive set.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QInputDialog, QToolButton, QGridLayout,
+    QTextEdit, QLineEdit, QListWidget, QListWidgetItem
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QThread
 from PySide6.QtGui import QGuiApplication
 from OpenGL.GL import *
 import numpy as np
@@ -25,8 +26,29 @@ from adaptivecad.aacore.sdf import (
 )
 import time, os
 import json
+from functools import partial
 import logging
 log = logging.getLogger("adaptivecad.gui")
+try:
+    from adaptivecad.ai.intent_router import CADActionBus, chat_with_tools
+    from adaptivecad.geometry.pia_primitives import (
+        make_pi_circle_profile,
+        upgrade_profile_meta_to_pia,
+        pi_circle_points,
+    )
+    _HAVE_AI = True
+except Exception:
+    CADActionBus = None  # type: ignore
+    chat_with_tools = None  # type: ignore
+    make_pi_circle_profile = None  # type: ignore
+    upgrade_profile_meta_to_pia = None  # type: ignore
+    pi_circle_points = None  # type: ignore
+    _HAVE_AI = False
+
+try:
+    from adaptivecad.plugins.tool_registry import ToolRegistry
+except Exception:
+    ToolRegistry = None  # type: ignore
 try:
     from PIL import Image  # type: ignore
     _HAVE_PIL = True
@@ -493,21 +515,51 @@ except Exception:
         def __init__(self, ref_a, ref_b, panel, offset: float = 0.0):
             super().__init__(); self.ref_a = ref_a; self.ref_b = ref_b; self.panel = panel; self.offset = float(offset)
         def _xy(self, ref):
+            try:
+                view = getattr(self.panel, 'view', None)
+                if view is not None and hasattr(view, '_ref_to_xy'):
+                    pt = view._ref_to_xy(ref)
+                    if pt is not None:
+                        return pt
+            except Exception:
+                pass
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
-                ent, idx = ref; return ent.pts[idx]
+                ent, idx = ref
+                if isinstance(idx, int) and 0 <= idx < len(ent.pts):
+                    return ent.pts[idx]
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Line2D):
-                ent, idx = ref
-                if idx == 0: return ent.p0
-                if idx == 1 and ent.p1 is not None: return ent.p1
-                return None
+                ent, key = ref
+                if key == 0 and ent.p0 is not None:
+                    return ent.p0
+                if key == 1 and ent.p1 is not None:
+                    return ent.p1
+                if isinstance(key, (tuple, list)) and key and key[0] == 'mid' and ent.p1 is not None:
+                    return (ent.p0 + ent.p1) * 0.5
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Rect2D):
-                ent, idx = ref
+                ent, key = ref
                 cs = ent.corners()
-                if 0 <= idx < len(cs): return cs[idx]
-                return None
+                if isinstance(key, int):
+                    if 0 <= key < len(cs):
+                        return cs[key]
+                elif isinstance(key, (tuple, list)) and key:
+                    tag = key[0]
+                    if tag == 'edge_mid' and len(cs) >= 2:
+                        try:
+                            idx = int(key[1])
+                        except Exception:
+                            return None
+                        if len(cs) == 0:
+                            return None
+                        a = cs[idx % len(cs)]
+                        b = cs[(idx + 1) % len(cs)]
+                        return (a + b) * 0.5
+                elif key == 'center' and len(cs) == 4:
+                    import numpy as _np
+                    cx = sum(c[0] for c in cs) / 4.0
+                    cy = sum(c[1] for c in cs) / 4.0
+                    return _np.array([cx, cy], _np.float32)
             if isinstance(ref, tuple) and ref[0]=='circle' and isinstance(ref[1], Circle2D):
                 return ref[1].center
-            # allow raw points [[x,y]] or numpy arrays
             try:
                 import numpy as _np
                 if isinstance(ref, (list, tuple)) and len(ref)==2 and all(isinstance(v, (int,float)) for v in ref):
@@ -617,7 +669,7 @@ except Exception:
             text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
             pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
             pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
-            self.draw_text(p, view, pos, f"⌀ {text}")
+            self.draw_text(p, view, pos, f"âŒ€ {text}")
 
     class Circle2D(SketchEntity):
         def __init__(self, center, radius=0.0):
@@ -741,6 +793,102 @@ def _get_local_axes_from_xform(M):
     def _norm(v):
         n = np.linalg.norm(v); return v if n < 1e-9 else v / n
     return _norm(rx), _norm(ry), _norm(rz)
+
+_SCALE_LEVELS = [
+    ("macro", 1e-3),
+    ("micro", 1e-5),
+    ("meso", 1e-7),
+    ("molecular", 1e-9),
+    ("atomic_outer", 1e-10),
+    ("atomic_bohr", 5.3e-11),
+    ("nuclear", 1e-15),
+    ("subnuclear", 1e-20),
+    ("deep_quantum", 1e-24),
+]
+_LEVEL_INDEX = {name: idx for idx, (name, _) in enumerate(_SCALE_LEVELS)}
+
+
+def _smoothstep(edge0: float, edge1: float, x: float) -> float:
+    if edge0 == edge1:
+        return 0.0
+    t = (x - edge0) / (edge1 - edge0)
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _format_length(meters: float) -> str:
+    m = abs(float(meters))
+    units = [
+        (1.0, "m"),
+        (1e-3, "mm"),
+        (1e-6, "um"),
+        (1e-9, "nm"),
+        (1e-12, "pm"),
+        (1e-15, "fm"),
+        (1e-18, "am"),
+        (1e-21, "zm"),
+        (1e-24, "ym"),
+    ]
+    for scale, suffix in units:
+        if m >= scale:
+            return f"{m / scale:.3g} {suffix}"
+    scale, suffix = units[-1]
+    return f"{m / scale:.3g} {suffix}"
+
+
+def _level_activation(level: str, eps: float) -> float:
+    threshold = _SCALE_LEVELS[_LEVEL_INDEX[level]][1]
+    eps = max(eps, 1e-24)
+    hi = max(threshold * 10.0, threshold + 1e-24)
+    lo = max(threshold, 1e-24)
+    log_eps = math.log10(eps)
+    log_hi = math.log10(hi)
+    log_lo = math.log10(lo)
+    return _smoothstep(log_hi, log_lo, log_eps)
+
+
+def _lod_state(eps: float):
+    eps = max(eps, 1e-24)
+    log_eps = math.log10(eps)
+    for idx, (name, threshold) in enumerate(_SCALE_LEVELS):
+        if eps >= threshold:
+            if idx + 1 < len(_SCALE_LEVELS):
+                next_name, next_threshold = _SCALE_LEVELS[idx + 1]
+                blend = _smoothstep(
+                    math.log10(max(threshold, 1e-24)),
+                    math.log10(max(next_threshold, 1e-24)),
+                    log_eps,
+                )
+                return name, next_name, blend
+            return name, None, 0.0
+    last_name, _ = _SCALE_LEVELS[-1]
+    return last_name, None, 0.0
+
+
+def _compute_world_tolerance(view, center: np.ndarray, pixels: float, fov_deg: float) -> tuple[float, float, float]:
+    try:
+        width = float(view.width())
+    except Exception:
+        width = 1.0
+    try:
+        dpr = float(view.devicePixelRatioF())
+    except AttributeError:
+        try:
+            dpr = float(view.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+    width_px = max(1.0, width * max(1.0, dpr))
+    cam_pos = getattr(view, 'cam_pos', np.array([0.0, 0.0, 0.0], np.float32))
+    depth = float(np.linalg.norm(cam_pos - center))
+    fov_rad = math.radians(float(fov_deg))
+    m_per_px = 2.0 * depth * math.tan(fov_rad * 0.5) / width_px
+    return pixels * m_per_px, depth, width_px
+
+
+def _distance_for_epsilon(eps: float, width_px: float, pixels: float, fov_deg: float) -> float:
+    fov_rad = math.radians(float(fov_deg))
+    denom = 2.0 * max(pixels, 1e-6) * math.tan(fov_rad * 0.5)
+    return float(max(0.0, eps) * max(width_px, 1.0) / max(denom, 1e-6))
 
 # --- Ensure Sketch Overlay classes exist even if PIL import succeeded ---
 try:
@@ -1087,7 +1235,7 @@ except NameError:  # define overlay classes (PIL present path)
             text = self.label_override if self.label_override is not None else self._fmt(val, self.panel)
             pos = c.center + np.array([0.0, c.radius + 0.0], np.float32)
             pen = QPen(QColor(255, 220, 180)); pen.setWidth(1); p.setPen(pen)
-            self.draw_text(p, view, pos, f"⌀ {text}")
+            self.draw_text(p, view, pos, f"âŒ€ {text}")
 
     class SketchLayer:
         def __init__(self):
@@ -1207,17 +1355,39 @@ class AnalyticViewport(QOpenGLWidget):
         import numpy as _np
         try:
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Polyline2D):
-                ent, idx = ref; return ent.pts[idx]
+                ent, idx = ref
+                if isinstance(idx, int) and 0 <= idx < len(ent.pts):
+                    return ent.pts[idx]
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Line2D):
-                ent, idx = ref
-                if idx == 0: return ent.p0
-                if idx == 1 and ent.p1 is not None: return ent.p1
-                return None
+                ent, key = ref
+                if key == 0:
+                    return ent.p0
+                if key == 1 and ent.p1 is not None:
+                    return ent.p1
+                if isinstance(key, (tuple, list)) and key and key[0] == 'mid' and ent.p1 is not None:
+                    return (ent.p0 + ent.p1) * 0.5
             if isinstance(ref, tuple) and len(ref)==2 and isinstance(ref[0], Rect2D):
-                ent, idx = ref
+                ent, key = ref
                 cs = ent.corners()
-                if 0 <= idx < len(cs): return cs[idx]
-                return None
+                if isinstance(key, int):
+                    if 0 <= key < len(cs):
+                        return cs[key]
+                elif isinstance(key, (tuple, list)) and key:
+                    tag = key[0]
+                    if tag == 'edge_mid' and len(cs) >= 2:
+                        try:
+                            idx = int(key[1])
+                        except Exception:
+                            return None
+                        if len(cs) == 0:
+                            return None
+                        a = cs[idx % len(cs)]
+                        b = cs[(idx + 1) % len(cs)]
+                        return (a + b) * 0.5
+                elif key == 'center' and len(cs) == 4:
+                    cx = sum(c[0] for c in cs) / 4.0
+                    cy = sum(c[1] for c in cs) / 4.0
+                    return _np.array([cx, cy], _np.float32)
             if isinstance(ref, tuple) and ref[0]=='circle' and isinstance(ref[1], Circle2D):
                 return ref[1].center
             if isinstance(ref, (list, tuple)) and len(ref)==2 and all(isinstance(v, (int,float)) for v in ref):
@@ -1421,7 +1591,7 @@ class AnalyticViewport(QOpenGLWidget):
         if step_world <= 0:
             return
         w, h = self.width(), self.height()
-        # Compute world bbox corners at Z≈0
+        # Compute world bbox corners at Zâ‰ˆ0
         tl = self._screen_to_world_xy(0,0)
         br = self._screen_to_world_xy(w,h)
         xmin, xmax = sorted([tl[0], br[0]])
@@ -1460,7 +1630,7 @@ class AnalyticViewport(QOpenGLWidget):
             y += step_world
 
     def _screen_to_world_xy(self, sx, sy):
-        # Map screen to world on Z≈0 plane
+        # Map screen to world on Zâ‰ˆ0 plane
         w,h = float(self.width()), float(self.height())
         R = self._cam_basis(); right = R[:,0]; up = R[:,1]; forward = -R[:,2]
         s = 80.0 / max(1e-5, self.distance)
@@ -1486,13 +1656,6 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform3f(glGetUniformLocation(self.prog,"u_bg"), *self.scene.bg_color)
         pack = self.scene.to_gpu_structs(max_prims=MAX_PRIMS)
         n = int(pack['count'])
-        if n>0:
-            try:
-                import logging
-                logging.getLogger("adaptivecad.gui").debug(
-                    f"GPU upload prim0 xform (col-major packed) translation={pack['xform'][0][12:15].tolist()} raw_first16={pack['xform'][0].tolist()}")
-            except Exception:
-                pass
         U = lambda name: glGetUniformLocation(self.prog, name)
         glUniform1i(U("u_count"), n)
         glUniform1iv(U("u_kind"), n, pack['kind'])
@@ -1675,8 +1838,16 @@ class AnalyticViewport(QOpenGLWidget):
     def mousePressEvent(self, event: QMouseEvent):
         self._last_mouse = event.position()
         self._last_buttons = event.buttons()
+        mods = event.modifiers()
+        move_shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        move_ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        try:
+            panel = self.parent()
+        except Exception:
+            panel = None
+        gizmo_move = bool(panel is not None and getattr(panel, '_move_drag_free', False))
         # Plain LMB (no modifiers) -> pick
-        if event.button() == Qt.MouseButton.LeftButton and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+        if event.button() == Qt.MouseButton.LeftButton and mods == Qt.KeyboardModifier.NoModifier:
             # Use full-resolution FBO picking for accurate coordinate-based selection.
             try:
                 self._perform_pick(int(event.position().x()), int(event.position().y()))
@@ -1691,16 +1862,17 @@ class AnalyticViewport(QOpenGLWidget):
             except Exception as e:
                 log.debug(f"mousePressEvent pick failed: {e}")
         # Shift + LMB -> begin move-drag if a primitive selected
-        if (event.button() == Qt.MouseButton.LeftButton and \
-            (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and \
-            self._current_prim() is not None):
+        if (event.button() == Qt.MouseButton.LeftButton and
+            self._current_prim() is not None and
+            (move_shift or move_ctrl or gizmo_move)):
             self._drag_move_active = True
             self._drag_last_pos = event.position()
         # Sketch polyline placement (before default)
-        try:
-            panel = self.parent()
-        except Exception:
-            panel = None
+        if panel is None:
+            try:
+                panel = self.parent()
+            except Exception:
+                panel = None
         if panel is not None and getattr(panel,'_sketch_on',False) and event.button()==Qt.MouseButton.LeftButton:
             mode = panel._sketch_mode
             if getattr(panel, '_sketch_snap_grid', False):
@@ -1735,7 +1907,7 @@ class AnalyticViewport(QOpenGLWidget):
                                 self.scene.add(pr)
                         except Exception as _e:
                             try:
-                                log.debug(f"circle→kernel sync failed: {_e}")
+                                log.debug(f"circleâ†’kernel sync failed: {_e}")
                             except Exception:
                                 pass
                     panel._sketch.active_shape = None
@@ -1882,7 +2054,7 @@ class AnalyticViewport(QOpenGLWidget):
                 except Exception:
                     return
             # Selection of nearest sketch vertex (Ctrl+Click)
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if mods & Qt.KeyboardModifier.ControlModifier:
                 sel = self._pick_nearest_sketch_vertex(event.position().x(), event.position().y())
                 self._sk_point_sel = sel
                 self._sk_dragging = sel is not None
@@ -1899,11 +2071,20 @@ class AnalyticViewport(QOpenGLWidget):
             self._last_mouse = event.position()
         dx = event.position().x() - self._last_mouse.x()
         dy = event.position().y() - self._last_mouse.y()
-        # Sketch hover snapping
+        mods = event.modifiers()
+        move_shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        move_ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        alt_mask = Qt.KeyboardModifier.AltModifier
         try:
             panel = self.parent()
         except Exception:
             panel = None
+        gizmo_move = bool(panel is not None and getattr(panel, '_move_drag_free', False))
+        if (not self._drag_move_active and (event.buttons() & Qt.MouseButton.LeftButton) and
+                self._current_prim() is not None and (move_shift or move_ctrl or gizmo_move)):
+            self._drag_move_active = True
+            self._drag_last_pos = event.position()
+        # Sketch hover snapping
         if panel is not None and getattr(panel,'_sketch_on',False):
             hit = self._screen_to_world_xy(event.position().x(), event.position().y())
             wpt = np.array([hit[0], hit[1]], np.float32)
@@ -1999,7 +2180,7 @@ class AnalyticViewport(QOpenGLWidget):
                 if panel._gizmo_mode == 'rotate':
                     sens_rot = 0.25  # degrees per pixel
                     raw_deg = dx * sens_rot
-                    use_snap = not (event.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    use_snap = not bool(mods & alt_mask)
                     deg = _snap_angle(raw_deg, panel._snap_angle_deg) if use_snap else raw_deg
                     R = _make_rot(axis, deg)
                     if local_space:
@@ -2017,7 +2198,7 @@ class AnalyticViewport(QOpenGLWidget):
                     sens_scl = 0.005  # scale factor per pixel
                     raw = 1.0 + dx * sens_scl
                     raw = max(0.01, raw)
-                    use_snap = not (event.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    use_snap = not bool(mods & alt_mask)
                     k = _snap_scale(raw, panel._snap_scale_step) if use_snap else raw
                     S = _make_scale(axis, k)
                     if local_space:
@@ -2040,13 +2221,19 @@ class AnalyticViewport(QOpenGLWidget):
             dp = right * dx2 * step - up * dy2 * step
             pr = self._current_prim()
             if pr is not None:
-                new_pos = pr.xform.M[:3,3] + dp.astype(np.float32)
+                prev_pos = pr.xform.M[:3,3].copy()
+                new_pos = prev_pos + dp.astype(np.float32)
+                pr.xform.M[:3,3] = new_pos
+                try:
+                    self.scene._notify()
+                except Exception:
+                    pass
                 self._apply_panel_move(new_pos)
             self._drag_last_pos = event.position()
             return
         buttons = event.buttons() or self._last_buttons
         updated = False
-        # Orbit (LMB) — disabled if sketch lock top is enabled
+        # Orbit (LMB) â€” disabled if sketch lock top is enabled
         lock_top = False
         try:
             panel = self.parent()
@@ -2061,7 +2248,7 @@ class AnalyticViewport(QOpenGLWidget):
             self.pitch = float(np.clip(self.pitch, -1.45, 1.45))
             self._update_camera()
             updated = True
-        # Pan (RMB) — disabled if sketch lock top is enabled
+        # Pan (RMB) â€” disabled if sketch lock top is enabled
         if (buttons & Qt.MouseButton.RightButton) and not lock_top:
             # derive right/up from current basis
             R = self._cam_basis()
@@ -2090,7 +2277,7 @@ class AnalyticViewport(QOpenGLWidget):
         if panel is None:
             return None
         best = 1e9; best_key = None
-        # Search polyline points, line endpoints/midpoints, rect corners, circle centers
+        # Search polyline points, line endpoints/midpoints, rect corners/edges/center, circle centers
         for ent in getattr(panel, '_sketch').entities:
             if isinstance(ent, Polyline2D):
                 for idx, pt in enumerate(ent.pts):
@@ -2099,17 +2286,39 @@ class AnalyticViewport(QOpenGLWidget):
                     if d < best and d <= 12.0:
                         best = d; best_key = (ent, idx)
             elif isinstance(ent, Line2D):
-                for idx, pt in enumerate([ent.p0] + ([ent.p1] if ent.p1 is not None else [])):
+                pts = [ent.p0] + ([ent.p1] if ent.p1 is not None else [])
+                for idx, pt in enumerate(pts):
                     s = self._world_to_screen(np.array([pt[0], pt[1], 0.0], np.float32))
                     d = float(np.hypot(s[0]-sx, s[1]-sy))
                     if d < best and d <= 12.0:
                         best = d; best_key = (ent, idx)
+                if ent.p1 is not None:
+                    mid = (ent.p0 + ent.p1) * 0.5
+                    s = self._world_to_screen(np.array([mid[0], mid[1], 0.0], np.float32))
+                    d = float(np.hypot(s[0]-sx, s[1]-sy))
+                    if d < best and d <= 12.0:
+                        best = d; best_key = (ent, ('mid', 0))
             elif isinstance(ent, Rect2D):
-                for idx, pt in enumerate(ent.corners()):
+                corners = ent.corners()
+                for idx, pt in enumerate(corners):
                     s = self._world_to_screen(np.array([pt[0], pt[1], 0.0], np.float32))
                     d = float(np.hypot(s[0]-sx, s[1]-sy))
                     if d < best and d <= 12.0:
                         best = d; best_key = (ent, idx)
+                if len(corners) >= 2:
+                    for edge_idx, (a, b) in enumerate(zip(corners, corners[1:]+corners[:1])):
+                        mid = (a + b) * 0.5
+                        s = self._world_to_screen(np.array([mid[0], mid[1], 0.0], np.float32))
+                        d = float(np.hypot(s[0]-sx, s[1]-sy))
+                        if d < best and d <= 12.0:
+                            best = d; best_key = (ent, ('edge_mid', edge_idx))
+                if len(corners) == 4:
+                    cx = sum(c[0] for c in corners) / 4.0
+                    cy = sum(c[1] for c in corners) / 4.0
+                    s = self._world_to_screen(np.array([cx, cy, 0.0], np.float32))
+                    d = float(np.hypot(s[0]-sx, s[1]-sy))
+                    if d < best and d <= 12.0:
+                        best = d; best_key = (ent, 'center')
             elif isinstance(ent, Circle2D):
                 c = ent.center
                 s = self._world_to_screen(np.array([c[0], c[1], 0.0], np.float32))
@@ -2302,7 +2511,7 @@ class AnalyticViewport(QOpenGLWidget):
             cmap_names = ['legacy','viridis','plasma','diverge']
             cm = cmap_names[self.beta_cmap]
             self.window().setWindowTitle(
-                f"Analytic Viewport - {m} | AA={'on' if self.use_analytic_aa else 'off'} Toon={'on' if self.use_toon else 'off'} Lvl={int(self.toon_levels)} Curv={self.curv_strength:.1f} FovStep={'on' if self.use_foveated else 'off'} β={'on' if self.show_beta_overlay else 'off'} βI={self.beta_overlay_intensity:.2f} βS={self.beta_scale:.2f} {cm}"
+                f"Analytic Viewport - {m} | AA={'on' if self.use_analytic_aa else 'off'} Toon={'on' if self.use_toon else 'off'} Lvl={int(self.toon_levels)} Curv={self.curv_strength:.1f} FovStep={'on' if self.use_foveated else 'off'} Î²={'on' if self.show_beta_overlay else 'off'} Î²I={self.beta_overlay_intensity:.2f} Î²S={self.beta_scale:.2f} {cm}"
             )
         except Exception:
             pass
@@ -2357,6 +2566,46 @@ class AnalyticViewport(QOpenGLWidget):
 
 class AnalyticViewportPanel(QWidget):
     """Composite widget: analytic SDF viewport + control panel."""
+
+    class _AIPromptWorker(QThread):
+        finished_text = Signal(str)
+
+        def __init__(
+            self,
+            text: str,
+            *,
+            tools: list[str],
+            bus: "CADActionBus | None",
+            model: str,
+            prior: list[dict[str, str]] | None = None,
+            registry: "ToolRegistry | None" = None,
+            parent: QWidget | None = None,
+        ) -> None:
+            super().__init__(parent)
+            self._text = text
+            self._tools = tools
+            self._bus = bus
+            self._model = model
+            self._prior = prior[:] if prior else []
+            self._registry = registry
+
+        def run(self) -> None:
+            if not (_HAVE_AI and chat_with_tools is not None and hasattr(self._bus, "call")):
+                self.finished_text.emit("AI copilot unavailable.")
+                return
+            try:
+                output = chat_with_tools(
+                    self._text,
+                    available_tools=self._tools,
+                    bus=self._bus,
+                    model=self._model,
+                    prior_messages=self._prior,
+                    registry=self._registry,
+                )
+            except Exception as exc:  # pragma: no cover - network/runtime errors
+                output = f"LLM error: {exc}"
+            self.finished_text.emit(output)
+
     def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
         # Radial wheel defaults (updated before controls are created)
@@ -2381,6 +2630,42 @@ class AnalyticViewportPanel(QWidget):
         self._cb_wheel_autospin = None
         self._slider_wheel_spin = None
         self._label_wheel_spin = None
+        self._radial_wheel_base_tools: list["ToolSpec"] = []
+
+        # AI copilot state (initialized before building UI)
+        self._ai_model = os.getenv("ADCAD_OPENAI_MODEL", "gpt-4o-mini")
+        self._ai_available_tools = [
+            "select_tool",
+            "create_line",
+            "create_circle",
+            "create_pi_circle",
+            "upgrade_profile_to_pi_a",
+            "extrude",
+        ]
+        self._ai_bus: "CADActionBus | None" = None
+        self._ai_history: list[dict[str, str]] = []
+        self._ai_worker = None
+        self._ai_last_profile_meta = None
+        self._ai_pending_circle = None
+        self._tool_registry: "ToolRegistry | None" = None
+
+        # AI UI references (populated in _populate_side_panel_controls)
+        self._ai_group = None
+        self._ai_transcript = None
+        self._ai_input = None
+        self._ai_send_btn = None
+        self._ai_model_label = None
+        self._ai_tools_group = None
+        self._ai_tools_list = None
+        self._ai_tools_run_btn = None
+        self._ai_tools_delete_btn = None
+        self._ai_tools_pin_chk = None
+
+        self._scale_rig_ref = None
+        self._scale_pixels = None
+        self._scale_duration = None
+        self._scale_fov = None
+        self._scale_status = None
 
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
@@ -2394,10 +2679,19 @@ class AnalyticViewportPanel(QWidget):
         self._space_local = True    # True local, False world
         self._snap_angle_deg = 5.0
         self._snap_scale_step = 0.1
+        self._move_drag_free: bool = False  # require modifier unless explicitly toggled
         # References to select UI controls we want to drive programmatically
         self._cb_sketch = None
         self._btn_showcase = None
         self._btn_clear_scene = None
+        self._btn_sketch_poly = None
+        self._btn_sketch_line = None
+        self._btn_sketch_arc3 = None
+        self._btn_sketch_circle = None
+        self._btn_sketch_rect = None
+        self._btn_sketch_insert = None
+        self._btn_sketch_dim = None
+        self._chk_sketch_midpoint = None
         self._build_ui()
         self.setWindowTitle("Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -2412,22 +2706,45 @@ class AnalyticViewportPanel(QWidget):
         if _HAVE_WHEEL:
             try:
                 tools = [
-                    ToolSpec("Polyline", "polyline"),
-                    ToolSpec("Line", "line"),
-                    ToolSpec("Arc 3pt", "arc3"),
-                    ToolSpec("Circle", "circle"),
-                    ToolSpec("Rect", "rect"),
-                    ToolSpec("Insert Vtx", "insert_vertex"),
-                    ToolSpec("Dim", "dimension"),
-                    ToolSpec("Move", "move"),
-                    ToolSpec("Rotate", "rotate"),
-                    ToolSpec("Scale", "scale"),
-                    ToolSpec("Center", "center_selected"),
-                    ToolSpec("Reset", "reset_camera"),
-                    ToolSpec("Undo", "delete_last"),
-                    ToolSpec("Showcase", "showcase"),
-                    ToolSpec("Clear", "clear"),
+                    ToolSpec("File", children=[
+                        ToolSpec("New", "file_new"),
+                        ToolSpec("Open...", "file_open"),
+                        ToolSpec("Save", "file_save"),
+                        ToolSpec("Clear Scene", "clear"),
+                    ]),
+                    ToolSpec("Sketch", children=[
+                        ToolSpec("Polyline", "polyline"),
+                        ToolSpec("Line", "line"),
+                        ToolSpec("Arc 3pt", "arc3"),
+                        ToolSpec("Circle", "circle"),
+                        ToolSpec("Rectangle", "rect"),
+                        ToolSpec("Insert Vertex", "insert_vertex"),
+                        ToolSpec("Dimension", "dimension"),
+                        ToolSpec("Undo Last", "delete_last"),
+                    ]),
+                    ToolSpec("Transform", children=[
+                        ToolSpec("Move", "move"),
+                        ToolSpec("Rotate", "rotate"),
+                        ToolSpec("Scale", "scale"),
+                        ToolSpec("Center", "center_selected"),
+                    ]),
+                    ToolSpec("View", children=[
+                        ToolSpec("Reset View", "reset_camera"),
+                        ToolSpec("Showcase", "showcase"),
+                    ]),
+                    ToolSpec("Primitives", children=[
+                        ToolSpec("Sphere", "prim:sphere"),
+                        ToolSpec("Box", "prim:box"),
+                        ToolSpec("Capsule", "prim:capsule"),
+                        ToolSpec("Torus", "prim:torus"),
+                        ToolSpec("Mobius", "prim:mobius"),
+                        ToolSpec("Superellipsoid", "prim:superellipsoid"),
+                        ToolSpec("Quasicrystal", "prim:quasicrystal"),
+                        ToolSpec("Mandelbulb", "prim:mandelbulb"),
+                    ]),
+                    ToolSpec("Custom", children=[]),
                 ]
+                self._radial_wheel_base_tools = [spec.clone() for spec in tools]
                 self._radial_wheel = RadialToolWheelOverlay(
                     self.view,
                     tools=tools,
@@ -2440,8 +2757,10 @@ class AnalyticViewportPanel(QWidget):
                     # beyond the viewport and is nicely clipped by it.
                     fit_to_viewport_edge=True,
                     edge_overshoot_px=14,
+                    min_visible_alpha=0.20,
                 )
                 self._radial_wheel.toolActivated.connect(self._on_wheel_tool)
+                self._rebuild_wheel_tools()
                 self._apply_wheel_settings()
                 self._sync_wheel_controls()
             except Exception as e:
@@ -2449,6 +2768,8 @@ class AnalyticViewportPanel(QWidget):
                     log.debug(f"radial wheel init failed: {e}")
                 except Exception:
                     pass
+
+        self._setup_ai()
 
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -2462,11 +2783,30 @@ class AnalyticViewportPanel(QWidget):
         side.setContentsMargins(0,0,0,0)
         side.setSpacing(6)
 
+        # Section toggles (visibility controls)
+        if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
+            self._section_vis = {}
+        self._section_groups = {}
+        self._section_toggles = {}
+        self._section_toggle_columns = 3
+        toggle_box = QGroupBox("Sections")
+        toggle_layout = QGridLayout()
+        toggle_layout.setContentsMargins(6, 4, 6, 4)
+        toggle_layout.setHorizontalSpacing(6)
+        toggle_layout.setVerticalSpacing(4)
+        toggle_box.setLayout(toggle_layout)
+        self._section_toggle_layout = toggle_layout
+        self._section_toggle_count = 0
+        self._section_toggle_container = toggle_box
+        side.addWidget(toggle_box)
+
+
         # --- Debug Modes ---
         gb_modes = QGroupBox("Debug / Modes"); fm = QFormLayout(); gb_modes.setLayout(fm)
         self.mode_box = QComboBox(); self.mode_box.addItems(["Beauty","Normals","ID","Depth","Thickness"])
         self.mode_box.currentIndexChanged.connect(self._on_mode); fm.addRow("Mode", self.mode_box)
         side.addWidget(gb_modes)
+        self._register_section("debug_modes", "Debug", gb_modes)
 
         # --- Feature Toggles ---
         gb_feat = QGroupBox("Features"); vf = QVBoxLayout(); gb_feat.setLayout(vf)
@@ -2475,22 +2815,24 @@ class AnalyticViewportPanel(QWidget):
         self.cb_toon = QCheckBox("Toon"); self.cb_toon.setChecked(False); self.cb_toon.stateChanged.connect(self._on_toggle)
         for w in (self.cb_aa, self.cb_fov, self.cb_toon): vf.addWidget(w)
         side.addWidget(gb_feat)
+        self._register_section("features", "Features", gb_feat)
 
         # --- Parameters ---
         gb_sliders = QGroupBox("Parameters"); fs = QFormLayout(); gb_sliders.setLayout(fs)
         self.slider_toon = QSlider(Qt.Orientation.Horizontal); self.slider_toon.setRange(1,8); self.slider_toon.setValue(4); self.slider_toon.valueChanged.connect(self._on_toon_levels)
         self.slider_curv = QSlider(Qt.Orientation.Horizontal); self.slider_curv.setRange(0,100); self.slider_curv.setValue(100); self.slider_curv.valueChanged.connect(self._on_curv)
-        self.cb_beta = QCheckBox("β Overlay"); self.cb_beta.setChecked(False); self.cb_beta.stateChanged.connect(self._on_toggle)
+        self.cb_beta = QCheckBox("Î² Overlay"); self.cb_beta.setChecked(False); self.cb_beta.stateChanged.connect(self._on_toggle)
         self.slider_beta_int = QSlider(Qt.Orientation.Horizontal); self.slider_beta_int.setRange(0,100); self.slider_beta_int.setValue(int(self.view.beta_overlay_intensity*100)); self.slider_beta_int.valueChanged.connect(self._on_beta_int)
         self.slider_beta_scale = QSlider(Qt.Orientation.Horizontal); self.slider_beta_scale.setRange(1,800); self.slider_beta_scale.setValue(int(self.view.beta_scale*100)); self.slider_beta_scale.valueChanged.connect(self._on_beta_scale)
         self.cmap_box = QComboBox(); self.cmap_box.addItems(["Legacy","Viridis","Plasma","Diverge"]); self.cmap_box.currentIndexChanged.connect(self._on_cmap)
         fs.addRow("Toon Levels", self.slider_toon)
         fs.addRow("Curvature", self.slider_curv)
         fs.addRow(self.cb_beta)
-        fs.addRow("β Intensity", self.slider_beta_int)
-        fs.addRow("β Scale", self.slider_beta_scale)
-        fs.addRow("β Colormap", self.cmap_box)
+        fs.addRow("Î² Intensity", self.slider_beta_int)
+        fs.addRow("Î² Scale", self.slider_beta_scale)
+        fs.addRow("Î² Colormap", self.cmap_box)
         side.addWidget(gb_sliders)
+        self._register_section("parameters", "Parameters", gb_sliders)
 
         if _HAVE_WHEEL:
             def _make_slider(min_v: int, max_v: int, value: int, formatter):
@@ -2562,508 +2904,14 @@ class AnalyticViewportPanel(QWidget):
             fw.addRow("Spin Speed", row_spin)
 
             side.addWidget(gb_wheel)
+            self._register_section("hud_wheel", "HUD Wheel", gb_wheel)
             self._sync_wheel_controls()
 
-        # --- Gizmo / Transform Controls ---
-        gb_gizmo = QGroupBox("Gizmo / Transform"); fg = QFormLayout(); gb_gizmo.setLayout(fg)
-        # Mode buttons
-        row_modes = QWidget(); hm = QHBoxLayout(row_modes); hm.setContentsMargins(0,0,0,0)
-        btn_move = QPushButton("Move"); btn_rot = QPushButton("Rotate [R]"); btn_scl = QPushButton("Scale [S]")
-        for b in (btn_move, btn_rot, btn_scl): b.setCheckable(True)
-        btn_move.setChecked(True)
-        def _set_mode(m):
-            def f():
-                btn_move.setChecked(m=='move'); btn_rot.setChecked(m=='rotate'); btn_scl.setChecked(m=='scale')
-                self._gizmo_mode = m
-            return f
-        btn_move.clicked.connect(_set_mode('move'))
-        btn_rot.clicked.connect(_set_mode('rotate'))
-        btn_scl.clicked.connect(_set_mode('scale'))
-        hm.addWidget(btn_move); hm.addWidget(btn_rot); hm.addWidget(btn_scl)
-        fg.addRow("Mode", row_modes)
-        # Axis lock buttons
-        row_axes = QWidget(); ha = QHBoxLayout(row_axes); ha.setContentsMargins(0,0,0,0)
-        ax_x = QPushButton("X"); ax_y = QPushButton("Y"); ax_z = QPushButton("Z"); ax_clr = QPushButton("Free")
-        for b in (ax_x, ax_y, ax_z, ax_clr): b.setCheckable(True)
-        ax_clr.setChecked(True)
-        def _lock_axis(a):
-            def f():
-                for b,a2 in ((ax_x,'x'),(ax_y,'y'),(ax_z,'z')):
-                    b.setChecked(a==a2)
-                ax_clr.setChecked(a is None)
-                self._axis_lock = a
-            return f
-        ax_x.clicked.connect(_lock_axis('x'))
-        ax_y.clicked.connect(_lock_axis('y'))
-        ax_z.clicked.connect(_lock_axis('z'))
-        ax_clr.clicked.connect(_lock_axis(None))
-        for b in (ax_x, ax_y, ax_z, ax_clr): ha.addWidget(b)
-        fg.addRow("Axis", row_axes)
-        # Space toggle
-        cb_space = QCheckBox("Local Space"); cb_space.setChecked(True)
-        def _space_toggle(_v): self._space_local = cb_space.isChecked()
-        cb_space.stateChanged.connect(_space_toggle)
-        fg.addRow("Space", cb_space)
-        # Snap controls
-        spin_ang = QDoubleSpinBox(); spin_ang.setRange(0.5,45.0); spin_ang.setSingleStep(0.5); spin_ang.setValue(self._snap_angle_deg); spin_ang.setSuffix(" °")
-        spin_scl = QDoubleSpinBox(); spin_scl.setRange(0.01,10.0); spin_scl.setDecimals(3); spin_scl.setSingleStep(0.05); spin_scl.setValue(self._snap_scale_step)
-        def _upd_ang(_v): self._snap_angle_deg = float(spin_ang.value())
-        def _upd_scl(_v): self._snap_scale_step = float(spin_scl.value())
-        spin_ang.valueChanged.connect(_upd_ang)
-        spin_scl.valueChanged.connect(_upd_scl)
-        fg.addRow("Angle Snap", spin_ang)
-        fg.addRow("Scale Snap", spin_scl)
-        side.addWidget(gb_gizmo)
-
-        # --- Sketch (2D) overlay ---
-        gb_sk = QGroupBox("Sketch (2D)"); fs = QFormLayout(); gb_sk.setLayout(fs)
-        cb_sketch = QCheckBox("Enable Sketch Overlay"); cb_sketch.setChecked(False)
-        def _toggle_sk(_):
-            self._sketch_on = cb_sketch.isChecked()
-            if not self._sketch_on:  # disable & clean up
-                self._sketch_mode = None
-                self._sketch.active_poly = None
-            else:
-                if getattr(self, '_sketch_lock_top', False):
-                    try:
-                        self.view.yaw = 0.0; self.view.pitch = 0.0
-                        self.view._update_camera()
-                    except Exception:
-                        self.view.update()
-                else:
-                    self.view.update()
-        cb_sketch.stateChanged.connect(_toggle_sk)
-        # store for programmatic toggling
-        self._cb_sketch = cb_sketch
-        fs.addRow(cb_sketch)
-        # Lock top view while sketching
-        row_lock = QWidget(); hlk = QHBoxLayout(row_lock); hlk.setContentsMargins(0,0,0,0)
-        cb_lock_top = QCheckBox("Lock Top View (XY)"); cb_lock_top.setChecked(True)
-        def _apply_lock_top(_):
-            self._sketch_lock_top = cb_lock_top.isChecked()
-            if self._sketch_on and self._sketch_lock_top:
-                # force yaw/pitch to top view and refresh
-                try:
-                    self.view.yaw = 0.0; self.view.pitch = 0.0
-                    self.view._update_camera()
-                except Exception:
-                    pass
-            else:
-                self.view.update()
-        cb_lock_top.stateChanged.connect(_apply_lock_top)
-        hlk.addWidget(cb_lock_top)
-        fs.addRow("View Lock", row_lock)
-        # Grid & Snap
-        self._sketch_grid_on = False
-        self._sketch_snap_grid = False
-        self._sketch_grid_step = 10.0
-        # If True: interpret grid_step as pixel spacing (screen-locked); if False: world units
-        self._sketch_grid_screen_lock = True
-        row_grid = QWidget(); hg = QHBoxLayout(row_grid); hg.setContentsMargins(0,0,0,0)
-        cb_grid = QCheckBox("Show Grid"); cb_grid.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_on', cb_grid.isChecked()) or self.view.update())
-        cb_snapg= QCheckBox("Snap Grid"); cb_snapg.stateChanged.connect(lambda _v: setattr(self, '_sketch_snap_grid', cb_snapg.isChecked()))
-        # Toggle: screen-lock (pixels) vs world units
-        cb_lock = QCheckBox("Screen-locked spacing"); cb_lock.setChecked(self._sketch_grid_screen_lock)
-        cb_lock.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_screen_lock', cb_lock.isChecked()) or self.view.update())
-        sp_grid = QDoubleSpinBox(); sp_grid.setRange(0.1, 1000.0); sp_grid.setDecimals(2); sp_grid.setSingleStep(0.5); sp_grid.setValue(self._sketch_grid_step)
-        sp_grid.valueChanged.connect(lambda v: setattr(self, '_sketch_grid_step', float(v)))
-        hg.addWidget(cb_grid); hg.addWidget(cb_snapg); hg.addWidget(cb_lock); hg.addWidget(QLabel("Step")); hg.addWidget(sp_grid)
-        fs.addRow("Grid/Snap", row_grid)
-        # Kernel Sync (optional)
-        row_sync = QWidget(); hsync = QHBoxLayout(row_sync); hsync.setContentsMargins(0,0,0,0)
-        self._sketch_circle_to_ring = False
-        cb_circle_sync = QCheckBox("Circle → Ring (kernel)")
-        cb_circle_sync.setToolTip("When enabled, finalizing a sketch circle adds a thin torus at the same center/radius in the AACore scene.")
-        cb_circle_sync.stateChanged.connect(lambda _v: setattr(self, '_sketch_circle_to_ring', cb_circle_sync.isChecked()))
-        hsync.addWidget(cb_circle_sync)
-        fs.addRow("Sync", row_sync)
-        row_tools = QWidget(); ht = QHBoxLayout(row_tools); ht.setContentsMargins(0,0,0,0)
-        btn_poly = QPushButton("Polyline"); btn_poly.setCheckable(True)
-        btn_line = QPushButton("Line"); btn_line.setCheckable(True)
-        btn_arc3 = QPushButton("Arc (3-pt)"); btn_arc3.setCheckable(True)
-        btn_circle = QPushButton("Circle"); btn_circle.setCheckable(True)
-        btn_rect = QPushButton("Rectangle"); btn_rect.setCheckable(True)
-        btn_insv = QPushButton("Insert Vertex"); btn_insv.setCheckable(True)
-        def _choose_poly():
-            on = btn_poly.isChecked()
-            if on:
-                for b2 in (btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'polyline'
-                self._sketch.active_shape = None
-                if getattr(self, '_sketch_lock_top', False):
-                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
-                    except Exception: pass
-            else:
-                if self._sketch_mode=='polyline':
-                    self._sketch_mode = None
-            self.view.update()
-        btn_poly.clicked.connect(_choose_poly)
-        def _choose_line():
-            on = btn_line.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'line'
-                self._sketch.active_poly = None
-                self._sketch.active_shape = None
-                if getattr(self, '_sketch_lock_top', False):
-                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
-                    except Exception: pass
-            else:
-                if self._sketch_mode=='line': self._sketch_mode = None
-            self.view.update()
-        btn_line.clicked.connect(_choose_line)
-        def _choose_arc3():
-            on = btn_arc3.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_line, btn_circle, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'arc3'
-                self._sketch.active_poly = None
-                self._sketch.active_shape = None
-                if getattr(self, '_sketch_lock_top', False):
-                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
-                    except Exception: pass
-            else:
-                if self._sketch_mode=='arc3': self._sketch_mode = None
-            self.view.update()
-        btn_arc3.clicked.connect(_choose_arc3)
-        def _choose_circle():
-            on = btn_circle.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_line, btn_arc3, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'circle'
-                self._sketch.active_poly = None
-                self._sketch.active_shape = None
-                if getattr(self, '_sketch_lock_top', False):
-                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
-                    except Exception: pass
-            else:
-                if self._sketch_mode=='circle': self._sketch_mode = None
-            self.view.update()
-        btn_circle.clicked.connect(_choose_circle)
-        def _choose_rect():
-            on = btn_rect.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle): b2.setChecked(False)
-                self._sketch_mode = 'rect'
-                self._sketch.active_poly = None
-                self._sketch.active_shape = None
-                if getattr(self, '_sketch_lock_top', False):
-                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
-                    except Exception: pass
-            else:
-                if self._sketch_mode=='rect': self._sketch_mode = None
-            self.view.update()
-        btn_rect.clicked.connect(_choose_rect)
-        # Insert Vertex / Midpoint option
-        self._insert_midpoint = False
-        cb_ins_mid = QCheckBox("Midpoint"); cb_ins_mid.stateChanged.connect(lambda _v: setattr(self, '_insert_midpoint', cb_ins_mid.isChecked()))
-        def _choose_insv():
-            on = btn_insv.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'insert_vertex'
-                self._sketch._dim_pick = None
-            else:
-                if self._sketch_mode=='insert_vertex': self._sketch_mode = None
-            self.view.update()
-        btn_insv.clicked.connect(_choose_insv)
-        # Dimension tool
-        btn_dim = QPushButton("Dimension"); btn_dim.setCheckable(True)
-        def _choose_dim():
-            on = btn_dim.isChecked()
-            if on:
-                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
-                self._sketch_mode = 'dimension'
-                self._sketch._dim_pick = None
-            else:
-                if self._sketch_mode=='dimension':
-                    self._sketch_mode = None
-                    # reset any in-progress placing state
-                    try:
-                        self._sketch._dim_placing = False; self._sketch._dim_place_data = None; self._sketch._dim_preview = None
-                    except Exception:
-                        pass
-            self.view.update()
-        btn_dim.clicked.connect(_choose_dim)
-        for b in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect, btn_insv, btn_dim, cb_ins_mid):
-            ht.addWidget(b)
-        fs.addRow("Tool", row_tools)
-        # Dimension settings (type + precision)
-        row_dim = QWidget(); hdim = QHBoxLayout(row_dim); hdim.setContentsMargins(0,0,0,0)
-        from PySide6.QtWidgets import QComboBox as _QCB
-        self._dim_type = 'linear'
-        cb_dim_type = _QCB(); cb_dim_type.addItems(["Linear","Horizontal","Vertical","Radius","Diameter"])
-        def _set_dim_type(idx):
-            self._dim_type = [ 'linear','horizontal','vertical','radius','diameter' ][max(0,min(4,idx))]
-        cb_dim_type.currentIndexChanged.connect(_set_dim_type)
-        self._dim_precision = 2
-        sp_dim_prec = QSpinBox(); sp_dim_prec.setRange(0,6); sp_dim_prec.setValue(self._dim_precision)
-        sp_dim_prec.valueChanged.connect(lambda v: setattr(self, '_dim_precision', int(v)))
-        hdim.addWidget(QLabel("Type")); hdim.addWidget(cb_dim_type)
-        hdim.addWidget(QLabel("Precision")); hdim.addWidget(sp_dim_prec)
-        fs.addRow("Dimensions", row_dim)
-        # Selection info label
-        self._sketch_info_label = QLabel("No selection")
-        fs.addRow("Selection", self._sketch_info_label)
-        # Save/Load Sketch JSON
-        row_io = QWidget(); hio = QHBoxLayout(row_io); hio.setContentsMargins(0,0,0,0)
-        btn_save_sk = QPushButton("Save Sketch JSON")
-        btn_load_sk = QPushButton("Load Sketch JSON")
-        btn_save_sk.clicked.connect(self._save_sketch_json)
-        btn_load_sk.clicked.connect(self._load_sketch_json)
-        # Clear button
-        btn_clear_sk = QPushButton("Clear Sketch")
-        def _clear_sk():
-            self._sketch.entities.clear(); self._sketch.active_poly=None; self._sketch.active_shape=None
-            self.view._sk_point_sel=None; self.view._sk_dragging=False
-            self._update_sketch_info(None)
-            self.view.update()
-        btn_clear_sk.clicked.connect(_clear_sk)
-        hio.addWidget(btn_save_sk); hio.addWidget(btn_load_sk)
-        hio.addWidget(btn_clear_sk)
-        fs.addRow("IO", row_io)
-        side.addWidget(gb_sk)
-        # Backing model
-        self._sketch_doc = SketchDocument(units=Units.MM)
-
-        # --- Actions ---
-        gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
-        btn_save = QPushButton("Save G-Buffers [G]"); btn_save.setEnabled(False)
-        btn_help = QPushButton("Print Shortcuts [H]"); btn_help.clicked.connect(lambda: log.info(self.view._shortcuts_help()))
-        btn_showcase = QPushButton("Showcase Primitives")
-        btn_clear_scene = QPushButton("Clear Scene")
-        def _do_showcase():
-            try:
-                # Add a small curated set if budget allows
-                if len(self.view.scene.prims) < MAX_PRIMS - 6:
-                    self.view.scene.add(Prim(KIND_SPHERE, [0.7,0,0,0], beta=0.08, color=(0.95,0.45,0.35)))
-                    self.view.scene.add(Prim(KIND_TORUS, [1.0,0.22,0,0], beta=0.03, color=(0.6,0.85,0.5)))
-                    self.view.scene.add(Prim(KIND_MOBIUS, [1.4,0.25,0,0], beta=0.02, color=(0.7,0.55,0.95)))
-                    self.view.scene.add(Prim(KIND_SUPERELLIPSOID, [1.1,3.5,0,0], beta=0.0, color=(0.95,0.9,0.85)))
-                    self.view.scene.add(Prim(KIND_GYROID, [2.2,0.0,0.035,0], beta=0.0, color=(0.65,0.9,0.3)))
-                    self.view.scene.add(Prim(KIND_TREFOIL, [0.8,0.08,96,0], beta=0.0, color=(0.95,0.6,0.25)))
-                    # Offset for variety
-                    try:
-                        for i, pr in enumerate(self.view.scene.prims[-6:]):
-                            pr.xform.M[:3,3] += np.array([ (i%3-1)*1.6, (i//3-0.5)*1.4, 0.0 ], np.float32)
-                    except Exception:
-                        pass
-                    try: self.view.scene._notify()
-                    except Exception: pass
-                    self.view.update()
-            except Exception as e:
-                log.debug(f"showcase failed: {e}")
-        def _do_clear_scene():
-            try:
-                self.view.scene.prims.clear()
-                try: self.view.scene._notify()
-                except Exception: pass
-                try: self.view.clear_polyline_overlays()
-                except Exception: pass
-                self._refresh_prim_label(); self.view.update()
-            except Exception:
-                pass
-        btn_showcase.clicked.connect(_do_showcase)
-        btn_clear_scene.clicked.connect(_do_clear_scene)
-        # keep references so the wheel can trigger them
-        self._btn_showcase = btn_showcase
-        self._btn_clear_scene = btn_clear_scene
-        va.addWidget(btn_save); va.addWidget(btn_help); va.addWidget(btn_showcase); va.addWidget(btn_clear_scene); side.addWidget(gb_act)
-
-        # --- Environment ---
-        gb_env = QGroupBox("Environment"); fe = QFormLayout(); gb_env.setLayout(fe)
-        self._bg_sliders = []
-        for i, ch in enumerate(['R','G','B']):
-            s = QSlider(Qt.Orientation.Horizontal); s.setRange(0,255); s.setValue(int(self.view.scene.bg_color[i]*255)); s.valueChanged.connect(self._on_bg_changed)
-            fe.addRow(f"BG {ch}", s); self._bg_sliders.append(s)
-        self._env_sliders = []
-        for i, ch in enumerate(['X','Y','Z']):
-            s = QSlider(Qt.Orientation.Horizontal); s.setRange(-150,150); s.setValue(int(self.view.scene.env_light[i]*100)); s.valueChanged.connect(self._on_env_changed)
-            fe.addRow(f"Light {ch}", s); self._env_sliders.append(s)
-        side.addWidget(gb_env)
-
-        # --- Primitives + Editing ---
-        gb_prims = QGroupBox("Primitives"); vp = QVBoxLayout(); gb_prims.setLayout(vp)
-        self._prim_list_label = QLabel("(0)")
-        self._prim_buttons_box = QVBoxLayout()
-        btn_add_sphere = QPushButton("Add Sphere"); btn_add_sphere.clicked.connect(lambda: self._add_prim('sphere'))
-        btn_add_box = QPushButton("Add Box"); btn_add_box.clicked.connect(lambda: self._add_prim('box'))
-        btn_add_capsule = QPushButton("Add Capsule"); btn_add_capsule.clicked.connect(lambda: self._add_prim('capsule'))
-        btn_add_torus = QPushButton("Add Torus"); btn_add_torus.clicked.connect(lambda: self._add_prim('torus'))
-        btn_add_mobius = QPushButton("Add Mobius"); btn_add_mobius.clicked.connect(lambda: self._add_prim('mobius'))
-        btn_add_superell = QPushButton("Add Superellipsoid"); btn_add_superell.clicked.connect(lambda: self._add_prim('superellipsoid'))
-        btn_add_qc = QPushButton("Add QuasiCrystal"); btn_add_qc.clicked.connect(lambda: self._add_prim('quasicrystal'))
-        btn_add_torus4d = QPushButton("Add 4D Torus"); btn_add_torus4d.clicked.connect(lambda: self._add_prim('torus4d'))
-        btn_add_mandelbulb = QPushButton("Add Mandelbulb"); btn_add_mandelbulb.clicked.connect(lambda: self._add_prim('mandelbulb'))
-        btn_add_klein = QPushButton("Add Klein Bottle"); btn_add_klein.clicked.connect(lambda: self._add_prim('klein'))
-        btn_add_menger = QPushButton("Add Menger Sponge"); btn_add_menger.clicked.connect(lambda: self._add_prim('menger'))
-        btn_add_hyperbolic = QPushButton("Add Hyperbolic Tiling"); btn_add_hyperbolic.clicked.connect(lambda: self._add_prim('hyperbolic'))
-        btn_add_gyroid = QPushButton("Add Gyroid"); btn_add_gyroid.clicked.connect(lambda: self._add_prim('gyroid'))
-        btn_add_trefoil = QPushButton("Add Trefoil Knot"); btn_add_trefoil.clicked.connect(lambda: self._add_prim('trefoil'))
-        btn_del_last = QPushButton("Delete Last"); btn_del_last.clicked.connect(self._del_last)
-        btn_dup_sel = QPushButton("Duplicate Selected"); btn_dup_sel.clicked.connect(self._duplicate_selected)
-        btn_center_sel = QPushButton("Center On Selected"); btn_center_sel.clicked.connect(self._center_on_selected)
-        btn_reset_cam = QPushButton("Reset Camera"); btn_reset_cam.clicked.connect(self._reset_camera)
-        btn_export = QPushButton("Export Scene JSON"); btn_export.clicked.connect(self._export_scene_json)
-        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_add_torus4d, btn_add_mandelbulb, btn_add_klein, btn_add_menger, btn_add_hyperbolic, btn_add_gyroid, btn_add_trefoil, btn_del_last):
-            vp.addWidget(b)
-        for b in (btn_dup_sel, btn_center_sel, btn_reset_cam, btn_export):
-            vp.addWidget(b)
-        vb_holder = QWidget(); vb_holder.setLayout(self._prim_buttons_box); vp.addWidget(vb_holder)
-        # Edit group
-        self._edit_group = QGroupBox("Edit Selected"); fe2 = QFormLayout(); self._edit_group.setLayout(fe2)
-        from PySide6.QtWidgets import QComboBox as _QCB2, QColorDialog
-        def dspin(r=(-10,10), step=0.01, val=0.0):
-            sp = QDoubleSpinBox(); sp.setRange(r[0], r[1]); sp.setSingleStep(step); sp.setDecimals(4); sp.setValue(val); return sp
-        self._sp_pos = [dspin() for _ in range(3)]
-        self._sp_param = [dspin((0,10),0.01,0.5) for _ in range(2)]
-        self._sp_beta = dspin((-1,1),0.01,0.0)
-        self._btn_color = QPushButton("Color…")
-        self._op_box = _QCB2(); self._op_box.addItems(["solid","subtract"])
-        fe2.addRow("Pos X/Y/Z", self._make_row(self._sp_pos))
-        fe2.addRow("Param A/B", self._make_row(self._sp_param))
-        fe2.addRow("Beta", self._sp_beta)
-        fe2.addRow("Color", self._btn_color)
-        fe2.addRow("Op", self._op_box)
-        # Rotation & Scale controls
-        def rspin():
-            s = QDoubleSpinBox(); s.setRange(-180.0,180.0); s.setSingleStep(1.0); s.setDecimals(2); s.setValue(0.0); return s
-        def sspin():
-            s = QDoubleSpinBox(); s.setRange(0.01,100.0); s.setSingleStep(0.05); s.setDecimals(3); s.setValue(1.0); return s
-        self._sp_rot = [rspin() for _ in range(3)]
-        self._sp_scl = [sspin() for _ in range(3)]
-        # Uniform scale control: sets X/Y/Z together
-        self._sp_scl_u = sspin()
-        # Move (translate) controls
-        def mspin():
-            s = QDoubleSpinBox(); s.setRange(-1000.0,1000.0); s.setSingleStep(0.01); s.setDecimals(4); s.setValue(0.0); return s
-        self._sp_move = [mspin() for _ in range(3)]
-        fe2.addRow("Rot ° X/Y/Z", self._make_row(self._sp_rot))
-        fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
-        def _set_uniform_scale(v: float):
-            try:
-                for sp in self._sp_scl:
-                    sp.blockSignals(True)
-                    sp.setValue(float(v))
-                    sp.blockSignals(False)
-                # Apply after setting all axes
-                self._apply_edit()
-            except Exception:
-                pass
-        self._sp_scl_u.valueChanged.connect(_set_uniform_scale)
-        fe2.addRow("Scale (Uniform)", self._sp_scl_u)
-        fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
-        self._nudge_step = QDoubleSpinBox(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
-        fe2.addRow("Nudge Step", self._nudge_step)
-        self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
-        for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)
-        for sp in self._sp_param: sp.valueChanged.connect(self._apply_edit)
-        self._sp_beta.valueChanged.connect(self._apply_edit); self._op_box.currentIndexChanged.connect(self._apply_edit)
-        for s in self._sp_rot + self._sp_scl + self._sp_move:
-            s.valueChanged.connect(self._apply_edit)
-        def pick_color():
-            from PySide6.QtGui import QColor
-            c = QColorDialog.getColor(QColor(200,180,160), self, "Primitive Color")
-            if c.isValid():
-                self._current_color = (c.red()/255.0, c.green()/255.0, c.blue()/255.0)
-                self._apply_edit()
-        self._btn_color.clicked.connect(pick_color)
-        self._current_sel = -1; self._current_color = (0.8,0.7,0.6)
-        side.addWidget(gb_prims)
-
-        # --- Tesseract (4D hypercube) ---
-        gb_tess = QGroupBox("Tesseract (4D Hypercube)"); ft = QFormLayout(); gb_tess.setLayout(ft)
-        self._tess_edge = QDoubleSpinBox(); self._tess_edge.setRange(0.1, 10.0); self._tess_edge.setDecimals(3); self._tess_edge.setSingleStep(0.1); self._tess_edge.setValue(2.0)
-        self._tess_edge_rad = QDoubleSpinBox(); self._tess_edge_rad.setRange(0.001, 1.0); self._tess_edge_rad.setDecimals(3); self._tess_edge_rad.setSingleStep(0.01); self._tess_edge_rad.setValue(0.03)
-        self._tess_node_rad = QDoubleSpinBox(); self._tess_node_rad.setRange(0.001, 1.0); self._tess_node_rad.setDecimals(3); self._tess_node_rad.setSingleStep(0.01); self._tess_node_rad.setValue(0.04)
-        self._tess_include_nodes = QCheckBox("Include Nodes (spheres)"); self._tess_include_nodes.setChecked(False)
-        # Projection
-        self._tess_proj = QComboBox(); self._tess_proj.addItems(["Orthographic","Perspective"])
-        self._tess_fw = QDoubleSpinBox(); self._tess_fw.setRange(0.5, 10.0); self._tess_fw.setDecimals(2); self._tess_fw.setSingleStep(0.1); self._tess_fw.setValue(3.0)
-        # 4D rotation angles
-        def r4spin():
-            s = QDoubleSpinBox(); s.setRange(-360.0, 360.0); s.setDecimals(2); s.setSingleStep(1.0); s.setValue(0.0); return s
-        self._tess_ang_xy = r4spin(); self._tess_ang_xz = r4spin(); self._tess_ang_xw = r4spin();
-        self._tess_ang_yz = r4spin(); self._tess_ang_yw = r4spin(); self._tess_ang_zw = r4spin();
-        self._tess_autospin = QCheckBox("Auto-Spin"); self._tess_autospin.setChecked(True)
-        self._tess_speed = QDoubleSpinBox(); self._tess_speed.setRange(0.0, 360.0); self._tess_speed.setDecimals(2); self._tess_speed.setSingleStep(5.0); self._tess_speed.setValue(30.0)
-        btn_tess = QPushButton("Add Tesseract")
-        btn_tess.clicked.connect(self._add_tesseract)
-        # Layout
-        ft.addRow("Edge Length", self._tess_edge)
-        ft.addRow("Edge Radius", self._tess_edge_rad)
-        ft.addRow("Node Radius", self._tess_node_rad)
-        ft.addRow(self._tess_include_nodes)
-        ft.addRow("Projection", self._tess_proj)
-        ft.addRow("Focal (persp fw)", self._tess_fw)
-        row_ang1 = self._make_row([QLabel("XY"), self._tess_ang_xy, QLabel("XZ"), self._tess_ang_xz, QLabel("XW"), self._tess_ang_xw])
-        row_ang2 = self._make_row([QLabel("YZ"), self._tess_ang_yz, QLabel("YW"), self._tess_ang_yw, QLabel("ZW"), self._tess_ang_zw])
-        ft.addRow("Angles 1", row_ang1)
-        ft.addRow("Angles 2", row_ang2)
-        row_spin = self._make_row([self._tess_autospin, QLabel("Speed (deg/s)"), self._tess_speed])
-        ft.addRow("Spin", row_spin)
-        ft.addRow(btn_tess)
-        side.addWidget(gb_tess)
-
-        # rigs & timer
-        self._rigs = []
-        self._rig_timer = QTimer(self); self._rig_timer.timeout.connect(self._update_rigs)
-        self._rig_timer.start(33)
-
-        # --- Scale Journey (Zoom) ---
-        gb_zoom = QGroupBox("Scale Journey (Zoom)"); fz = QFormLayout(); gb_zoom.setLayout(fz)
-        self._zoom_d0 = QDoubleSpinBox(); self._zoom_d0.setRange(0.1, 1000.0); self._zoom_d0.setDecimals(3)
-        self._zoom_d0.setSingleStep(0.1); self._zoom_d0.setValue(float(getattr(self.view, 'distance', 6.0)))
-        self._zoom_d1 = QDoubleSpinBox(); self._zoom_d1.setRange(0.01, 1000.0); self._zoom_d1.setDecimals(3)
-        self._zoom_d1.setSingleStep(0.01); self._zoom_d1.setValue(0.6)
-        self._zoom_dur = QDoubleSpinBox(); self._zoom_dur.setRange(0.2, 120.0); self._zoom_dur.setDecimals(1)
-        self._zoom_dur.setSingleStep(0.5); self._zoom_dur.setValue(8.0)
-        self._zoom_spawn = QCheckBox("Spawn molecule at end"); self._zoom_spawn.setChecked(True)
-        from PySide6.QtWidgets import QComboBox as _QCB3
-        self._zoom_mol_select = _QCB3(); self._zoom_mol_select.addItems(["Water", "Methane", "Choose File…", "None"]) ; self._zoom_mol_path = None
-        def _choose_custom(idx:int):
-            txt = self._zoom_mol_select.currentText()
-            if txt == "Choose File…":
-                try:
-                    from PySide6.QtWidgets import QFileDialog
-                    p, _ = QFileDialog.getOpenFileName(self, "Choose Molecule (XYZ)", filter="XYZ (*.xyz)")
-                    if p:
-                        self._zoom_mol_path = p
-                        # keep selection as Choose File…; path stored
-                except Exception:
-                    pass
-        self._zoom_mol_select.currentIndexChanged.connect(_choose_custom)
-        btn_start_zoom = QPushButton("Start Zoom")
-        btn_start_zoom.clicked.connect(self._start_zoom_journey)
-        fz.addRow("Start Distance", self._zoom_d0)
-        fz.addRow("End Distance", self._zoom_d1)
-        fz.addRow("Duration (s)", self._zoom_dur)
-        row_msel = self._make_row([self._zoom_spawn, QLabel("Molecule"), self._zoom_mol_select])
-        fz.addRow("At End", row_msel)
-        fz.addRow(btn_start_zoom)
-        side.addWidget(gb_zoom)
-
-        # --- Molecules ---
-        gb_mol = QGroupBox("Molecules"); fmol = QFormLayout(); gb_mol.setLayout(fmol)
-        self._mol_atom_scale = QDoubleSpinBox(); self._mol_atom_scale.setRange(0.1, 5.0); self._mol_atom_scale.setSingleStep(0.1); self._mol_atom_scale.setValue(0.6)
-        self._mol_bond_r = QDoubleSpinBox(); self._mol_bond_r.setRange(0.005, 1.0); self._mol_bond_r.setDecimals(3); self._mol_bond_r.setSingleStep(0.005); self._mol_bond_r.setValue(0.035)
-        self._mol_bond_thresh = QDoubleSpinBox(); self._mol_bond_thresh.setRange(0.0, 1.0); self._mol_bond_thresh.setDecimals(3); self._mol_bond_thresh.setSingleStep(0.02); self._mol_bond_thresh.setValue(0.2)
-        self._mol_autospin = QCheckBox("Auto-Spin"); self._mol_autospin.setChecked(True)
-        self._mol_speed = QDoubleSpinBox(); self._mol_speed.setRange(0.0, 360.0); self._mol_speed.setDecimals(1); self._mol_speed.setSingleStep(5.0); self._mol_speed.setValue(25.0)
-        btn_imp_xyz = QPushButton("Import XYZ…")
-        btn_imp_xyz.clicked.connect(self._import_xyz_molecule)
-        fmol.addRow("Atom Scale", self._mol_atom_scale)
-        fmol.addRow("Bond Radius", self._mol_bond_r)
-        fmol.addRow("Bond Thresh", self._mol_bond_thresh)
-        row_spinmol = self._make_row([self._mol_autospin, QLabel("Speed"), self._mol_speed])
-        fmol.addRow("Spin", row_spinmol)
-        fmol.addRow(btn_imp_xyz)
-        side.addWidget(gb_mol)
-
-        # finalize
-        side.addStretch(1)
-        # Wrap the side widget in a scroll area so overflowing controls
-        # become scrollable instead of going off-screen.
+        self._populate_side_panel_controls(side)
+        if getattr(self, '_section_toggles', None):
+            self._section_toggle_container.setVisible(True)
+        else:
+            self._section_toggle_container.setVisible(False)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -3180,65 +3028,9 @@ class AnalyticViewportPanel(QWidget):
                             del rig['growth']
                     
                     self._update_molecule_rig(rig)
-                elif rig.get('type') == 'zoom':
-                    t = rig.get('t', 0.0) + dt
-                    dur = max(1e-3, float(rig.get('dur', 1.0)))
-                    k = min(1.0, t/dur)
-                    # smoothstep easing with slow finish
-                    kk = k*k*k*(k*(k*6.0 - 15.0) + 10.0)  # smootherstep for dramatic pause
-                    d = float(rig['d0']) * (1.0-kk) + float(rig['d1']) * kk
-                    try:
-                        self.view.distance = float(max(0.01, d))
-                        self.view._update_camera()
-                    except Exception:
-                        self.view.update()
-                    rig['t'] = t
-                    
-                    # Enhanced spawn moment - pause and reveal
-                    if k >= 0.95 and not rig.get('spawn_triggered', False):
-                        rig['spawn_triggered'] = True
-                        if rig.get('spawn_molecule', False):
-                            # Brief pause before spawn
-                            rig['spawn_delay'] = 0.5  # half second pause
-                            # Flash background to highlight the moment
-                            try:
-                                orig_bg = self.view.scene.bg_color.copy()
-                                self.view.scene.bg_color[:] = [0.1, 0.1, 0.15]  # darker for contrast
-                                rig['orig_bg'] = orig_bg
-                            except Exception:
-                                pass
-                    
-                    # Handle spawn delay and actual spawning
-                    if rig.get('spawn_triggered', False):
-                        delay = rig.get('spawn_delay', 0.0) - dt
-                        rig['spawn_delay'] = max(0.0, delay)
-                        if delay <= 0.0 and not rig.get('spawned', False):
-                            rig['spawned'] = True
-                            self._spawn_zoom_molecule(rig)
-                            # Restore background gradually
-                            if 'orig_bg' in rig:
-                                rig['bg_restore_t'] = 0.0
-                    
-                    # Gradual background restore
-                    if 'bg_restore_t' in rig:
-                        restore_t = rig.get('bg_restore_t', 0.0) + dt
-                        rig['bg_restore_t'] = restore_t
-                        if restore_t < 1.0:
-                            # Lerp back to original
-                            orig = rig.get('orig_bg', [0.0, 0.0, 0.0])
-                            current = [0.1, 0.1, 0.15]
-                            for i in range(3):
-                                self.view.scene.bg_color[i] = current[i] * (1.0 - restore_t) + orig[i] * restore_t
-                        else:
-                            # Fully restored
-                            if 'orig_bg' in rig:
-                                self.view.scene.bg_color[:] = rig['orig_bg']
-                                del rig['orig_bg']
-                                del rig['bg_restore_t']
-                    
-                    if k >= 1.0 and rig.get('spawned', False):
-                        # mark for removal only after everything is complete
-                        rig['done'] = True
+                elif rig.get('type') == 'scale_sphere':
+                    self._update_scale_sphere_rig(rig, dt)
+
             except Exception as e:
                 log.debug(f"rig update failed: {e}")
         # remove finished rigs
@@ -3336,61 +3128,317 @@ class AnalyticViewportPanel(QWidget):
                                 edges.append((i,j))
         return edges
 
-    # --- Zoom helpers ---
-    def _start_zoom_journey(self):
+    # --- Pixel-to-Quantum scale helpers -----------------------------------
+    def _ensure_scale_sphere_rig(self):
         try:
-            d0 = float(self._zoom_d0.value()); d1 = float(self._zoom_d1.value()); dur = float(self._zoom_dur.value())
-            spawn = bool(self._zoom_spawn.isChecked())
-            choice = self._zoom_mol_select.currentText()
-            rig = {
-                'type': 'zoom', 'd0': d0, 'd1': d1, 'dur': dur, 't': 0.0,
-                'spawn_molecule': spawn,
-                'choice': choice,
-                'mol_path': self._zoom_mol_path
-            }
-            # replace existing zoom rigs
-            self._rigs = [r for r in self._rigs if r.get('type') != 'zoom'] + [rig]
-        except Exception as e:
-            log.debug(f"start zoom failed: {e}")
+            rig = getattr(self, '_scale_rig_ref', None)
+            if rig is not None:
+                rig['disabled'] = False
+                if rig not in self._rigs:
+                    self._rigs.append(rig)
+                return rig
+            rig = self._build_scale_sphere_rig()
+            if rig is None:
+                return None
+            self._scale_rig_ref = rig
+            if rig not in self._rigs:
+                self._rigs.append(rig)
+            self._update_scale_sphere_rig(rig, 0.0)
+            return rig
+        except Exception as exc:
+            log.debug(f"ensure scale sphere failed: {exc}")
+            return None
 
-    def _spawn_zoom_molecule(self, rig):
+    def _build_scale_sphere_rig(self):
         try:
-            choice = (rig.get('choice') or 'None').lower()
-            path = None
-            if choice.startswith('water'):
-                path = os.path.join(os.getcwd(), 'examples', 'molecules', 'water.xyz')
-            elif choice.startswith('methane'):
-                path = os.path.join(os.getcwd(), 'examples', 'molecules', 'methane.xyz')
-            elif 'choose' in choice and rig.get('mol_path'):
-                path = rig.get('mol_path')
-            if not path or not os.path.exists(path):
-                return
-            atoms = self._parse_xyz(path)
-            if not atoms:
-                return
-            
-            # Enhanced spawn with dramatic entrance
-            mol_rig = self._build_molecule_rig(atoms,
-                atom_scale=float(self._mol_atom_scale.value()) * 0.1,  # start tiny
-                bond_r=float(self._mol_bond_r.value()) * 0.1,
-                bond_thresh=float(self._mol_bond_thresh.value()),
-                autospin=True,
-                speed=60.0)  # faster spin initially
-            
-            if mol_rig:
-                # Add growth animation to the molecule
-                mol_rig['growth'] = {
-                    'start_time': 0.0,
-                    'duration': 2.0,
-                    'target_atom_scale': float(self._mol_atom_scale.value()),
-                    'target_bond_r': float(self._mol_bond_r.value()),
-                    'target_speed': 30.0
+            view = self.view
+            center = np.array(getattr(view, 'cam_target', [0.0, 0.0, 0.0]), dtype=np.float32)
+            pixels_widget = getattr(self, '_scale_pixels', None)
+            duration_widget = getattr(self, '_scale_duration', None)
+            fov_widget = getattr(self, '_scale_fov', None)
+            pixels = float(pixels_widget.value()) if pixels_widget is not None else 2.5
+            fov_deg = float(fov_widget.value()) if fov_widget is not None else 60.0
+            eps_now, depth_now, width_px = _compute_world_tolerance(view, center, pixels, fov_deg)
+            base_radius = max(1e-5, 0.5 * (2.0 * depth_now * math.tan(math.radians(fov_deg) * 0.5) / max(1.0, width_px)))
+            base_color = (0.72, 0.78, 0.92)
+            scene = view.scene
+
+            def _unit(vec):
+                v = np.array(vec, dtype=np.float32)
+                n = float(np.linalg.norm(v))
+                return v if n < 1e-6 else v / n
+
+            axes = [_unit(v) for v in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))]
+            diag = [_unit(v) for v in ((1, 1, 0), (-1, 1, 0), (1, -1, 0), (-1, -1, 0), (1, 0, 1), (-1, 0, 1), (1, 0, -1), (-1, 0, -1))]
+            corners = [_unit(v) for v in ((1, 1, 1), (-1, 1, 1), (1, -1, 1), (-1, -1, 1), (1, 1, -1), (-1, 1, -1), (1, -1, -1), (-1, -1, -1))]
+
+            def scaled(k: float) -> float:
+                return max(base_radius * k, 1e-6)
+
+            micro_r = scaled(0.35)
+            meso_r = scaled(0.22)
+            molecular_r = scaled(0.12)
+            atomic_outer_r = scaled(0.07)
+            atomic_bohr_r = scaled(0.045)
+            nuclear_r = scaled(0.02)
+            subnuclear_r = scaled(0.012)
+            halo_r = scaled(1.4)
+
+            feature_specs = []
+            for direction in axes:
+                offset = direction * (base_radius + micro_r * 0.6)
+                feature_specs.append({
+                    'level': 'micro',
+                    'offset': offset,
+                    'max_radius': micro_r,
+                    'min_radius': max(1e-6, micro_r * 0.04),
+                    'color': (0.63, 0.66, 0.70),
+                })
+            for direction in diag:
+                offset = direction * (base_radius + meso_r * 0.3)
+                feature_specs.append({
+                    'level': 'meso',
+                    'offset': offset,
+                    'max_radius': meso_r,
+                    'min_radius': max(1e-6, meso_r * 0.04),
+                    'color': (0.78, 0.68, 0.52),
+                })
+            for direction in corners[::2]:
+                offset = direction * (base_radius * 0.55)
+                feature_specs.append({
+                    'level': 'molecular',
+                    'offset': offset,
+                    'max_radius': molecular_r,
+                    'min_radius': max(1e-6, molecular_r * 0.05),
+                    'color': (0.28, 0.82, 0.72),
+                })
+            for direction in axes:
+                offset = direction * (base_radius * 0.32)
+                feature_specs.append({
+                    'level': 'atomic_outer',
+                    'offset': offset,
+                    'max_radius': atomic_outer_r,
+                    'min_radius': max(1e-6, atomic_outer_r * 0.05),
+                    'color': (0.48, 0.42, 0.88),
+                })
+            for direction in axes:
+                offset = direction * (base_radius * 0.18)
+                feature_specs.append({
+                    'level': 'atomic_bohr',
+                    'offset': offset,
+                    'max_radius': atomic_bohr_r,
+                    'min_radius': max(1e-6, atomic_bohr_r * 0.05),
+                    'color': (0.66, 0.48, 0.92),
+                })
+            feature_specs.append({
+                'level': 'nuclear',
+                'offset': np.zeros(3, dtype=np.float32),
+                'max_radius': nuclear_r,
+                'min_radius': max(1e-6, nuclear_r * 0.1),
+                'color': (0.92, 0.32, 0.30),
+            })
+            for direction in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                offset = _unit(direction) * (base_radius * 0.08)
+                feature_specs.append({
+                    'level': 'subnuclear',
+                    'offset': offset,
+                    'max_radius': subnuclear_r,
+                    'min_radius': max(1e-6, subnuclear_r * 0.1),
+                    'color': (0.95, 0.55, 0.88),
+                })
+            feature_specs.append({
+                'level': 'deep_quantum',
+                'offset': np.zeros(3, dtype=np.float32),
+                'max_radius': halo_r,
+                'min_radius': max(1e-5, halo_r * 0.1),
+                'color': (0.20, 0.36, 0.82),
+                'color_a': (0.20, 0.36, 0.82),
+                'color_b': (0.55, 0.72, 0.96),
+            })
+
+            total_needed = 1 + len(feature_specs)
+            if len(scene.prims) + total_needed > MAX_PRIMS:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "Scale Journey",
+                    f"Not enough primitive budget for scale sphere (need {total_needed}, have {MAX_PRIMS - len(scene.prims)})",
+                )
+                return None
+
+            base = Prim(KIND_SPHERE, [base_radius, 0.0, 0.0, 0.0], color=base_color)
+            base.set_transform(pos=center, euler=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0))
+            scene.add(base)
+            base_idx = len(scene.prims) - 1
+            features = []
+            for spec in feature_specs:
+                pr = Prim(KIND_SPHERE, [spec['min_radius'], 0.0, 0.0, 0.0], color=spec['color'])
+                pr.set_transform(pos=center + spec['offset'], euler=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0))
+                scene.add(pr)
+                feat = {
+                    'level': spec['level'],
+                    'pidx': len(scene.prims) - 1,
+                    'mode': 'radius',
+                    'min': spec['min_radius'],
+                    'max': spec['max_radius'],
                 }
-                self._rigs.append(mol_rig)
-                log.info(f"Spawned molecule from zoom: {choice}")
-                
-        except Exception as e:
-            log.debug(f"spawn molecule failed: {e}")
+                if 'color_a' in spec and 'color_b' in spec:
+                    feat['color_a'] = spec['color_a']
+                    feat['color_b'] = spec['color_b']
+                features.append(feat)
+
+            rig = {
+                'type': 'scale_sphere',
+                'center': center,
+                'base_idx': base_idx,
+                'base_radius': base_radius,
+                'base_min': max(base_radius * 0.1, 1e-5),
+                'features': features,
+                'pixels_widget': pixels_widget,
+                'duration_widget': duration_widget,
+                'fov_widget': fov_widget,
+                'status_widget': getattr(self, '_scale_status', None),
+                'pixels': pixels,
+                'fov_deg': fov_deg,
+                'duration': float(duration_widget.value()) if duration_widget is not None else 12.0,
+                't': 0.0,
+                'd0': depth_now,
+                'd1': max(0.02, depth_now * 0.1),
+                'running': False,
+                'disabled': False,
+            }
+            try:
+                scene._notify()
+            except Exception:
+                pass
+            status = rig.get('status_widget')
+            if status is not None:
+                status.setText(f"Ready - eps~{_format_length(eps_now)}")
+            return rig
+        except Exception as exc:
+            log.debug(f"scale sphere rig build failed: {exc}")
+            return None
+
+    def _start_scale_sphere_journey(self):
+        try:
+            rig = self._ensure_scale_sphere_rig()
+            if rig is None:
+                return
+            rig['disabled'] = False
+            if rig.get('pixels_widget') is not None:
+                rig['pixels'] = float(rig['pixels_widget'].value())
+            if rig.get('fov_widget') is not None:
+                rig['fov_deg'] = float(rig['fov_widget'].value())
+            if rig.get('duration_widget') is not None:
+                rig['duration'] = float(rig['duration_widget'].value())
+            rig['t'] = 0.0
+            rig['running'] = True
+            pixels = rig.get('pixels', 2.5)
+            fov_deg = rig.get('fov_deg', 60.0)
+            _, _, width_px = _compute_world_tolerance(self.view, rig['center'], pixels, fov_deg)
+            start_eps = _SCALE_LEVELS[0][1] * 15.0
+            end_eps = _SCALE_LEVELS[-1][1] * 0.5
+            rig['d0'] = max(_distance_for_epsilon(start_eps, width_px, pixels, fov_deg), rig['base_radius'] * 40.0)
+            rig['d1'] = max(0.02, min(_distance_for_epsilon(end_eps, width_px, pixels, fov_deg), rig['base_radius'] * 0.2))
+            if rig['d0'] <= rig['d1']:
+                rig['d0'] = max(rig['d1'] * 3.0, rig['base_radius'] * 10.0)
+            self.view.distance = float(rig['d0'])
+            self.view._update_camera()
+            status = rig.get('status_widget')
+            if status is not None:
+                status.setText("Journey in progress...")
+            self._update_scale_sphere_rig(rig, 0.0)
+        except Exception as exc:
+            log.debug(f"start scale sphere journey failed: {exc}")
+
+    def _stop_scale_sphere(self):
+        try:
+            rig = getattr(self, '_scale_rig_ref', None)
+            if not rig:
+                if getattr(self, '_scale_status', None) is not None:
+                    self._scale_status.setText("Scale sphere idle.")
+                return
+            rig['running'] = False
+            rig['disabled'] = True
+            rig['t'] = 0.0
+            for feat in rig.get('features', []):
+                pidx = feat.get('pidx', -1)
+                if 0 <= pidx < len(self.view.scene.prims) and feat.get('mode') == 'radius':
+                    self.view.scene.prims[pidx].params[0] = float(feat['min'])
+            base_idx = rig.get('base_idx', -1)
+            if 0 <= base_idx < len(self.view.scene.prims):
+                self.view.scene.prims[base_idx].params[0] = float(rig.get('base_radius', self.view.scene.prims[base_idx].params[0]))
+            try:
+                self.view.scene._notify()
+            except Exception:
+                pass
+            status = rig.get('status_widget')
+            if status is not None:
+                status.setText("Scale sphere paused.")
+            self.view.update()
+        except Exception as exc:
+            log.debug(f"stop scale sphere failed: {exc}")
+
+    def _update_scale_sphere_rig(self, rig, dt):
+        try:
+            if rig.get('disabled'):
+                return
+            if rig.get('pixels_widget') is not None:
+                rig['pixels'] = float(rig['pixels_widget'].value())
+            if rig.get('fov_widget') is not None:
+                rig['fov_deg'] = float(rig['fov_widget'].value())
+            if not rig.get('running') and rig.get('duration_widget') is not None:
+                rig['duration'] = float(rig['duration_widget'].value())
+            if rig.get('running'):
+                rig['t'] += dt
+                dur = max(1e-3, float(rig.get('duration', 12.0)))
+                if rig['t'] > dur:
+                    rig['t'] = dur
+                eased = _smoothstep(0.0, 1.0, rig['t'] / dur)
+                d = rig.get('d0', self.view.distance) * (1.0 - eased) + rig.get('d1', rig.get('d0', self.view.distance) * 0.5) * eased
+                self.view.distance = float(max(0.02, d))
+                self.view._update_camera()
+                if rig['t'] >= dur:
+                    rig['running'] = False
+            pixels = rig.get('pixels', 2.5)
+            fov_deg = rig.get('fov_deg', 60.0)
+            eps, _, _ = _compute_world_tolerance(self.view, rig['center'], pixels, fov_deg)
+            rig['last_eps'] = eps
+            weights = {name: _level_activation(name, eps) for name, _ in _SCALE_LEVELS}
+            refreshed = False
+            for feat in rig.get('features', []):
+                pidx = feat.get('pidx', -1)
+                if not (0 <= pidx < len(self.view.scene.prims)):
+                    continue
+                pr = self.view.scene.prims[pidx]
+                w = weights.get(feat['level'], 0.0)
+                w = max(0.0, min(1.0, w))
+                if feat.get('mode') == 'radius':
+                    target = feat['min'] + (feat['max'] - feat['min']) * w
+                    target = max(feat['min'], target)
+                    if abs(float(pr.params[0]) - float(target)) > 1e-7:
+                        pr.params[0] = float(target)
+                        refreshed = True
+                if 'color_a' in feat and 'color_b' in feat:
+                    col = tuple(feat['color_a'][i] * (1.0 - w) + feat['color_b'][i] * w for i in range(3))
+                    pr.color[:] = col
+                    refreshed = True
+            if refreshed:
+                try:
+                    self.view.scene._notify()
+                except Exception:
+                    pass
+            status = rig.get('status_widget')
+            if status is not None:
+                level, nxt, blend = _lod_state(eps)
+                eps_text = _format_length(eps)
+                if nxt:
+                    status.setText(f"{level.replace('_', ' ').title()} -> {nxt.replace('_', ' ').title()} ({blend * 100.0:.0f}%) | eps~{eps_text}")
+                else:
+                    status.setText(f"{level.replace('_', ' ').title()} | eps~{eps_text}")
+            self.view.update()
+        except Exception as exc:
+            log.debug(f"scale sphere update failed: {exc}")
 
     # --- Molecule import ---
     def _import_xyz_molecule(self):
@@ -3451,7 +3499,7 @@ class AnalyticViewportPanel(QWidget):
 
     def _element_color_radius(self, sym: str):
         s = sym.capitalize()
-        # Simple JMol-like colors and covalent radii (Å) for common elements; defaults otherwise
+        # Simple JMol-like colors and covalent radii (Ãƒâ€¦) for common elements; defaults otherwise
         colors = {
             'H': (1.0, 1.0, 1.0), 'C': (0.3, 0.3, 0.3), 'N': (0.1, 0.1, 0.9), 'O': (0.9, 0.1, 0.1),
             'S': (0.9, 0.9, 0.2), 'P': (1.0, 0.5, 0.0), 'F': (0.1, 0.9, 0.1), 'Cl': (0.1, 0.8, 0.1)
@@ -3466,7 +3514,7 @@ class AnalyticViewportPanel(QWidget):
             pts = np.array([a['pos'] for a in atoms], dtype=np.float32)
             ctr = pts.mean(axis=0)
             pts -= ctr
-            # Bond detection by covalent radii sum + threshold (Å)
+            # Bond detection by covalent radii sum + threshold (Ãƒâ€¦)
             bonds = []
             N = len(atoms)
             for i in range(N):
@@ -3629,11 +3677,15 @@ class AnalyticViewportPanel(QWidget):
         if wheel is None:
             return
         wheel.setVisible(bool(self._wheel_enabled))
+        if self._wheel_enabled:
+            wheel.show()
+            wheel.raise_()
         wheel.set_fit_to_viewport_edge(bool(self._wheel_edge_fit))
         wheel.set_edge_overshoot(int(self._wheel_edge_overshoot))
         wheel.set_thickness_ratio(float(self._wheel_thickness))
         wheel.set_opacity(float(self._wheel_opacity))
         wheel.set_text_scale(float(self._wheel_text_scale))
+        wheel.set_min_alpha(0.20 if self._wheel_enabled else 0.0)
         spin_speed = float(self._wheel_auto_spin_speed) if self._wheel_auto_spin else 0.0
         wheel.set_idle_rotation(spin_speed)
         if persist:
@@ -3763,8 +3815,1067 @@ class AnalyticViewportPanel(QWidget):
             except Exception:
                 pass
 
+    def _register_section(self, key: str, label: str, widget: QWidget, default_visible: bool = True) -> None:
+        if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
+            self._section_vis = {}
+        state = bool(self._section_vis.get(key, default_visible))
+        self._section_vis[key] = state
+        if not hasattr(self, '_section_groups') or not isinstance(self._section_groups, dict):
+            self._section_groups = {}
+        self._section_groups[key] = widget
+        widget.setVisible(state)
+        layout = getattr(self, '_section_toggle_layout', None)
+        if layout is None:
+            return
+        toggles = getattr(self, '_section_toggles', {})
+        if key in toggles:
+            btn = toggles[key]
+            btn.blockSignals(True)
+            btn.setChecked(state)
+            btn.blockSignals(False)
+            return
+        btn = QToolButton()
+        btn.setText(label)
+        btn.setCheckable(True)
+        btn.setAutoRaise(True)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        btn.setChecked(state)
+        btn.toggled.connect(partial(self._on_section_toggle, key))
+        idx = getattr(self, '_section_toggle_count', 0)
+        cols = getattr(self, '_section_toggle_columns', 3) or 1
+        row = idx // cols
+        col = idx % cols
+        layout.addWidget(btn, row, col)
+        self._section_toggle_count = idx + 1
+        toggles[key] = btn
+        self._section_toggles = toggles
+
+    def _on_section_toggle(self, key: str, checked: bool) -> None:
+        if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
+            self._section_vis = {}
+        self._section_vis[key] = bool(checked)
+        widget = None
+        if hasattr(self, '_section_groups') and isinstance(self._section_groups, dict):
+            widget = self._section_groups.get(key)
+        if widget is not None:
+            widget.setVisible(bool(checked))
+        try:
+            if hasattr(self, 'view') and hasattr(self.view, '_save_settings'):
+                self.view._save_settings()
+        except Exception:
+            pass
+
+    def _populate_side_panel_controls(self, side):
+        # --- AI Copilot ---
+        self._ai_group = QGroupBox("AI Copilot")
+        ai_layout = QVBoxLayout()
+        self._ai_group.setLayout(ai_layout)
+        self._ai_transcript = QTextEdit()
+        self._ai_transcript.setReadOnly(True)
+        self._ai_transcript.setPlaceholderText("AI copilot responses will appear here.")
+        self._ai_transcript.setMinimumHeight(140)
+        ai_layout.addWidget(self._ai_transcript)
+        ai_row = QHBoxLayout()
+        self._ai_model_label = QLabel(self._ai_model)
+        self._ai_model_label.setToolTip("Model used for AI requests")
+        ai_row.addWidget(self._ai_model_label)
+        ai_row.addStretch(1)
+        self._ai_send_btn = QPushButton("Send")
+        self._ai_send_btn.setEnabled(False)
+        ai_row.addWidget(self._ai_send_btn)
+        ai_layout.addLayout(ai_row)
+        self._ai_input = QLineEdit()
+        self._ai_input.setPlaceholderText("Describe what you want (e.g., 'create a 100 mm circle')")
+        self._ai_input.setEnabled(False)
+        ai_layout.addWidget(self._ai_input)
+        side.addWidget(self._ai_group)
+        self._register_section("ai_copilot", "AI Copilot", self._ai_group, default_visible=True)
+
+        # --- AI Custom Tools ---
+        self._ai_tools_group = QGroupBox("AI Custom Tools")
+        ai_tools_layout = QVBoxLayout()
+        self._ai_tools_group.setLayout(ai_tools_layout)
+        self._ai_tools_list = QListWidget()
+        self._ai_tools_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        ai_tools_layout.addWidget(self._ai_tools_list)
+        tools_btn_row = QHBoxLayout()
+        self._ai_tools_pin_chk = QCheckBox("Pin to Wheel")
+        self._ai_tools_pin_chk.setEnabled(False)
+        tools_btn_row.addWidget(self._ai_tools_pin_chk)
+        tools_btn_row.addStretch(1)
+        self._ai_tools_run_btn = QPushButton("Run")
+        self._ai_tools_run_btn.setEnabled(False)
+        self._ai_tools_delete_btn = QPushButton("Delete")
+        self._ai_tools_delete_btn.setEnabled(False)
+        tools_btn_row.addWidget(self._ai_tools_run_btn)
+        tools_btn_row.addWidget(self._ai_tools_delete_btn)
+        ai_tools_layout.addLayout(tools_btn_row)
+        self._ai_tools_group.setEnabled(False)
+        side.addWidget(self._ai_tools_group)
+        self._register_section("ai_tools", "AI Tools", self._ai_tools_group, default_visible=False)
+
+        # --- Gizmo / Transform Controls ---
+        gb_gizmo = QGroupBox("Gizmo / Transform"); fg = QFormLayout(); gb_gizmo.setLayout(fg)
+        # Mode buttons
+        row_modes = QWidget(); hm = QHBoxLayout(row_modes); hm.setContentsMargins(0,0,0,0)
+        btn_move = QPushButton("Move"); btn_rot = QPushButton("Rotate [R]"); btn_scl = QPushButton("Scale [S]")
+        for b in (btn_move, btn_rot, btn_scl): b.setCheckable(True)
+        btn_move.setChecked(True)
+        def _set_mode(m):
+            def f():
+                btn_move.setChecked(m=='move'); btn_rot.setChecked(m=='rotate'); btn_scl.setChecked(m=='scale')
+                self._gizmo_mode = m
+                self._move_drag_free = (m == 'move')
+            return f
+        btn_move.clicked.connect(_set_mode('move'))
+        btn_rot.clicked.connect(_set_mode('rotate'))
+        btn_scl.clicked.connect(_set_mode('scale'))
+        hm.addWidget(btn_move); hm.addWidget(btn_rot); hm.addWidget(btn_scl)
+        fg.addRow("Mode", row_modes)
+        # Axis lock buttons
+        row_axes = QWidget(); ha = QHBoxLayout(row_axes); ha.setContentsMargins(0,0,0,0)
+        ax_x = QPushButton("X"); ax_y = QPushButton("Y"); ax_z = QPushButton("Z"); ax_clr = QPushButton("Free")
+        for b in (ax_x, ax_y, ax_z, ax_clr): b.setCheckable(True)
+        ax_clr.setChecked(True)
+        def _lock_axis(a):
+            def f():
+                for b,a2 in ((ax_x,'x'),(ax_y,'y'),(ax_z,'z')):
+                    b.setChecked(a==a2)
+                ax_clr.setChecked(a is None)
+                self._axis_lock = a
+            return f
+        ax_x.clicked.connect(_lock_axis('x'))
+        ax_y.clicked.connect(_lock_axis('y'))
+        ax_z.clicked.connect(_lock_axis('z'))
+        ax_clr.clicked.connect(_lock_axis(None))
+        for b in (ax_x, ax_y, ax_z, ax_clr): ha.addWidget(b)
+        fg.addRow("Axis", row_axes)
+        # Space toggle
+        cb_space = QCheckBox("Local Space"); cb_space.setChecked(True)
+        def _space_toggle(_v): self._space_local = cb_space.isChecked()
+        cb_space.stateChanged.connect(_space_toggle)
+        fg.addRow("Space", cb_space)
+        # Snap controls
+        spin_ang = QDoubleSpinBox(); spin_ang.setRange(0.5,45.0); spin_ang.setSingleStep(0.5); spin_ang.setValue(self._snap_angle_deg); spin_ang.setSuffix(" Ã‚Â°")
+        spin_scl = QDoubleSpinBox(); spin_scl.setRange(0.01,10.0); spin_scl.setDecimals(3); spin_scl.setSingleStep(0.05); spin_scl.setValue(self._snap_scale_step)
+        def _upd_ang(_v): self._snap_angle_deg = float(spin_ang.value())
+        def _upd_scl(_v): self._snap_scale_step = float(spin_scl.value())
+        spin_ang.valueChanged.connect(_upd_ang)
+        spin_scl.valueChanged.connect(_upd_scl)
+        fg.addRow("Angle Snap", spin_ang)
+        fg.addRow("Scale Snap", spin_scl)
+        side.addWidget(gb_gizmo)
+        self._register_section("gizmo", "Gizmo", gb_gizmo)
+        
+        # --- Sketch (2D) overlay ---
+        gb_sk = QGroupBox("Sketch (2D)"); fs = QFormLayout(); gb_sk.setLayout(fs)
+        cb_sketch = QCheckBox("Enable Sketch Overlay"); cb_sketch.setChecked(False)
+        def _toggle_sk(_):
+            self._sketch_on = cb_sketch.isChecked()
+            if not self._sketch_on:  # disable & clean up
+                self._sketch_mode = None
+                self._sketch.active_poly = None
+            else:
+                if getattr(self, '_sketch_lock_top', False):
+                    try:
+                        self.view.yaw = 0.0; self.view.pitch = 0.0
+                        self.view._update_camera()
+                    except Exception:
+                        self.view.update()
+                else:
+                    self.view.update()
+        cb_sketch.stateChanged.connect(_toggle_sk)
+        # store for programmatic toggling
+        self._cb_sketch = cb_sketch
+        fs.addRow(cb_sketch)
+        # Lock top view while sketching
+        row_lock = QWidget(); hlk = QHBoxLayout(row_lock); hlk.setContentsMargins(0,0,0,0)
+        cb_lock_top = QCheckBox("Lock Top View (XY)"); cb_lock_top.setChecked(True)
+        def _apply_lock_top(_):
+            self._sketch_lock_top = cb_lock_top.isChecked()
+            if self._sketch_on and self._sketch_lock_top:
+                # force yaw/pitch to top view and refresh
+                try:
+                    self.view.yaw = 0.0; self.view.pitch = 0.0
+                    self.view._update_camera()
+                except Exception:
+                    pass
+            else:
+                self.view.update()
+        cb_lock_top.stateChanged.connect(_apply_lock_top)
+        hlk.addWidget(cb_lock_top)
+        fs.addRow("View Lock", row_lock)
+        # Grid & Snap
+        self._sketch_grid_on = False
+        self._sketch_snap_grid = False
+        self._sketch_grid_step = 10.0
+        # If True: interpret grid_step as pixel spacing (screen-locked); if False: world units
+        self._sketch_grid_screen_lock = True
+        row_grid = QWidget(); hg = QHBoxLayout(row_grid); hg.setContentsMargins(0,0,0,0)
+        cb_grid = QCheckBox("Show Grid"); cb_grid.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_on', cb_grid.isChecked()) or self.view.update())
+        cb_snapg= QCheckBox("Snap Grid"); cb_snapg.stateChanged.connect(lambda _v: setattr(self, '_sketch_snap_grid', cb_snapg.isChecked()))
+        # Toggle: screen-lock (pixels) vs world units
+        cb_lock = QCheckBox("Screen-locked spacing"); cb_lock.setChecked(self._sketch_grid_screen_lock)
+        cb_lock.stateChanged.connect(lambda _v: setattr(self, '_sketch_grid_screen_lock', cb_lock.isChecked()) or self.view.update())
+        sp_grid = QDoubleSpinBox(); sp_grid.setRange(0.1, 1000.0); sp_grid.setDecimals(2); sp_grid.setSingleStep(0.5); sp_grid.setValue(self._sketch_grid_step)
+        sp_grid.valueChanged.connect(lambda v: setattr(self, '_sketch_grid_step', float(v)))
+        hg.addWidget(cb_grid); hg.addWidget(cb_snapg); hg.addWidget(cb_lock); hg.addWidget(QLabel("Step")); hg.addWidget(sp_grid)
+        fs.addRow("Grid/Snap", row_grid)
+        # Kernel Sync (optional)
+        row_sync = QWidget(); hsync = QHBoxLayout(row_sync); hsync.setContentsMargins(0,0,0,0)
+        self._sketch_circle_to_ring = False
+        cb_circle_sync = QCheckBox("Circle â†’ Ring (kernel)")
+        cb_circle_sync.setToolTip("When enabled, finalizing a sketch circle adds a thin torus at the same center/radius in the AACore scene.")
+        cb_circle_sync.stateChanged.connect(lambda _v: setattr(self, '_sketch_circle_to_ring', cb_circle_sync.isChecked()))
+        hsync.addWidget(cb_circle_sync)
+        fs.addRow("Sync", row_sync)
+        row_tools = QWidget(); ht = QHBoxLayout(row_tools); ht.setContentsMargins(0,0,0,0)
+        btn_poly = QPushButton("Polyline"); btn_poly.setCheckable(True)
+        btn_line = QPushButton("Line"); btn_line.setCheckable(True)
+        btn_arc3 = QPushButton("Arc (3-pt)"); btn_arc3.setCheckable(True)
+        btn_circle = QPushButton("Circle"); btn_circle.setCheckable(True)
+        btn_rect = QPushButton("Rectangle"); btn_rect.setCheckable(True)
+        btn_insv = QPushButton("Insert Vertex"); btn_insv.setCheckable(True)
+        self._btn_sketch_poly = btn_poly
+        self._btn_sketch_line = btn_line
+        self._btn_sketch_arc3 = btn_arc3
+        self._btn_sketch_circle = btn_circle
+        self._btn_sketch_rect = btn_rect
+        self._btn_sketch_insert = btn_insv
+        def _choose_poly():
+            on = btn_poly.isChecked()
+            if on:
+                for b2 in (btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'polyline'
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='polyline':
+                    self._sketch_mode = None
+            self.view.update()
+        btn_poly.clicked.connect(_choose_poly)
+        def _choose_line():
+            on = btn_line.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'line'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='line': self._sketch_mode = None
+            self.view.update()
+        btn_line.clicked.connect(_choose_line)
+        def _choose_arc3():
+            on = btn_arc3.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'arc3'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='arc3': self._sketch_mode = None
+            self.view.update()
+        btn_arc3.clicked.connect(_choose_arc3)
+        def _choose_circle():
+            on = btn_circle.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'circle'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='circle': self._sketch_mode = None
+            self.view.update()
+        btn_circle.clicked.connect(_choose_circle)
+        def _choose_rect():
+            on = btn_rect.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle): b2.setChecked(False)
+                self._sketch_mode = 'rect'
+                self._sketch.active_poly = None
+                self._sketch.active_shape = None
+                if getattr(self, '_sketch_lock_top', False):
+                    try: self.view.yaw=0.0; self.view.pitch=0.0; self.view._update_camera()
+                    except Exception: pass
+            else:
+                if self._sketch_mode=='rect': self._sketch_mode = None
+            self.view.update()
+        btn_rect.clicked.connect(_choose_rect)
+        # Insert Vertex / Midpoint option
+        self._insert_midpoint = False
+        cb_ins_mid = QCheckBox("Midpoint")
+        cb_ins_mid.stateChanged.connect(lambda _v: setattr(self, '_insert_midpoint', cb_ins_mid.isChecked()))
+        self._chk_sketch_midpoint = cb_ins_mid
+        def _choose_insv():
+            on = btn_insv.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'insert_vertex'
+                self._sketch._dim_pick = None
+            else:
+                if self._sketch_mode=='insert_vertex': self._sketch_mode = None
+            self.view.update()
+        btn_insv.clicked.connect(_choose_insv)
+        # Dimension tool
+        btn_dim = QPushButton("Dimension"); btn_dim.setCheckable(True)
+        self._btn_sketch_dim = btn_dim
+        def _choose_dim():
+            on = btn_dim.isChecked()
+            if on:
+                for b2 in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect): b2.setChecked(False)
+                self._sketch_mode = 'dimension'
+                self._sketch._dim_pick = None
+            else:
+                if self._sketch_mode=='dimension':
+                    self._sketch_mode = None
+                    # reset any in-progress placing state
+                    try:
+                        self._sketch._dim_placing = False; self._sketch._dim_place_data = None; self._sketch._dim_preview = None
+                    except Exception:
+                        pass
+            self.view.update()
+        btn_dim.clicked.connect(_choose_dim)
+        for b in (btn_poly, btn_line, btn_arc3, btn_circle, btn_rect, btn_insv, btn_dim, cb_ins_mid):
+            ht.addWidget(b)
+        fs.addRow("Tool", row_tools)
+        # Dimension settings (type + precision)
+        row_dim = QWidget(); hdim = QHBoxLayout(row_dim); hdim.setContentsMargins(0,0,0,0)
+        from PySide6.QtWidgets import QComboBox as _QCB
+        self._dim_type = 'linear'
+        cb_dim_type = _QCB(); cb_dim_type.addItems(["Linear","Horizontal","Vertical","Radius","Diameter"])
+        def _set_dim_type(idx):
+            self._dim_type = [ 'linear','horizontal','vertical','radius','diameter' ][max(0,min(4,idx))]
+        cb_dim_type.currentIndexChanged.connect(_set_dim_type)
+        self._dim_precision = 2
+        sp_dim_prec = QSpinBox(); sp_dim_prec.setRange(0,6); sp_dim_prec.setValue(self._dim_precision)
+        sp_dim_prec.valueChanged.connect(lambda v: setattr(self, '_dim_precision', int(v)))
+        hdim.addWidget(QLabel("Type")); hdim.addWidget(cb_dim_type)
+        hdim.addWidget(QLabel("Precision")); hdim.addWidget(sp_dim_prec)
+        fs.addRow("Dimensions", row_dim)
+        # Selection info label
+        self._sketch_info_label = QLabel("No selection")
+        fs.addRow("Selection", self._sketch_info_label)
+        # Save/Load Sketch JSON
+        row_io = QWidget(); hio = QHBoxLayout(row_io); hio.setContentsMargins(0,0,0,0)
+        btn_save_sk = QPushButton("Save Sketch JSON")
+        btn_load_sk = QPushButton("Load Sketch JSON")
+        btn_save_sk.clicked.connect(self._save_sketch_json)
+        btn_load_sk.clicked.connect(self._load_sketch_json)
+        # Clear button
+        btn_clear_sk = QPushButton("Clear Sketch")
+        def _clear_sk():
+            self._sketch.entities.clear(); self._sketch.active_poly=None; self._sketch.active_shape=None
+            self.view._sk_point_sel=None; self.view._sk_dragging=False
+            self._update_sketch_info(None)
+            self.view.update()
+        btn_clear_sk.clicked.connect(_clear_sk)
+        hio.addWidget(btn_save_sk); hio.addWidget(btn_load_sk)
+        hio.addWidget(btn_clear_sk)
+        fs.addRow("IO", row_io)
+        side.addWidget(gb_sk)
+        self._register_section("sketch", "Sketch", gb_sk)
+        # Backing model
+        self._sketch_doc = SketchDocument(units=Units.MM)
+        
+        # --- Actions ---
+        gb_act = QGroupBox("Actions"); va = QVBoxLayout(); gb_act.setLayout(va)
+        btn_save = QPushButton("Save G-Buffers [G]"); btn_save.setEnabled(False)
+        btn_help = QPushButton("Print Shortcuts [H]"); btn_help.clicked.connect(lambda: log.info(self.view._shortcuts_help()))
+        btn_showcase = QPushButton("Showcase Primitives")
+        btn_clear_scene = QPushButton("Clear Scene")
+        def _do_showcase():
+            try:
+                # Add a small curated set if budget allows
+                if len(self.view.scene.prims) < MAX_PRIMS - 6:
+                    self.view.scene.add(Prim(KIND_SPHERE, [0.7,0,0,0], beta=0.08, color=(0.95,0.45,0.35)))
+                    self.view.scene.add(Prim(KIND_TORUS, [1.0,0.22,0,0], beta=0.03, color=(0.6,0.85,0.5)))
+                    self.view.scene.add(Prim(KIND_MOBIUS, [1.4,0.25,0,0], beta=0.02, color=(0.7,0.55,0.95)))
+                    self.view.scene.add(Prim(KIND_SUPERELLIPSOID, [1.1,3.5,0,0], beta=0.0, color=(0.95,0.9,0.85)))
+                    self.view.scene.add(Prim(KIND_GYROID, [2.2,0.0,0.035,0], beta=0.0, color=(0.65,0.9,0.3)))
+                    self.view.scene.add(Prim(KIND_TREFOIL, [0.8,0.08,96,0], beta=0.0, color=(0.95,0.6,0.25)))
+                    # Offset for variety
+                    try:
+                        for i, pr in enumerate(self.view.scene.prims[-6:]):
+                            pr.xform.M[:3,3] += np.array([ (i%3-1)*1.6, (i//3-0.5)*1.4, 0.0 ], np.float32)
+                    except Exception:
+                        pass
+                    try: self.view.scene._notify()
+                    except Exception: pass
+                    self.view.update()
+            except Exception as e:
+                log.debug(f"showcase failed: {e}")
+        def _do_clear_scene():
+            try:
+                self.view.scene.prims.clear()
+                try: self.view.scene._notify()
+                except Exception: pass
+                try: self.view.clear_polyline_overlays()
+                except Exception: pass
+                self._refresh_prim_label(); self.view.update()
+            except Exception:
+                pass
+        btn_showcase.clicked.connect(_do_showcase)
+        btn_clear_scene.clicked.connect(_do_clear_scene)
+        # keep references so the wheel can trigger them
+        self._btn_showcase = btn_showcase
+        self._btn_clear_scene = btn_clear_scene
+        va.addWidget(btn_save); va.addWidget(btn_help); va.addWidget(btn_showcase); va.addWidget(btn_clear_scene); side.addWidget(gb_act)
+        self._register_section("actions", "Actions", gb_act)
+        
+        # --- Environment ---
+        gb_env = QGroupBox("Environment"); fe = QFormLayout(); gb_env.setLayout(fe)
+        self._bg_sliders = []
+        for i, ch in enumerate(['R','G','B']):
+            s = QSlider(Qt.Orientation.Horizontal); s.setRange(0,255); s.setValue(int(self.view.scene.bg_color[i]*255)); s.valueChanged.connect(self._on_bg_changed)
+            fe.addRow(f"BG {ch}", s); self._bg_sliders.append(s)
+        self._env_sliders = []
+        for i, ch in enumerate(['X','Y','Z']):
+            s = QSlider(Qt.Orientation.Horizontal); s.setRange(-150,150); s.setValue(int(self.view.scene.env_light[i]*100)); s.valueChanged.connect(self._on_env_changed)
+            fe.addRow(f"Light {ch}", s); self._env_sliders.append(s)
+        side.addWidget(gb_env)
+        self._register_section("environment", "Environment", gb_env)
+        
+        # --- Primitives + Editing ---
+        gb_prims = QGroupBox("Primitives"); vp = QVBoxLayout(); gb_prims.setLayout(vp)
+        self._prim_list_label = QLabel("(0)")
+        self._prim_buttons_box = QVBoxLayout()
+        btn_add_sphere = QPushButton("Add Sphere"); btn_add_sphere.clicked.connect(lambda: self._add_prim('sphere'))
+        btn_add_box = QPushButton("Add Box"); btn_add_box.clicked.connect(lambda: self._add_prim('box'))
+        btn_add_capsule = QPushButton("Add Capsule"); btn_add_capsule.clicked.connect(lambda: self._add_prim('capsule'))
+        btn_add_torus = QPushButton("Add Torus"); btn_add_torus.clicked.connect(lambda: self._add_prim('torus'))
+        btn_add_mobius = QPushButton("Add Mobius"); btn_add_mobius.clicked.connect(lambda: self._add_prim('mobius'))
+        btn_add_superell = QPushButton("Add Superellipsoid"); btn_add_superell.clicked.connect(lambda: self._add_prim('superellipsoid'))
+        btn_add_qc = QPushButton("Add QuasiCrystal"); btn_add_qc.clicked.connect(lambda: self._add_prim('quasicrystal'))
+        btn_add_torus4d = QPushButton("Add 4D Torus"); btn_add_torus4d.clicked.connect(lambda: self._add_prim('torus4d'))
+        btn_add_mandelbulb = QPushButton("Add Mandelbulb"); btn_add_mandelbulb.clicked.connect(lambda: self._add_prim('mandelbulb'))
+        btn_add_klein = QPushButton("Add Klein Bottle"); btn_add_klein.clicked.connect(lambda: self._add_prim('klein'))
+        btn_add_menger = QPushButton("Add Menger Sponge"); btn_add_menger.clicked.connect(lambda: self._add_prim('menger'))
+        btn_add_hyperbolic = QPushButton("Add Hyperbolic Tiling"); btn_add_hyperbolic.clicked.connect(lambda: self._add_prim('hyperbolic'))
+        btn_add_gyroid = QPushButton("Add Gyroid"); btn_add_gyroid.clicked.connect(lambda: self._add_prim('gyroid'))
+        btn_add_trefoil = QPushButton("Add Trefoil Knot"); btn_add_trefoil.clicked.connect(lambda: self._add_prim('trefoil'))
+        btn_del_last = QPushButton("Delete Last"); btn_del_last.clicked.connect(self._del_last)
+        btn_dup_sel = QPushButton("Duplicate Selected"); btn_dup_sel.clicked.connect(self._duplicate_selected)
+        btn_center_sel = QPushButton("Center On Selected"); btn_center_sel.clicked.connect(self._center_on_selected)
+        btn_reset_cam = QPushButton("Reset Camera"); btn_reset_cam.clicked.connect(self._reset_camera)
+        btn_export = QPushButton("Export Scene JSON"); btn_export.clicked.connect(self._export_scene_json)
+        for b in (self._prim_list_label, btn_add_sphere, btn_add_box, btn_add_capsule, btn_add_torus, btn_add_mobius, btn_add_superell, btn_add_qc, btn_add_torus4d, btn_add_mandelbulb, btn_add_klein, btn_add_menger, btn_add_hyperbolic, btn_add_gyroid, btn_add_trefoil, btn_del_last):
+            vp.addWidget(b)
+        for b in (btn_dup_sel, btn_center_sel, btn_reset_cam, btn_export):
+            vp.addWidget(b)
+        vb_holder = QWidget(); vb_holder.setLayout(self._prim_buttons_box); vp.addWidget(vb_holder)
+        # Edit group
+        self._edit_group = QGroupBox("Edit Selected"); fe2 = QFormLayout(); self._edit_group.setLayout(fe2)
+        from PySide6.QtWidgets import QComboBox as _QCB2, QColorDialog
+        def dspin(r=(-10,10), step=0.01, val=0.0):
+            sp = QDoubleSpinBox(); sp.setRange(r[0], r[1]); sp.setSingleStep(step); sp.setDecimals(4); sp.setValue(val); return sp
+        self._sp_pos = [dspin() for _ in range(3)]
+        self._sp_param = [dspin((0,10),0.01,0.5) for _ in range(2)]
+        self._sp_beta = dspin((-1,1),0.01,0.0)
+        self._btn_color = QPushButton("Colorâ€¦")
+        self._op_box = _QCB2(); self._op_box.addItems(["solid","subtract"])
+        fe2.addRow("Pos X/Y/Z", self._make_row(self._sp_pos))
+        fe2.addRow("Param A/B", self._make_row(self._sp_param))
+        fe2.addRow("Beta", self._sp_beta)
+        fe2.addRow("Color", self._btn_color)
+        fe2.addRow("Op", self._op_box)
+        # Rotation & Scale controls
+        def rspin():
+            s = QDoubleSpinBox(); s.setRange(-180.0,180.0); s.setSingleStep(1.0); s.setDecimals(2); s.setValue(0.0); return s
+        def sspin():
+            s = QDoubleSpinBox(); s.setRange(0.01,100.0); s.setSingleStep(0.05); s.setDecimals(3); s.setValue(1.0); return s
+        self._sp_rot = [rspin() for _ in range(3)]
+        self._sp_scl = [sspin() for _ in range(3)]
+        # Uniform scale control: sets X/Y/Z together
+        self._sp_scl_u = sspin()
+        # Move (translate) controls
+        def mspin():
+            s = QDoubleSpinBox(); s.setRange(-1000.0,1000.0); s.setSingleStep(0.01); s.setDecimals(4); s.setValue(0.0); return s
+        self._sp_move = [mspin() for _ in range(3)]
+        fe2.addRow("Rot Ã‚Â° X/Y/Z", self._make_row(self._sp_rot))
+        fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
+        def _set_uniform_scale(v: float):
+            try:
+                for sp in self._sp_scl:
+                    sp.blockSignals(True)
+                    sp.setValue(float(v))
+                    sp.blockSignals(False)
+                # Apply after setting all axes
+                self._apply_edit()
+            except Exception:
+                pass
+        self._sp_scl_u.valueChanged.connect(_set_uniform_scale)
+        fe2.addRow("Scale (Uniform)", self._sp_scl_u)
+        fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
+        self._nudge_step = QDoubleSpinBox(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
+        fe2.addRow("Nudge Step", self._nudge_step)
+        self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
+        for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)
+        for sp in self._sp_param: sp.valueChanged.connect(self._apply_edit)
+        self._sp_beta.valueChanged.connect(self._apply_edit); self._op_box.currentIndexChanged.connect(self._apply_edit)
+        for s in self._sp_rot + self._sp_scl + self._sp_move:
+            s.valueChanged.connect(self._apply_edit)
+        def pick_color():
+            from PySide6.QtGui import QColor
+            c = QColorDialog.getColor(QColor(200,180,160), self, "Primitive Color")
+            if c.isValid():
+                self._current_color = (c.red()/255.0, c.green()/255.0, c.blue()/255.0)
+                self._apply_edit()
+        self._btn_color.clicked.connect(pick_color)
+        self._current_sel = -1; self._current_color = (0.8,0.7,0.6)
+        side.addWidget(gb_prims)
+        self._register_section("primitives", "Primitives", gb_prims)
+        
+        # --- Tesseract (4D hypercube) ---
+        gb_tess = QGroupBox("Tesseract (4D Hypercube)"); ft = QFormLayout(); gb_tess.setLayout(ft)
+        self._tess_edge = QDoubleSpinBox(); self._tess_edge.setRange(0.1, 10.0); self._tess_edge.setDecimals(3); self._tess_edge.setSingleStep(0.1); self._tess_edge.setValue(2.0)
+        self._tess_edge_rad = QDoubleSpinBox(); self._tess_edge_rad.setRange(0.001, 1.0); self._tess_edge_rad.setDecimals(3); self._tess_edge_rad.setSingleStep(0.01); self._tess_edge_rad.setValue(0.03)
+        self._tess_node_rad = QDoubleSpinBox(); self._tess_node_rad.setRange(0.001, 1.0); self._tess_node_rad.setDecimals(3); self._tess_node_rad.setSingleStep(0.01); self._tess_node_rad.setValue(0.04)
+        self._tess_include_nodes = QCheckBox("Include Nodes (spheres)"); self._tess_include_nodes.setChecked(False)
+        # Projection
+        self._tess_proj = QComboBox(); self._tess_proj.addItems(["Orthographic","Perspective"])
+        self._tess_fw = QDoubleSpinBox(); self._tess_fw.setRange(0.5, 10.0); self._tess_fw.setDecimals(2); self._tess_fw.setSingleStep(0.1); self._tess_fw.setValue(3.0)
+        # 4D rotation angles
+        def r4spin():
+            s = QDoubleSpinBox(); s.setRange(-360.0, 360.0); s.setDecimals(2); s.setSingleStep(1.0); s.setValue(0.0); return s
+        self._tess_ang_xy = r4spin(); self._tess_ang_xz = r4spin(); self._tess_ang_xw = r4spin();
+        self._tess_ang_yz = r4spin(); self._tess_ang_yw = r4spin(); self._tess_ang_zw = r4spin();
+        self._tess_autospin = QCheckBox("Auto-Spin"); self._tess_autospin.setChecked(True)
+        self._tess_speed = QDoubleSpinBox(); self._tess_speed.setRange(0.0, 360.0); self._tess_speed.setDecimals(2); self._tess_speed.setSingleStep(5.0); self._tess_speed.setValue(30.0)
+        btn_tess = QPushButton("Add Tesseract")
+        btn_tess.clicked.connect(self._add_tesseract)
+        # Layout
+        ft.addRow("Edge Length", self._tess_edge)
+        ft.addRow("Edge Radius", self._tess_edge_rad)
+        ft.addRow("Node Radius", self._tess_node_rad)
+        ft.addRow(self._tess_include_nodes)
+        ft.addRow("Projection", self._tess_proj)
+        ft.addRow("Focal (persp fw)", self._tess_fw)
+        row_ang1 = self._make_row([QLabel("XY"), self._tess_ang_xy, QLabel("XZ"), self._tess_ang_xz, QLabel("XW"), self._tess_ang_xw])
+        row_ang2 = self._make_row([QLabel("YZ"), self._tess_ang_yz, QLabel("YW"), self._tess_ang_yw, QLabel("ZW"), self._tess_ang_zw])
+        ft.addRow("Angles 1", row_ang1)
+        ft.addRow("Angles 2", row_ang2)
+        row_spin = self._make_row([self._tess_autospin, QLabel("Speed (deg/s)"), self._tess_speed])
+        ft.addRow("Spin", row_spin)
+        ft.addRow(btn_tess)
+        side.addWidget(gb_tess)
+        self._register_section("tesseract", "Tesseract", gb_tess)
+        
+        # rigs & timer
+        self._rigs = []
+        self._rig_timer = QTimer(self); self._rig_timer.timeout.connect(self._update_rigs)
+        self._rig_timer.start(33)
+        
+        # --- Pixel-to-Quantum Sphere ---
+        gb_scale = QGroupBox("Pixel-to-Quantum Sphere"); fs = QFormLayout(); gb_scale.setLayout(fs)
+        self._scale_pixels = QDoubleSpinBox(); self._scale_pixels.setRange(0.5, 10.0); self._scale_pixels.setDecimals(2); self._scale_pixels.setSingleStep(0.25); self._scale_pixels.setValue(2.5); self._scale_pixels.setSuffix(" px")
+        self._scale_duration = QDoubleSpinBox(); self._scale_duration.setRange(2.0, 120.0); self._scale_duration.setDecimals(1); self._scale_duration.setSingleStep(0.5); self._scale_duration.setValue(12.0); self._scale_duration.setSuffix(" s")
+        self._scale_fov = QDoubleSpinBox(); self._scale_fov.setRange(20.0, 120.0); self._scale_fov.setDecimals(1); self._scale_fov.setSingleStep(1.0); self._scale_fov.setValue(60.0); self._scale_fov.setSuffix(" deg")
+        self._scale_status = QLabel("Press start to generate the scale-aware sphere."); self._scale_status.setWordWrap(True)
+        btn_start_scale = QPushButton("Start Scale Journey"); btn_start_scale.clicked.connect(self._start_scale_sphere_journey)
+        btn_clear_scale = QToolButton(); btn_clear_scale.setText("Reset"); btn_clear_scale.setToolTip("Pause the journey and tuck the sphere detail away."); btn_clear_scale.clicked.connect(self._stop_scale_sphere)
+        row_scale_btns = self._make_row([btn_start_scale, btn_clear_scale])
+        fs.addRow("Visibility (px)", self._scale_pixels)
+        fs.addRow("Duration", self._scale_duration)
+        fs.addRow("FOV", self._scale_fov)
+        fs.addRow(row_scale_btns)
+        fs.addRow(self._scale_status)
+        side.addWidget(gb_scale)
+        self._register_section("scale", "Scale Journey", gb_scale)
+
+        
+        # --- Molecules ---
+        gb_mol = QGroupBox("Molecules"); fmol = QFormLayout(); gb_mol.setLayout(fmol)
+        self._mol_atom_scale = QDoubleSpinBox(); self._mol_atom_scale.setRange(0.1, 5.0); self._mol_atom_scale.setSingleStep(0.1); self._mol_atom_scale.setValue(0.6)
+        self._mol_bond_r = QDoubleSpinBox(); self._mol_bond_r.setRange(0.005, 1.0); self._mol_bond_r.setDecimals(3); self._mol_bond_r.setSingleStep(0.005); self._mol_bond_r.setValue(0.035)
+        self._mol_bond_thresh = QDoubleSpinBox(); self._mol_bond_thresh.setRange(0.0, 1.0); self._mol_bond_thresh.setDecimals(3); self._mol_bond_thresh.setSingleStep(0.02); self._mol_bond_thresh.setValue(0.2)
+        self._mol_autospin = QCheckBox("Auto-Spin"); self._mol_autospin.setChecked(True)
+        self._mol_speed = QDoubleSpinBox(); self._mol_speed.setRange(0.0, 360.0); self._mol_speed.setDecimals(1); self._mol_speed.setSingleStep(5.0); self._mol_speed.setValue(25.0)
+        btn_imp_xyz = QPushButton("Import XYZâ€¦")
+        btn_imp_xyz.clicked.connect(self._import_xyz_molecule)
+        fmol.addRow("Atom Scale", self._mol_atom_scale)
+        fmol.addRow("Bond Radius", self._mol_bond_r)
+        fmol.addRow("Bond Thresh", self._mol_bond_thresh)
+        row_spinmol = self._make_row([self._mol_autospin, QLabel("Speed"), self._mol_speed])
+        fmol.addRow("Spin", row_spinmol)
+        fmol.addRow(btn_imp_xyz)
+        side.addWidget(gb_mol)
+        self._register_section("molecules", "Molecules", gb_mol)
+        
+        # finalize
+        side.addStretch(1)
+        # Wrap the side widget in a scroll area so overflowing controls
+        # become scrollable instead of going off-screen.
+
+
+
+    def _setup_ai(self) -> None:
+        if self._ai_model_label is not None:
+            try:
+                self._ai_model_label.setText(self._ai_model)
+            except Exception:
+                pass
+        have_ai = bool(_HAVE_AI and CADActionBus is not None and chat_with_tools is not None)
+        if not have_ai:
+            if self._ai_transcript is not None:
+                try:
+                    self._ai_transcript.append("AI copilot unavailable. Install 'openai' and set OPENAI_API_KEY.")
+                except Exception:
+                    pass
+            if self._ai_send_btn is not None:
+                self._ai_send_btn.setEnabled(False)
+            if self._ai_input is not None:
+                self._ai_input.setEnabled(False)
+                self._ai_input.setPlaceholderText("AI copilot unavailable (missing dependencies or API key).")
+            if self._ai_tools_group is not None:
+                self._ai_tools_group.setEnabled(False)
+            return
+
+        self._ai_bus = CADActionBus()
+        self._ai_history = []
+        if self._ai_transcript is not None:
+            try:
+                self._ai_transcript.clear()
+                self._ai_transcript.append("<i>AI copilot ready.</i>")
+            except Exception:
+                pass
+        if self._ai_send_btn is not None:
+            try:
+                self._ai_send_btn.clicked.disconnect()
+            except Exception:
+                pass
+            self._ai_send_btn.clicked.connect(self._ai_on_send)
+            self._ai_send_btn.setEnabled(True)
+        if self._ai_input is not None:
+            try:
+                self._ai_input.returnPressed.disconnect()
+            except Exception:
+                pass
+            self._ai_input.returnPressed.connect(self._ai_on_send)
+            self._ai_input.setEnabled(True)
+
+        self._ai_bus.on("select_tool", self._ai_select_tool)
+        self._ai_bus.on("create_circle", self._ai_create_circle)
+        self._ai_bus.on("create_pi_circle", self._ai_create_pi_circle)
+        self._ai_bus.on("upgrade_profile_to_pi_a", self._ai_upgrade_profile_to_pi_a)
+        self._ai_bus.on("create_line", self._ai_create_line)
+        self._ai_bus.on("extrude", self._ai_extrude)
+
+        self._tool_registry = None
+        if ToolRegistry is not None:
+            try:
+                self._tool_registry = ToolRegistry(self._ai_bus)
+            except Exception as exc:
+                try:
+                    log.debug(f"ToolRegistry init failed: {exc}")
+                except Exception:
+                    pass
+                self._tool_registry = None
+
+        if self._tool_registry is not None:
+            if self._ai_tools_group is not None:
+                self._ai_tools_group.setEnabled(True)
+            if self._ai_tools_run_btn is not None:
+                try:
+                    self._ai_tools_run_btn.clicked.disconnect()
+                except Exception:
+                    pass
+                self._ai_tools_run_btn.clicked.connect(self._ai_tools_run)
+                self._ai_tools_run_btn.setEnabled(True)
+            if self._ai_tools_delete_btn is not None:
+                try:
+                    self._ai_tools_delete_btn.clicked.disconnect()
+                except Exception:
+                    pass
+                self._ai_tools_delete_btn.clicked.connect(self._ai_tools_delete)
+                self._ai_tools_delete_btn.setEnabled(True)
+            if self._ai_tools_pin_chk is not None:
+                try:
+                    self._ai_tools_pin_chk.toggled.disconnect()
+                except Exception:
+                    pass
+                self._ai_tools_pin_chk.toggled.connect(self._ai_tools_pin)
+                self._ai_tools_pin_chk.setEnabled(True)
+            if self._ai_tools_list is not None:
+                try:
+                    self._ai_tools_list.itemSelectionChanged.disconnect()
+                except Exception:
+                    pass
+                self._ai_tools_list.itemSelectionChanged.connect(self._ai_tools_sync_pin)
+            try:
+                self._tool_registry.changed.connect(self._on_tool_registry_changed)
+            except Exception:
+                pass
+            self._on_tool_registry_changed()
+        else:
+            if self._ai_tools_group is not None:
+                self._ai_tools_group.setEnabled(False)
+
+        self._rebuild_wheel_tools()
+
+    def _ai_append(self, who: str, text: str) -> None:
+        if self._ai_transcript is None:
+            return
+        try:
+            self._ai_transcript.append(f"<b>{who}:</b> {text}")
+        except Exception:
+            try:
+                self._ai_transcript.append(f"{who}: {text}")
+            except Exception:
+                pass
+
+    def _ai_on_send(self) -> None:
+        if self._ai_input is None:
+            return
+        text = self._ai_input.text().strip()
+        if not text:
+            return
+        self._ai_append("You", text)
+        self._ai_history.append({"role": "user", "content": text})
+        self._ai_input.clear()
+        if self._ai_send_btn is not None:
+            self._ai_send_btn.setEnabled(False)
+        self._ai_input.setEnabled(False)
+        worker = self._AIPromptWorker(
+            text,
+            tools=self._ai_available_tools,
+            bus=self._ai_bus,
+            model=self._ai_model,
+            prior=self._ai_history,
+            registry=self._tool_registry,
+            parent=self,
+        )
+        worker.finished_text.connect(self._ai_on_response)
+        self._ai_worker = worker
+        worker.start()
+
+    def _ai_on_response(self, text: str) -> None:
+        self._ai_append("Copilot", text)
+        self._ai_history.append({"role": "assistant", "content": text})
+        if self._ai_worker is not None:
+            try:
+                self._ai_worker.deleteLater()
+            except Exception:
+                pass
+            self._ai_worker = None
+        if self._ai_send_btn is not None:
+            self._ai_send_btn.setEnabled(True)
+        if self._ai_input is not None:
+            self._ai_input.setEnabled(True)
+            self._ai_input.setFocus()
+
+    def _ai_select_tool(self, tool_id: str) -> dict:
+        button_map = {
+            "polyline": self._btn_sketch_poly,
+            "line": self._btn_sketch_line,
+            "arc3": self._btn_sketch_arc3,
+            "circle": self._btn_sketch_circle,
+            "rect": self._btn_sketch_rect,
+            "insert_vertex": self._btn_sketch_insert,
+            "dimension": self._btn_sketch_dim,
+        }
+        for key, btn in button_map.items():
+            if btn is None:
+                continue
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(key == tool_id)
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self._on_wheel_tool(tool_id, tool_id)
+        except Exception:
+            pass
+        return {"selected": tool_id}
+
+    def _record_ai_profile(self, meta: dict | None) -> dict:
+        if meta is None:
+            self._ai_last_profile_meta = None
+            return {}
+        self._ai_last_profile_meta = meta
+        pts = meta.get("points") if isinstance(meta, dict) else None
+        count = len(pts) if isinstance(pts, list) else 0
+        return {
+            "metric": meta.get("metric") if isinstance(meta, dict) else None,
+            "family": meta.get("family", "") if isinstance(meta, dict) else "",
+            "points": count,
+        }
+
+    def _ai_create_circle(self, radius: float, cx: float | None = None, cy: float | None = None, segments: int = 256) -> dict:
+        try:
+            r = max(0.01, float(radius))
+            cxv = float(cx) if cx is not None else 0.0
+            cyv = float(cy) if cy is not None else 0.0
+            segs = int(segments) if segments is not None else 256
+            if segs < 16:
+                segs = 16
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+        try:
+            if pi_circle_points is not None:
+                pts = pi_circle_points(r, cxv, cyv, segs)
+            else:
+                import math
+                pts = [
+                    (cxv + r * math.cos(2.0 * math.pi * i / segs),
+                     cyv + r * math.sin(2.0 * math.pi * i / segs))
+                    for i in range(segs)
+                ]
+        except Exception:
+            pts = []
+        overlay_pts = pts + [pts[0]] if pts else []
+        if hasattr(self.view, "add_polyline_overlay") and overlay_pts:
+            try:
+                self.view.add_polyline_overlay(overlay_pts, color=(200, 220, 255), width=2)
+            except Exception:
+                pass
+        meta = None
+        if make_pi_circle_profile is not None:
+            try:
+                meta = make_pi_circle_profile(r, cxv, cyv, segs)
+            except Exception:
+                meta = None
+        stats = self._record_ai_profile(meta)
+        return {
+            "ok": True,
+            "profile": {
+                "type": "circle_overlay",
+                "radius": r,
+                "center": [cxv, cyv],
+                "metric": stats.get("metric"),
+                "family": stats.get("family", ""),
+                "points": stats.get("points", 0),
+            },
+        }
+
+    def _ai_create_pi_circle(self, radius: float, cx: float | None = None, cy: float | None = None, segments: int = 256) -> dict:
+        return self._ai_create_circle(radius=radius, cx=cx, cy=cy, segments=segments)
+
+    def _ai_upgrade_profile_to_pi_a(self, profile_id: str | None = None) -> dict:
+        if self._ai_last_profile_meta is None:
+            return {"ok": False, "error": "no active profile"}
+        meta = self._ai_last_profile_meta
+        if upgrade_profile_meta_to_pia is not None:
+            try:
+                meta = upgrade_profile_meta_to_pia(meta)
+            except Exception:
+                pass
+        stats = self._record_ai_profile(meta)
+        return {"ok": True, "profile": stats}
+
+    def _ai_create_line(self, x1: float, y1: float, x2: float, y2: float) -> dict:
+        try:
+            pts = [(float(x1), float(y1)), (float(x2), float(y2))]
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if hasattr(self.view, "add_polyline_overlay"):
+            try:
+                self.view.add_polyline_overlay(pts, color=(255, 180, 90), width=3)
+            except Exception:
+                pass
+        return {"ok": True, "line": {"start": [pts[0][0], pts[0][1]], "end": [pts[1][0], pts[1][1]]}}
+
+    def _ai_extrude(self, distance: float, metric: str | None = None) -> dict:
+        return {"ok": False, "error": "Extrude not supported in analytic panel"}
+
+    def _ai_tools_selected_id(self) -> str | None:
+        if self._ai_tools_list is None:
+            return None
+        item = self._ai_tools_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _ai_tools_refresh(self) -> None:
+        if self._ai_tools_list is None or self._tool_registry is None:
+            return
+        try:
+            self._ai_tools_list.blockSignals(True)
+        except Exception:
+            pass
+        self._ai_tools_list.clear()
+        try:
+            macros = sorted(self._tool_registry.list(), key=lambda m: m.name.lower())
+        except Exception:
+            macros = []
+        for m in macros:
+            item = QListWidgetItem(f"{m.name}  ({m.id})")
+            item.setData(Qt.ItemDataRole.UserRole, m.id)
+            self._ai_tools_list.addItem(item)
+        try:
+            self._ai_tools_list.blockSignals(False)
+        except Exception:
+            pass
+        self._ai_tools_sync_pin()
+
+    def _ai_tools_sync_pin(self) -> None:
+        if self._ai_tools_pin_chk is None:
+            return
+        tid = self._ai_tools_selected_id()
+        if tid is None or self._tool_registry is None:
+            try:
+                self._ai_tools_pin_chk.blockSignals(True)
+            except Exception:
+                pass
+            self._ai_tools_pin_chk.setChecked(False)
+            self._ai_tools_pin_chk.setEnabled(False)
+            try:
+                self._ai_tools_pin_chk.blockSignals(False)
+            except Exception:
+                pass
+            return
+        macro = self._tool_registry.get(tid)
+        try:
+            self._ai_tools_pin_chk.blockSignals(True)
+        except Exception:
+            pass
+        self._ai_tools_pin_chk.setEnabled(True)
+        self._ai_tools_pin_chk.setChecked(bool(macro and macro.ui.get("pinned")))
+        try:
+            self._ai_tools_pin_chk.blockSignals(False)
+        except Exception:
+            pass
+
+    def _ai_tools_run(self) -> None:
+        if self._tool_registry is None:
+            return
+        tid = self._ai_tools_selected_id()
+        if not tid:
+            return
+        try:
+            self._tool_registry.run(tid, parent_widget=self)
+        except Exception as exc:
+            try:
+                log.debug(f"custom tool run failed: {exc}")
+            except Exception:
+                pass
+
+    def _ai_tools_delete(self) -> None:
+        if self._tool_registry is None:
+            return
+        tid = self._ai_tools_selected_id()
+        if not tid:
+            return
+        try:
+            from PySide6.QtWidgets import QMessageBox
+        except Exception:
+            QMessageBox = None  # type: ignore
+        if QMessageBox is not None:
+            res = QMessageBox.question(self, "Delete Tool", f"Delete custom tool '{tid}'?")
+            if res != QMessageBox.Yes:
+                return
+        try:
+            self._tool_registry.remove(tid)
+        except Exception as exc:
+            try:
+                log.debug(f"custom tool delete failed: {exc}")
+            except Exception:
+                pass
+        self._ai_tools_refresh()
+
+    def _ai_tools_pin(self, checked: bool) -> None:
+        if self._tool_registry is None:
+            return
+        tid = self._ai_tools_selected_id()
+        if not tid:
+            return
+        try:
+            self._tool_registry.set_pinned(tid, bool(checked))
+        except Exception as exc:
+            try:
+                log.debug(f"custom tool pin failed: {exc}")
+            except Exception:
+                pass
+        self._rebuild_wheel_tools()
+
+    def _on_tool_registry_changed(self) -> None:
+        self._ai_tools_refresh()
+        self._rebuild_wheel_tools()
+
+    def _rebuild_wheel_tools(self) -> None:
+        if not _HAVE_WHEEL:
+            return
+        wheel = getattr(self, "_radial_wheel", None)
+        if wheel is None:
+            return
+
+        base_specs = getattr(self, "_radial_wheel_base_tools", []) or []
+        base = [spec.clone() if hasattr(spec, "clone") else ToolSpec(spec.label, spec.tool_id, list(getattr(spec, 'children', []))) for spec in base_specs]
+
+        custom_group = next((spec for spec in base if spec.label == "Custom"), None)
+        if custom_group is not None:
+            custom_group.children.clear()
+
+        if self._tool_registry is not None and ToolSpec is not None:
+            try:
+                pinned = self._tool_registry.pinned()
+            except Exception:
+                pinned = []
+            if custom_group is None and pinned:
+                custom_group = ToolSpec("Custom", children=[])
+                base.append(custom_group)
+            if custom_group is not None:
+                for macro in pinned:
+                    label = (macro.ui.get("icon_text") or macro.name)[:10]
+                    custom_group.children.append(ToolSpec(label, f"custom:{macro.id}"))
+
+        if custom_group is not None and not custom_group.children:
+            base = [spec for spec in base if spec is not custom_group]
+
+        try:
+            wheel.set_tools(base)
+        except Exception:
+            pass
+
+    def _run_custom_tool(self, tool_id: str) -> None:
+        if self._tool_registry is None:
+            return
+        try:
+            self._tool_registry.run(tool_id, parent_widget=self)
+        except Exception as exc:
+            try:
+                log.debug(f"custom tool run failed: {exc}")
+            except Exception:
+                pass
+
+
     def _on_wheel_tool(self, tool_id: str, _label: str):
         try:
+            if tool_id.startswith("custom:"):
+                if self._tool_registry is not None:
+                    self._run_custom_tool(tool_id.split(":", 1)[1])
+                return
+            if tool_id == 'file_new':
+                if self._btn_clear_scene is not None:
+                    self._btn_clear_scene.click()
+                else:
+                    try:
+                        self._clear_scene()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                return
+            if tool_id == 'file_open':
+                self._load_sketch_json()
+                return
+            if tool_id == 'file_save':
+                self._save_sketch_json()
+                return
+            if tool_id.startswith('prim:'):
+                self._add_prim(tool_id.split(':', 1)[1])
+                return
             # Ensure sketch overlay is enabled for sketch tools
             def enable_sketch():
                 if self._cb_sketch is not None and not self._cb_sketch.isChecked():
@@ -3792,6 +4903,7 @@ class AnalyticViewportPanel(QWidget):
             # Gizmo modes
             if tool_id in ("move","rotate","scale"):
                 self._gizmo_mode = tool_id
+                self._move_drag_free = (tool_id == 'move')
                 self.view.update(); return
             # Actions
             if tool_id == 'showcase' and self._btn_showcase is not None:
@@ -4286,6 +5398,19 @@ def _apply_settings(self, data):
                     panel._sync_wheel_controls()
                 if hasattr(panel, '_apply_wheel_settings'):
                     panel._apply_wheel_settings()
+            section_vis = data.get('section_visibility')
+            if isinstance(section_vis, dict):
+                try:
+                    panel._section_vis = {str(k): bool(v) for k, v in section_vis.items()}
+                except Exception:
+                    panel._section_vis = {}
+                    for k, v in section_vis.items():
+                        try:
+                            panel._section_vis[str(k)] = bool(v)
+                        except Exception:
+                            pass
+            elif not hasattr(panel, '_section_vis'):
+                panel._section_vis = {}
     except Exception:
         pass
 
@@ -4390,6 +5515,8 @@ def _save_settings(self):
                 'wheel_auto_spin': bool(panel._wheel_auto_spin),
                 'wheel_auto_spin_speed': float(panel._wheel_auto_spin_speed),
             })
+        if panel is not None and hasattr(panel, '_section_vis') and isinstance(panel._section_vis, dict):
+            data_update['section_visibility'] = {str(k): bool(v) for k, v in panel._section_vis.items()}
         # Preserve unrelated preference keys (e.g., 'analytic_as_main') by merging
         existing = {}
         if os.path.exists(self._settings_path):
@@ -4451,3 +5578,12 @@ def _save_settings(self):
 # Monkey-patch methods onto AnalyticViewport class after definition (simple, avoids editing earlier class body heavily)
 AnalyticViewport._load_settings = _load_settings
 AnalyticViewport._save_settings = _save_settings
+
+
+
+
+
+
+
+
+

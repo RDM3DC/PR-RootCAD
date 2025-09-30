@@ -6,11 +6,13 @@ from typing import Any, Callable, Dict, List, Optional
 from .openai_client import get_client
 from .context_loader import retrieve_context
 import os
+from adaptivecad.plugins.tool_registry import ToolRegistry
+from adaptivecad.plugins.macro_engine import MacroDef, MacroParam, MacroStep
 
 
 def build_tool_schema(available_tools: List[str]) -> List[dict]:
     """Return the OpenAI Chat tools schema for the CAD copilot."""
-    return [
+    base_tools = [
         {
             "type": "function",
             "function": {
@@ -44,6 +46,36 @@ def build_tool_schema(available_tools: List[str]) -> List[dict]:
         {
             "type": "function",
             "function": {
+                "name": "create_pi_circle",
+                "description": "Create a pi_a-native circle (superellipse with equal axes, n=2).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "radius": {"type": "number", "minimum": 0.0},
+                        "cx": {"type": "number"},
+                        "cy": {"type": "number"},
+                        "segments": {"type": "integer", "minimum": 16, "default": 256},
+                    },
+                    "required": ["radius"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "upgrade_profile_to_pi_a",
+                "description": "Mark the current or provided profile as pi_a for downstream operations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "profile_id": {"type": "string"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "create_line",
                 "description": "Create a line by endpoints (x1,y1) to (x2,y2).",
                 "parameters": {
@@ -67,12 +99,120 @@ def build_tool_schema(available_tools: List[str]) -> List[dict]:
                     "type": "object",
                     "properties": {
                         "distance": {"type": "number"},
+                        "metric": {"type": "string", "enum": ["pi_a", "euclid"]},
                     },
                     "required": ["distance"],
                 },
             },
         },
     ]
+    return base_tools
+
+def _custom_tools_schemas() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_custom_tool",
+                "description": "Create or update a custom tool (macro) and optionally pin it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type":"string"},
+                        "name": {"type":"string"},
+                        "description": {"type":"string"},
+                        "author": {"type":"string"},
+                        "ui": {
+                            "type":"object",
+                            "properties": {
+                                "icon_text":{"type":"string"},
+                                "pinned":{"type":"boolean"}
+                            }
+                        },
+                        "params": {
+                            "type":"array",
+                            "items": {
+                                "type":"object",
+                                "properties":{
+                                    "name":{"type":"string"},
+                                    "type":{"type":"string","enum":["number","int","string","bool"]},
+                                    "default":{},
+                                    "label":{"type":"string"},
+                                    "min":{"type":"number"},
+                                    "max":{"type":"number"}
+                                },
+                                "required":["name"]
+                            }
+                        },
+                        "steps": {
+                            "type":"array",
+                            "items":{
+                                "type":"object",
+                                "properties":{
+                                    "call":{"type":"string"},
+                                    "args":{"type":"object"}
+                                },
+                                "required":["call"]
+                            }
+                        }
+                    },
+                    "required":["id","name","steps"]
+                }
+            }
+        },
+        {
+            "type":"function",
+            "function":{
+                "name":"pin_custom_tool",
+                "description":"Pin/unpin a custom tool to the radial wheel.",
+                "parameters":{
+                    "type":"object",
+                    "properties":{
+                        "id":{"type":"string"},
+                        "pinned":{"type":"boolean"}
+                    },
+                    "required":["id","pinned"]
+                }
+            }
+        },
+        {
+            "type":"function",
+            "function":{
+                "name":"list_custom_tools",
+                "description":"List available custom tools (ids and names).",
+                "parameters":{"type":"object","properties":{}}
+            }
+        },
+        {
+            "type":"function",
+            "function":{
+                "name":"run_custom_tool",
+                "description":"Execute a custom tool by id with optional parameters.",
+                "parameters":{
+                    "type":"object",
+                    "properties":{
+                        "id":{"type":"string"},
+                        "params":{"type":"object"}
+                    },
+                    "required":["id"]
+                }
+            }
+        }
+    ]
+
+
+def _to_macro_def(payload: dict) -> MacroDef:
+    params = [MacroParam(**p) for p in payload.get("params", [])]
+    steps = [MacroStep(**s) for s in payload.get("steps", [])]
+    return MacroDef(
+        id=payload["id"],
+        name=payload["name"],
+        author=payload.get("author","copilot"),
+        description=payload.get("description",""),
+        params=params,
+        steps=steps,
+        ui=payload.get("ui", {})
+    )
 
 
 class CADActionBus:
@@ -97,6 +237,7 @@ def chat_with_tools(
     bus: CADActionBus,
     model: str = "gpt-4o-mini",
     prior_messages: Optional[List[Dict[str, str]]] = None,
+    registry: Optional[ToolRegistry] = None,
 ) -> str:
     """Send a chat turn and execute any requested tool calls."""
     client = get_client()
@@ -134,6 +275,8 @@ def chat_with_tools(
                 base_history.append({"role": role, "content": m.get("content", "")})
     messages = [system] + base_history + [{"role": "user", "content": user_text}]
     tools = build_tool_schema(available_tools)
+    if registry is not None:
+        tools += _custom_tools_schemas()
 
     response = client.chat.completions.create(
         model=model,
@@ -152,7 +295,23 @@ def chat_with_tools(
                 continue
             name = call.function.name
             args = json.loads(call.function.arguments or "{}")
-            result = bus.call(name, **args)
+            # Registry-backed calls
+            if name in ("create_custom_tool","pin_custom_tool","list_custom_tools","run_custom_tool") and registry is not None:
+                if name == "create_custom_tool":
+                    m = _to_macro_def(args)
+                    registry.add_or_update(m, persist=True)
+                    result = {"created_or_updated": m.id}
+                elif name == "pin_custom_tool":
+                    registry.set_pinned(args["id"], bool(args["pinned"]))
+                    result = {"pinned": bool(args["pinned"])}
+                elif name == "list_custom_tools":
+                    result = [{"id": m.id, "name": m.name, "pinned": bool(m.ui.get("pinned"))} for m in registry.list()]
+                elif name == "run_custom_tool":
+                    out = registry.run(args["id"], params_values=args.get("params"))
+                    result = {"results": out}
+            else:
+                # Normal CAD tool call via bus
+                result = bus.call(name, **args)
             tool_feedback.append(
                 {
                     "role": "tool",

@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -15,18 +15,20 @@ from PySide6.QtWidgets import (
 )
 
 from adaptivecad.ai.intent_router import CADActionBus, chat_with_tools
+from adaptivecad.plugins.tool_registry import ToolRegistry
 
 
 class _LLMWorker(QThread):
     finished_text = Signal(str)
 
-    def __init__(self, text: str, tools: List[str], bus: CADActionBus, model: str, prior: List[Dict[str, str]] | None = None):
+    def __init__(self, text: str, tools: List[str], bus: CADActionBus, model: str, prior: List[Dict[str, str]] | None = None, registry: Optional[ToolRegistry] = None):
         super().__init__()
         self.text = text
         self.tools = tools
         self.bus = bus
         self.model = model
         self.prior = prior or []
+        self.registry = registry
 
     def run(self) -> None:
         try:
@@ -36,6 +38,7 @@ class _LLMWorker(QThread):
                 bus=self.bus,
                 model=self.model,
                 prior_messages=self.prior,
+                registry=self.registry,
             )
         except Exception as exc:  # pragma: no cover - network/runtime errors
             output = f"LLM error: {exc}"
@@ -52,6 +55,7 @@ class AICopilotDock(QDockWidget):
         available_tools: List[str],
         bus: CADActionBus,
         model: str = "gpt-4o-mini",
+        registry: Optional[ToolRegistry] = None,
     ) -> None:
         super().__init__("AI Copilot", parent)
         self.setObjectName("AICopilotDock")
@@ -59,6 +63,7 @@ class AICopilotDock(QDockWidget):
         self._bus = bus
         self._tools = available_tools
         self._model = model
+        self._registry = registry
         # simple in-memory chat history for this dock
         self._history = []  # type: List[Dict[str, str]]
 
@@ -106,8 +111,7 @@ class AICopilotDock(QDockWidget):
         self._history.append({"role": "user", "content": text})
         self.input.clear()
         self.send_btn.setEnabled(False)
-
-        self._worker = _LLMWorker(text, self._tools, self._bus, self._model, prior=self._history)
+        self._worker = _LLMWorker(text, self._tools, self._bus, self._model, prior=self._history, registry=self._registry)
         self._worker.finished_text.connect(self._on_done)
         self._worker.start()
 

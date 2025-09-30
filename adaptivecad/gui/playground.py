@@ -47,6 +47,14 @@ if HAS_QT:
         NDChessWidget = None
     from adaptivecad.ai.intent_router import CADActionBus
     from adaptivecad.ui.ai_dock import AICopilotDock
+    from adaptivecad.geometry.pia_primitives import make_pi_circle_profile, upgrade_profile_meta_to_pia
+    # Custom tools registry and dock
+    try:
+        from adaptivecad.plugins.tool_registry import ToolRegistry
+        from adaptivecad.ui.custom_tools_dock import CustomToolsDock
+    except Exception:
+        ToolRegistry = None  # type: ignore
+        CustomToolsDock = None  # type: ignore
     # Capability probe (may or may not exist yet when partially installed)
     try:
         from adaptivecad.analytic.capabilities import (
@@ -794,6 +802,12 @@ class NewAnalyticViewportPanelCmd:
             panel.setMinimumSize(800, 500)
             panel.show()
             mw._analytic_viewport_panel = panel
+            # Provide registry to panel for custom tools (if available)
+            try:
+                if getattr(mw, '_tool_registry', None) is not None and hasattr(panel, 'set_tool_registry'):
+                    panel.set_tool_registry(mw._tool_registry)
+            except Exception:
+                pass
             # optional sync if scene sync method exists
             if hasattr(mw, "_sync_analytic_scene"):
                 mw._sync_analytic_scene()
@@ -1106,6 +1120,7 @@ class MainWindow:
         self._ai_profile_shape = None  # Last 2D profile (face) created by AI for extrusion
         self._ai_last_solid = None     # Last solid created by AI
         self._ai_pending_circle = None  # (cx, cy, r) when created in analytic mode
+        self._ai_last_profile_meta = None  # Metadata for last sketch/profile handled by AI
         log.debug("State variables initialized")
         
         # Create the main window
@@ -1144,9 +1159,21 @@ class MainWindow:
             # Radial tool wheel: include common sketch + transform tools
             # (Playground keeps this empty; Analytic Viewport panel owns the wheel.)
             pass
+        # Keep reference to original central widget for swapping
+        self._occ_central = central
 
-        self._ai_available_tools = ["select", "line", "circle", "move", "rotate", "measure", "extrude"]
+        self._ai_available_tools = ["select_tool", "create_line", "create_circle", "create_pi_circle", "upgrade_profile_to_pi_a", "extrude"]
         self._ai_bus = CADActionBus()
+        def _record_profile_meta(meta):
+            """Store the latest profile metadata and return summary stats."""
+            if meta is None:
+                return {}
+            self._ai_last_profile_meta = meta
+            return {
+                "metric": meta.get("metric"),
+                "family": meta.get("family", ""),
+                "points": len(meta.get("points", [])),
+            }
 
         def _ai_select_tool(tool_id: str) -> dict:
             """Set a logical tool selection (visual only for now)."""
@@ -1157,13 +1184,20 @@ class MainWindow:
                 pass
             return {"selected": tool_id}
 
-        def _ai_create_circle(radius: float, cx: float | None = None, cy: float | None = None) -> dict:
-            """Create a planar circular profile.
+        def _ai_create_circle(
+            radius: float,
+            cx: float | None = None,
+            cy: float | None = None,
+            segments: int = 256,
+        ) -> dict:
+            """Create a planar circular profile treated as a pi_a superellipse.
             - OCC mode: builds a Face and displays it; stores as profile for prism.
-            - Analytic mode: draws a 2D overlay ring and stores pending (cx,cy,r) for later extrude.
+            - Analytic mode: draws a 2D overlay ring and stores pending (cx, cy, r).
             """
-            log.info("AI copilot create_circle radius=%s cx=%s cy=%s", radius, cx, cy)
-            # Analytic fallback path
+            log.info("AI copilot create_circle radius=%s cx=%s cy=%s seg=%s", radius, cx, cy, segments)
+            segs = int(segments) if segments is not None else 256
+            if segs < 16:
+                segs = 16
             if not HAS_OCC:
                 try:
                     panel = self._ensure_analytic_panel()
@@ -1172,24 +1206,39 @@ class MainWindow:
                     cxv = float(cx) if cx is not None else 0.0
                     cyv = float(cy) if cy is not None else 0.0
                     r = max(0.01, float(radius))
-                    # Approximate circle with polyline
                     import math
-                    N = 64
-                    pts = [(cxv + r*math.cos(2*math.pi*i/N), cyv + r*math.sin(2*math.pi*i/N)) for i in range(N+1)]
+                    pts = [
+                        (cxv + r * math.cos(2 * math.pi * i / segs),
+                         cyv + r * math.sin(2 * math.pi * i / segs))
+                        for i in range(segs + 1)
+                    ]
                     if hasattr(panel.view, 'add_polyline_overlay'):
-                        panel.view.add_polyline_overlay(pts, color=(200,220,255), width=2)
+                        panel.view.add_polyline_overlay(pts, color=(200, 220, 255), width=2)
                     self._ai_pending_circle = (cxv, cyv, r)
                     self._ai_profile_shape = None
                     self._ai_last_solid = None
+                    meta = make_pi_circle_profile(r, cxv, cyv, segs)
+                    stats = _record_profile_meta(meta)
                     try:
-                        self.win.statusBar().showMessage(f"AI: Circle overlay r={r:g} at ({cxv:g},{cyv:g})", 2500)
+                        self.win.statusBar().showMessage(
+                            f"AI: Circle overlay r={r:g} at ({cxv:g},{cyv:g})", 2500
+                        )
                     except Exception:
                         pass
-                    return {"ok": True, "profile": "circle_overlay", "radius": r, "center": [cxv, cyv]}
+                    return {
+                        "ok": True,
+                        "profile": {
+                            "type": "circle_overlay",
+                            "radius": r,
+                            "center": [cxv, cyv],
+                            "metric": stats.get("metric"),
+                            "family": stats.get("family", ""),
+                            "points": stats.get("points", 0),
+                        },
+                    }
                 except Exception as e:
                     log.debug(f"AI circle (analytic) failed: {e}")
                     return {"ok": False, "error": str(e)}
-            # OCC path
             if not hasattr(self, 'view') or not hasattr(self.view, '_display'):
                 msg = "Viewer not ready"
                 try:
@@ -1214,15 +1263,45 @@ class MainWindow:
                 self.view._display.DisplayShape(face, update=True)
                 self.view._display.FitAll()
                 self._ai_profile_shape = face
+                self._ai_pending_circle = (cxv, cyv, r)
+                meta = make_pi_circle_profile(r, cxv, cyv, segs)
+                stats = _record_profile_meta(meta)
                 try:
-                    self.win.statusBar().showMessage(f"AI: Circle face r={r:g} at ({cxv:g},{cyv:g})", 2500)
+                    self.win.statusBar().showMessage(
+                        f"AI: Circle face r={r:g} at ({cxv:g},{cyv:g})", 2500
+                    )
                 except Exception:
                     pass
-                return {"ok": True, "profile": "circle_face", "radius": r, "center": [cxv, cyv]}
+                return {
+                    "ok": True,
+                    "profile": {
+                        "type": "circle_face",
+                        "radius": r,
+                        "center": [cxv, cyv],
+                        "metric": stats.get("metric"),
+                        "family": stats.get("family", ""),
+                        "points": stats.get("points", 0),
+                    },
+                }
             except Exception as e:
                 log.debug(f"AI circle create failed: {e}")
                 return {"ok": False, "error": str(e)}
+        def _ai_create_pi_circle(
+            radius: float,
+            cx: float | None = None,
+            cy: float | None = None,
+            segments: int = 256,
+        ) -> dict:
+            """Explicit pi_a circle helper that routes to _ai_create_circle."""
+            return _ai_create_circle(radius=radius, cx=cx, cy=cy, segments=segments)
 
+        def _ai_upgrade_profile_to_pi_a(profile_id: str | None = None) -> dict:
+            """Ensure the last profile carries pi_a metadata."""
+            if self._ai_last_profile_meta is None:
+                return {"ok": False, "error": "no active/last profile"}
+            upgraded = upgrade_profile_meta_to_pia(self._ai_last_profile_meta)
+            stats = _record_profile_meta(upgraded)
+            return {"ok": True, "profile": stats}
         def _ai_create_line(x1: float, y1: float, x2: float, y2: float) -> dict:
             """Create a straight 2D line.
             - OCC mode: displays an Edge at Z=0.
@@ -1270,29 +1349,44 @@ class MainWindow:
                 log.debug(f"AI line create failed: {e}")
                 return {"ok": False, "error": str(e)}
 
-        def _ai_extrude(distance: float) -> dict:
-            """Extrude the last AI-created circle/profile.
+        def _ai_extrude(distance: float, metric: str | None = "pi_a") -> dict:
+            """Extrude the last AI-created profile with pi_a awareness.
             - OCC mode: prisms the last Face.
-            - Analytic mode: adds a cylinder-like SDF (capsule with small round caps).
+            - Analytic mode: adds a capsule-like primitive.
             """
-            log.info("AI copilot extrude distance=%s", distance)
+            log.info("AI copilot extrude distance=%s metric=%s", distance, metric)
+            metric_value = (metric or "pi_a")
+            if isinstance(metric_value, str):
+                metric_value = metric_value.lower()
+            else:
+                metric_value = "pi_a"
+            if metric_value not in ("pi_a", "euclid"):
+                metric_value = "pi_a"
+
+            profile_meta = self._ai_last_profile_meta
+            if profile_meta is None and self._ai_pending_circle is not None:
+                cxv, cyv, rv = self._ai_pending_circle
+                profile_meta = make_pi_circle_profile(rv, cxv, cyv)
+
+            want_pia = metric_value == "pi_a" or (profile_meta and profile_meta.get("metric") == "pi_a")
+            if want_pia and profile_meta is not None and profile_meta.get("metric") != "pi_a":
+                profile_meta = upgrade_profile_meta_to_pia(profile_meta)
+
+            stats = _record_profile_meta(profile_meta) if profile_meta is not None else {}
+
             if not HAS_OCC:
-                # Use analytic SDF scene: create a cylinder-like solid from pending circle
                 try:
                     if self._ai_pending_circle is None:
                         raise RuntimeError("No circle profile available to extrude")
                     cx, cy, r = self._ai_pending_circle
                     dz = float(distance)
-                    # Map to an analytic capsule aligned with Z: params [radius, height]
                     from adaptivecad.aacore.sdf import Prim, KIND_CAPSULE
                     sc = getattr(self, 'aacore_scene', None)
                     if sc is None:
                         from adaptivecad.aacore.sdf import Scene as _Scene
                         sc = _Scene(); self.aacore_scene = sc
-                    # Create at origin; center offsets (cx,cy) can be encoded via transform if supported
-                    prim = Prim(KIND_CAPSULE, [float(r), max(0.01, float(dz)), 0, 0], beta=0.0, color=(0.7,0.8,0.95))
+                    prim = Prim(KIND_CAPSULE, [float(r), max(0.01, float(dz)), 0, 0], beta=0.0, color=(0.7, 0.8, 0.95))
                     sc.add(prim)
-                    # Best-effort center via transform if available
                     try:
                         if hasattr(prim, 'xform') and hasattr(prim.xform, 'translate'):
                             prim.xform.translate([float(cx), float(cy), 0.0])
@@ -1310,11 +1404,16 @@ class MainWindow:
                         self.win.statusBar().showMessage(f"AI: Analytic extrude by {dz:g}", 2500)
                     except Exception:
                         pass
-                    return {"ok": True, "extruded": dz, "mode": "analytic"}
+                    return {
+                        "ok": True,
+                        "extruded": dz,
+                        "mode": "analytic",
+                        "metric": "pi_a" if want_pia else "euclid",
+                        "profile": stats,
+                    }
                 except Exception as e:
                     log.debug(f"AI extrude (analytic) failed: {e}")
                     return {"ok": False, "error": str(e)}
-            # OCC path
             if not hasattr(self, 'view') or not hasattr(self.view, '_display'):
                 msg = "Viewer not ready"
                 try:
@@ -1338,21 +1437,59 @@ class MainWindow:
                 self.view._display.DisplayShape(solid, update=True)
                 self.view._display.FitAll()
                 self._ai_last_solid = solid
-                # Clear profile to avoid repeated extrudes unless another is created
                 self._ai_profile_shape = None
                 try:
                     self.win.statusBar().showMessage(f"AI: Extruded by {dz:g}", 2500)
                 except Exception:
                     pass
-                return {"ok": True, "extruded": dz}
+                return {
+                    "ok": True,
+                    "extruded": dz,
+                    "mode": "occ",
+                    "metric": "pi_a" if want_pia else "euclid",
+                    "profile": stats,
+                }
             except Exception as e:
                 log.debug(f"AI extrude failed: {e}")
                 return {"ok": False, "error": str(e)}
-
         self._ai_bus.on("select_tool", _ai_select_tool)
         self._ai_bus.on("create_circle", _ai_create_circle)
+        self._ai_bus.on("create_pi_circle", _ai_create_pi_circle)
+        self._ai_bus.on("upgrade_profile_to_pi_a", _ai_upgrade_profile_to_pi_a)
         self._ai_bus.on("create_line", _ai_create_line)
         self._ai_bus.on("extrude", _ai_extrude)
+        # Custom tool registry + dock
+        self._tool_registry = None
+        if ToolRegistry is not None:
+            try:
+                self._tool_registry = ToolRegistry(self._ai_bus)
+                if CustomToolsDock is not None:
+                    def _run_tool_from_dock(tool_id: str):
+                        try:
+                            self._tool_registry.run(tool_id, parent_widget=self.win)  # type: ignore[union-attr]
+                        except Exception:
+                            pass
+
+                    def _pin_changed(_tool_id: str, _pinned: bool):
+                        try:
+                            self._refresh_radial_wheel_pins()
+                        except Exception:
+                            pass
+
+                    self.custom_tools_dock = CustomToolsDock(self._tool_registry, parent=self.win, run_cb=_run_tool_from_dock, pin_cb=_pin_changed)
+                    self.win.addDockWidget(Qt.LeftDockWidgetArea, self.custom_tools_dock)
+                    # Reflect changes in any analytic panel wheel
+                    try:
+                        self._tool_registry.changed.connect(self._refresh_radial_wheel_pins)
+                    except Exception:
+                        pass
+                    # Populate wheel immediately if panel is open
+                    try:
+                        self._refresh_radial_wheel_pins()
+                    except Exception:
+                        pass
+            except Exception:
+                self._tool_registry = None
 
         try:
             self.ai_copilot = AICopilotDock(
@@ -1360,14 +1497,53 @@ class MainWindow:
                 available_tools=self._ai_available_tools,
                 bus=self._ai_bus,
                 model="gpt-4o-mini",
+                registry=self._tool_registry,
             )
             self.win.addDockWidget(Qt.RightDockWidgetArea, self.ai_copilot)
         except Exception as exc:
             log.debug("AI copilot dock unavailable: %s", exc)
             self.ai_copilot = None
 
-        # Keep reference to original central widget for swapping
-        self._occ_central = central
+    def _refresh_radial_wheel_pins(self):
+        try:
+            # AnalyticViewportPanel owns a wheel; if open, reflect pinned tools there
+            panel = getattr(self, '_analytic_panel', None)
+            if panel is None:
+                return
+            wheel = getattr(panel, '_radial_wheel', None)
+            if wheel is None or self._tool_registry is None:
+                return
+            from adaptivecad.ui.radial_tool_wheel import ToolSpec
+            base = [
+                ToolSpec("Polyline", "polyline"),
+                ToolSpec("Line", "line"),
+                ToolSpec("Arc 3pt", "arc3"),
+                ToolSpec("Circle", "circle"),
+                ToolSpec("Rect", "rect"),
+                ToolSpec("Insert Vtx", "insert_vertex"),
+                ToolSpec("Dim", "dimension"),
+                ToolSpec("Move", "move"),
+                ToolSpec("Rotate", "rotate"),
+                ToolSpec("Scale", "scale"),
+                ToolSpec("Center", "center_selected"),
+                ToolSpec("Reset", "reset_camera"),
+                ToolSpec("Undo", "delete_last"),
+                ToolSpec("Showcase", "showcase"),
+                ToolSpec("Clear", "clear"),
+            ]
+            for m in self._tool_registry.pinned():
+                label = (m.ui.get("icon_text") or m.name)[:10]
+                base.append(ToolSpec(label, f"custom:{m.id}"))
+            wheel.set_tools(base)
+            # Ensure MainWindow intercepts custom:* tool activations
+            try:
+                if not getattr(wheel, "_custom_registry_handler", False):
+                    wheel.toolActivated.connect(self._on_wheel_tool_from_main)
+                    setattr(wheel, "_custom_registry_handler", True)
+            except Exception:
+                pass
+        except Exception:
+            pass
         # Explicitly enable shape selection mode (fix for lost selection after repo update)
         if hasattr(self.view, '_display') and hasattr(self.view._display, 'SetSelectionMode'):
             log.debug("Setting selection mode to 1 (shape selection mode)")
@@ -1405,6 +1581,20 @@ class MainWindow:
         
         # Setup selection handling
         self._setup_selection_handling()
+
+    def _on_wheel_tool_from_main(self, tool_id: str, _label: str):
+        try:
+            if not tool_id.startswith("custom:"):
+                return
+            if self._tool_registry is None:
+                return
+            tool_id_only = tool_id.split(":", 1)[-1]
+            self._tool_registry.run(tool_id_only, parent_widget=self.win)  # type: ignore[union-attr]
+        except Exception as e:
+            try:
+                log.debug(f"custom tool run failed: {e}")
+            except Exception:
+                pass
         
         # Shared AACore analytic scene
         try:
