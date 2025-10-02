@@ -1325,6 +1325,9 @@ class AnalyticViewport(QOpenGLWidget):
         self._beta_lut_tex = None
         self._curv_lut_tex = None
         self.use_curv_lut = 1
+        self.fractal_color_mode = 1
+        self.fractal_orbit_shell = 1.0
+        self.fractal_ni_scale = 0.08
         # listen for scene edits (debounced via timer-less simple flag)
         self._scene_dirty = True
         try:
@@ -1680,6 +1683,9 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform1f(U("u_beta_scale"), float(self.beta_scale))
         glUniform1i(U("u_beta_cmap"), int(self.beta_cmap))
         glUniform1i(U("u_selected"), int(self.selected_index))
+        glUniform1i(U("u_fractal_mode"), int(self.fractal_color_mode))
+        glUniform1f(U("u_fractal_orbit_shell"), float(self.fractal_orbit_shell))
+        glUniform1f(U("u_fractal_ni_scale"), float(self.fractal_ni_scale))
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
 
@@ -2666,6 +2672,11 @@ class AnalyticViewportPanel(QWidget):
         self._scale_duration = None
         self._scale_fov = None
         self._scale_status = None
+
+        # Fractal coloring controls
+        self._fractal_mode_box: QComboBox | None = None
+        self._fractal_shell_spin: QDoubleSpinBox | None = None
+        self._fractal_ni_spin: QDoubleSpinBox | None = None
 
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
@@ -3851,6 +3862,47 @@ class AnalyticViewportPanel(QWidget):
         toggles[key] = btn
         self._section_toggles = toggles
 
+    def _sync_fractal_controls(self) -> None:
+        try:
+            if self._fractal_mode_box is not None:
+                self._fractal_mode_box.blockSignals(True)
+                self._fractal_mode_box.setCurrentIndex(int(self.view.fractal_color_mode))
+                self._fractal_mode_box.blockSignals(False)
+            if self._fractal_shell_spin is not None:
+                self._fractal_shell_spin.blockSignals(True)
+                self._fractal_shell_spin.setValue(float(self.view.fractal_orbit_shell))
+                self._fractal_shell_spin.blockSignals(False)
+            if self._fractal_ni_spin is not None:
+                self._fractal_ni_spin.blockSignals(True)
+                self._fractal_ni_spin.setValue(float(self.view.fractal_ni_scale))
+                self._fractal_ni_spin.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_fractal_mode_changed(self, idx: int) -> None:
+        try:
+            self.view.fractal_color_mode = int(idx)
+            self.view.update()
+            self.view._save_settings()
+        except Exception:
+            pass
+
+    def _on_fractal_shell_changed(self, value: float) -> None:
+        try:
+            self.view.fractal_orbit_shell = float(value)
+            self.view.update()
+            self.view._save_settings()
+        except Exception:
+            pass
+
+    def _on_fractal_ni_changed(self, value: float) -> None:
+        try:
+            self.view.fractal_ni_scale = float(value)
+            self.view.update()
+            self.view._save_settings()
+        except Exception:
+            pass
+
     def _on_section_toggle(self, key: str, checked: bool) -> None:
         if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
             self._section_vis = {}
@@ -4336,6 +4388,25 @@ class AnalyticViewportPanel(QWidget):
         self._current_sel = -1; self._current_color = (0.8,0.7,0.6)
         side.addWidget(gb_prims)
         self._register_section("primitives", "Primitives", gb_prims)
+
+        # --- Fractal Color Fields ---
+        gb_fractal = QGroupBox("Fractal Color Fields"); ff = QFormLayout(); gb_fractal.setLayout(ff)
+        self._fractal_mode_box = QComboBox(); self._fractal_mode_box.addItems(["Smooth Escape", "Orbit Trap", "Angular/Phase"])
+        self._fractal_mode_box.setCurrentIndex(int(self.view.fractal_color_mode))
+        self._fractal_mode_box.currentIndexChanged.connect(self._on_fractal_mode_changed)
+
+        self._fractal_shell_spin = QDoubleSpinBox(); self._fractal_shell_spin.setRange(0.0, 4.0); self._fractal_shell_spin.setDecimals(3); self._fractal_shell_spin.setSingleStep(0.05); self._fractal_shell_spin.setValue(float(self.view.fractal_orbit_shell))
+        self._fractal_shell_spin.valueChanged.connect(self._on_fractal_shell_changed)
+
+        self._fractal_ni_spin = QDoubleSpinBox(); self._fractal_ni_spin.setRange(0.01, 0.5); self._fractal_ni_spin.setDecimals(3); self._fractal_ni_spin.setSingleStep(0.01); self._fractal_ni_spin.setValue(float(self.view.fractal_ni_scale))
+        self._fractal_ni_spin.valueChanged.connect(self._on_fractal_ni_changed)
+
+        ff.addRow("Color Mode", self._fractal_mode_box)
+        ff.addRow("Orbit Shell R", self._fractal_shell_spin)
+        ff.addRow("NI Palette Scale", self._fractal_ni_spin)
+        side.addWidget(gb_fractal)
+        self._register_section("fractal_color", "Fractal Color", gb_fractal)
+        self._sync_fractal_controls()
         
         # --- Tesseract (4D hypercube) ---
         gb_tess = QGroupBox("Tesseract (4D Hypercube)"); ft = QFormLayout(); gb_tess.setLayout(ft)
@@ -5355,6 +5426,9 @@ def _analytic_settings_defaults():
         'beta_overlay_intensity':0.65,
         'beta_scale':1.0,
         'beta_cmap':0,
+    'fractal_color_mode': 1,
+    'fractal_orbit_shell': 1.0,
+    'fractal_ni_scale': 0.08,
         'wheel_enabled': True,
         'wheel_edge_fit': True,
         'wheel_overshoot_px': 14,
@@ -5379,6 +5453,9 @@ def _apply_settings(self, data):
     self.beta_overlay_intensity = float(_clamp(data.get('beta_overlay_intensity',0.65),0.0,1.0))
     self.beta_scale = float(_clamp(data.get('beta_scale',1.0),0.01,32.0))
     self.beta_cmap = int(_clamp(data.get('beta_cmap',0),0,3))
+    self.fractal_color_mode = int(_clamp(data.get('fractal_color_mode', getattr(self, 'fractal_color_mode', 1)), 0, 2))
+    self.fractal_orbit_shell = float(_clamp(data.get('fractal_orbit_shell', getattr(self, 'fractal_orbit_shell', 1.0)), 0.0, 4.0))
+    self.fractal_ni_scale = float(_clamp(data.get('fractal_ni_scale', getattr(self, 'fractal_ni_scale', 0.08)), 0.01, 0.5))
     # dim settings
     try:
         panel = self.parent() if hasattr(self,'parent') else None
@@ -5411,6 +5488,8 @@ def _apply_settings(self, data):
                             pass
             elif not hasattr(panel, '_section_vis'):
                 panel._section_vis = {}
+            if hasattr(panel, '_sync_fractal_controls'):
+                panel._sync_fractal_controls()
     except Exception:
         pass
 
@@ -5501,7 +5580,10 @@ def _save_settings(self):
             'show_beta_overlay': self.show_beta_overlay,
             'beta_overlay_intensity': self.beta_overlay_intensity,
             'beta_scale': self.beta_scale,
-            'beta_cmap': self.beta_cmap
+            'beta_cmap': self.beta_cmap,
+            'fractal_color_mode': int(getattr(self, 'fractal_color_mode', 1)),
+            'fractal_orbit_shell': float(getattr(self, 'fractal_orbit_shell', 1.0)),
+            'fractal_ni_scale': float(getattr(self, 'fractal_ni_scale', 0.08))
         }
         panel = self.parent() if hasattr(self, 'parent') else None
         if panel is not None and hasattr(panel, '_wheel_enabled'):

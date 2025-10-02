@@ -60,27 +60,23 @@ def sd_mandelbulb(p, power=8.0, bailout=2.0, max_iter=16):
         r = np.linalg.norm(z)
         if r > bailout:
             break
-            
-        # Convert to spherical coordinates (avoid singularities)
-        if r < 1e-6:
-            break
-            
-        theta = np.arctan2(np.sqrt(z[0]*z[0] + z[1]*z[1]), z[2])
+
+        # Avoid singularities but keep iterating for inner points
+        r_safe = max(r, 1e-6)
+
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
         phi = np.arctan2(z[1], z[0])
-        
-        # Scale and rotate the point
-        zr = r ** (power - 1.0)
+
+        zr = r_safe ** (power - 1.0)
         dr = zr * power * dr + 1.0
-        
-        # Convert back to cartesian coordinates
-        zr *= r
+
+        zr *= r_safe
         sin_theta = np.sin(theta * power)
-        z[0] = zr * sin_theta * np.cos(phi * power)
-        z[1] = zr * sin_theta * np.sin(phi * power)
-        z[2] = zr * np.cos(theta * power)
-        
-        # Add original point (Mandelbulb iteration)
-        z += p
+        z = zr * np.array([
+            sin_theta * np.cos(phi * power),
+            sin_theta * np.sin(phi * power),
+            np.cos(theta * power)
+        ]) + p
     
     # Improved distance estimation
     if r < bailout:
