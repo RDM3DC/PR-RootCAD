@@ -84,219 +84,312 @@ def sd_mandelbulb(p, power=8.0, bailout=2.0, max_iter=16):
     else:
         return 0.5 * np.log(r) * r / max(dr, 1e-6)
 
-def sd_klein_bottle(p, a=1.0, n=2.0, t_offset=0.0):
-    """Klein bottle 4D->3D projection with rotation
-    a: scale parameter
-    n: figure-8 parameter 
-    t_offset: 4D rotation phase
-    """
-    # Klein bottle parametric equations projected to 3D
-    # Using a simplified approach for real-time rendering
-    x, y, z = p[0], p[1], p[2]
-    
-    # Convert to cylindrical-ish coordinates
-    r = np.sqrt(x*x + y*y)
-    theta = np.arctan2(y, x)
-    
-    # Klein bottle surface approximation with 4D rotation
-    u = theta + t_offset
-    v = z / a
-    
-    # Simplified Klein bottle equations
-    cos_u, sin_u = np.cos(u), np.sin(u)
-    cos_v, sin_v = np.cos(v), np.sin(v)
-    
-    # Target surface points
-    target_r = a * (2.0 + cos_u) * (1.0 + 0.5 * cos_v)
-    target_z = a * sin_u * (1.0 + 0.5 * cos_v) + a * 0.5 * sin_v
-    
-    # Distance to Klein bottle surface
-    dr = r - target_r
-    dz = z - target_z
-    
-    return np.sqrt(dr*dr + dz*dz) - 0.1  # Small thickness
 
-def sd_menger_sponge(p, iterations=3, size=1.0):
-    """Menger sponge fractal - infinite detail CSG operations
-    iterations: number of recursive subdivisions
-    size: overall scale of the sponge
+def _palette(t, a=None, b=None, c=None, d=None):
+    """Simple palette matching the GLSL 'palette' helper used in shaders.
+    a,b,c,d are RGB triplets or scalars. Returns np.array RGB in [0,1].
     """
-    # Start with a box
-    d = sd_box(p, np.array([size, size, size]))
-    
-    # Recursively subtract smaller boxes
-    s = size
-    for i in range(int(iterations)):
-        # Scale for this iteration
-        s /= 3.0
-        
-        # Create holes pattern for this level
-        holes = []
-        
-        # Generate hole positions for 3x3x3 grid
-        for x in [-1, 0, 1]:
-            for y in [-1, 0, 1]:
-                for z in [-1, 0, 1]:
-                    # Skip corners (they remain solid)
-                    hole_count = (abs(x) + abs(y) + abs(z))
-                    if hole_count >= 2:  # Remove center faces and edges
-                        hole_pos = s * np.array([x, y, z])
-                        
-                        # Create holes in different orientations
-                        if abs(x) == 1 and y == 0 and z == 0:  # X-axis holes
-                            hole_size = np.array([size*2, s*0.33, s*0.33])
-                        elif x == 0 and abs(y) == 1 and z == 0:  # Y-axis holes  
-                            hole_size = np.array([s*0.33, size*2, s*0.33])
-                        elif x == 0 and y == 0 and abs(z) == 1:  # Z-axis holes
-                            hole_size = np.array([s*0.33, s*0.33, size*2])
-                        else:  # Corner holes
-                            hole_size = np.array([s*0.33, s*0.33, s*0.33])
-                        
-                        # Subtract hole from main shape
-                        hole_dist = sd_box(p - hole_pos, hole_size)
-                        d = max(d, -hole_dist)  # CSG subtraction
-        
-        # Scale point for next iteration 
-        p_scaled = p * 3.0
-        
-        # Apply modulo operation for fractal repetition
-        p_mod = np.zeros_like(p_scaled)
-        for j in range(3):
-            p_mod[j] = np.mod(p_scaled[j] + s*1.5, s*3.0) - s*1.5
-        
-        # Continue with scaled point
-        p = p_mod
-    
-    return d
+    if a is None: a = np.array([0.50,0.50,0.50], dtype=np.float64)
+    if b is None: b = np.array([0.50,0.50,0.50], dtype=np.float64)
+    if c is None: c = np.array([1.00,1.00,1.00], dtype=np.float64)
+    if d is None: d = np.array([0.00,0.33,0.67], dtype=np.float64)
+    # ensure arrays
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    c = np.asarray(c, dtype=np.float64)
+    d = np.asarray(d, dtype=np.float64)
+    return a + b * np.cos(2.0 * np.pi * (c * t + d))
 
-def sd_hyperbolic_tiling(p, scale=1.0, order=7, symmetry=3):
-    """Hyperbolic {order,symmetry} tiling projected to Poincaré disk
-    order: number of sides per polygon (7 for heptagon)
-    symmetry: number of polygons meeting at each vertex (3)
-    scale: overall size scaling
-    This creates a {7,3} tiling - the classic hyperbolic tessellation
+
+def mandelbulb_iter_cpu(p, power=8.0, bailout=2.0, max_iter=16, orbit_shell=0.0):
+    """CPU replicate of the Mandelbulb orbit calculation used by the shader.
+    Returns dict with trapPlane, trapShell, r, nu, dr, lastZ, iter
     """
-    import math
-    
-    # Transform to complex plane (x + iy)
-    x, y = float(p[0]) / scale, float(p[1]) / scale
-    z = complex(x, y)
-    
-    # Apply Poincaré disk model transformations
-    r = abs(z)
-    if r > 0.98:  # Boundary of hyperbolic disk
-        return (r - 0.98) * scale
-    
-    # Hyperbolic distance from origin
-    if r < 1e-6:
-        hyperbolic_r = 0.0
+    z = p.copy().astype(np.float64)
+    dr = 1.0
+    r = 0.0
+    trapPlane = 1e9
+    trapShell = 1e9
+    lastZ = z.copy()
+    iters = 0
+    for i in range(int(max_iter)):
+        r = np.linalg.norm(z)
+        if r > bailout:
+            iters = i
+            break
+        r_safe = max(r, 1e-12)
+        trapPlane = min(trapPlane, abs(z[1]))
+        if orbit_shell > 0.0:
+            trapShell = min(trapShell, abs(r_safe - orbit_shell))
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
+        phi = np.arctan2(z[1], z[0])
+        zr = r_safe ** (power - 1.0)
+        dr = dr * power * zr + 1.0
+        zr = zr * r_safe
+        sin_t = np.sin(theta * power)
+        newZ = zr * np.array([
+            sin_t * np.cos(phi * power),
+            sin_t * np.sin(phi * power),
+            np.cos(theta * power)
+        ], dtype=np.float64)
+        z = newZ + p
+        lastZ = z.copy()
+        iters = i + 1
+
+    rr = max(r, 1e-12)
+    log_base = max(power, 1.001)
+    if rr > 1.0:
+        nu = float(iters) + 1.0 - np.log(np.log(rr)) / np.log(log_base)
     else:
-        hyperbolic_r = math.atanh(min(r, 0.999))
-    
-    # Generate fundamental domain for {7,3} tiling
-    angle = math.atan2(y, x) if r > 1e-6 else 0.0
-    
-    # Apply rotational symmetry (7-fold)
-    sector_angle = 2.0 * math.pi / order
-    normalized_angle = (angle % sector_angle) - sector_angle * 0.5
-    
-    # Distance to sector boundaries
-    boundary_dist = abs(normalized_angle) - sector_angle * 0.5
-    
-    # Hyperbolic polygon edges using distance in Poincaré model
-    edge_spacing = 0.8  # Spacing between concentric heptagons
-    ring_number = int(hyperbolic_r / edge_spacing)
-    dist_to_ring = abs(hyperbolic_r - ring_number * edge_spacing) - 0.05
-    
-    # Combine radial and angular distances
-    angular_dist = abs(boundary_dist) * hyperbolic_r - 0.02
-    
-    # Apply hyperbolic metric correction
-    metric_factor = 1.0 / (1.0 - r*r + 1e-6)
-    
-    # Final distance (minimum of radial and angular features)
-    dist = min(dist_to_ring, angular_dist) * metric_factor
-    
-    # Add 3D height modulation for visualization
-    z_height = float(p[2]) / scale
-    height_modulation = 0.1 * math.cos(hyperbolic_r * 10.0) * math.cos(normalized_angle * order)
-    
-    return (dist + abs(z_height - height_modulation) - 0.1) * scale
+        nu = float(iters)
+
+    return {
+        'trapPlane': float(trapPlane),
+        'trapShell': float(trapShell),
+        'r': float(r),
+        'nu': float(nu),
+        'dr': float(dr),
+        'lastZ': lastZ,
+        'iter': int(iters)
+    }
 
 
-def sd_mobius(p, R, w, samples=64):
-    """Approximate distance to a Möbius strip centered on origin.
-
-    Parameterization S(u,v) = A(u) + v*B(u) where
-      A(u) = (R*cos(u), R*sin(u), 0)
-      B(u) = (cos(u/2)*cos(u), cos(u/2)*sin(u), sin(u/2))
-
-    For each sampled u, v* = dot(p-A, B)/dot(B,B) (clamped to [-w/2,w/2]).
-    Then distance = min over u of |p - (A + v*B)|.
+def mandelbulb_color_cpu(p, power=8.0, bailout=2.0, max_iter=16, mode=1, ni_scale=0.08, orbit_shell=1.0):
+    """Compute a color for point p inside/outside Mandelbulb matching shader modes.
+    mode: 0 smooth escape, 1 orbit trap, 2 angular/phase
     """
-    import math
-    best = 1e18
-    px, py, pz = float(p[0]), float(p[1]), float(p[2])
-    for i in range(samples):
-        u = 2.0 * math.pi * i / samples
-        c = math.cos(u); s = math.sin(u)
-        c2 = math.cos(u * 0.5); s2 = math.sin(u * 0.5)
-        Ax = R * c; Ay = R * s; Az = 0.0
-        Bx = c2 * c; By = c2 * s; Bz = s2
-        vx = px - Ax; vy = py - Ay; vz = pz - Az
-        bb = Bx*Bx + By*By + Bz*Bz + 1e-12
-        vstar = (vx*Bx + vy*By + vz*Bz) / bb
-        # clamp
-        halfw = 0.5 * w
-        if vstar < -halfw: vstar = -halfw
-        if vstar > halfw: vstar = halfw
-        sx = Ax + vstar * Bx
-        sy = Ay + vstar * By
-        sz = Az + vstar * Bz
-        dx = px - sx; dy = py - sy; dz = pz - sz
-        d = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if d < best: best = d
-    return best
+    ob = mandelbulb_iter_cpu(p, power, bailout, max_iter, orbit_shell)
+    # palettes and constants similar to fragment shader
+    A = np.array([0.50, 0.50, 0.50], dtype=np.float64)
+    B = np.array([0.50, 0.50, 0.50], dtype=np.float64)
+    C = np.array([1.00, 1.00, 1.00], dtype=np.float64)
+    D = np.array([0.00, 0.33, 0.67], dtype=np.float64)
 
-def sd_superellipsoid(p, r, power):
-    """Approximate SDF for superellipsoid using L_p norm.
+    if mode == 0:
+        t = ob['nu'] * float(ni_scale)
+        return np.clip(_palette(t, A, B, C, D), 0.0, 1.0)
+    elif mode == 1:
+        a = np.exp(-8.0 * ob['trapPlane'])
+        b = np.exp(-6.0 * ob['trapShell'])
+        t = max(0.0, min(1.0, a + 0.5 * b))
+        base = (1.0 - t) * np.array([0.1,0.2,0.5]) + t * np.array([0.9,0.9,0.2])
+        ni = (ob['nu'] * max(float(ni_scale) * 1.25, 0.001)) % 1.0
+        return np.clip(base * (0.85 + 0.3 * ni), 0.0, 1.0)
+    else:
+        z = ob['lastZ']
+        r_safe = max(np.linalg.norm(z), 1e-12)
+        phi = np.arctan2(z[1], z[0])
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
+        h = (phi / (2.0 * np.pi)) % 1.0
+        s = np.clip(theta / np.pi, 0.0, 1.0)
+        v = 0.9
+        c = v * s
+        x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0))
+        if h < 1.0/6.0:
+            rgb = np.array([c, x, 0.0])
+        elif h < 2.0/6.0:
+            rgb = np.array([x, c, 0.0])
+        elif h < 3.0/6.0:
+            rgb = np.array([0.0, c, x])
+        elif h < 4.0/6.0:
+            rgb = np.array([0.0, x, c])
+        elif h < 5.0/6.0:
+            rgb = np.array([x, 0.0, c])
+        else:
+            rgb = np.array([c, 0.0, x])
+        rgb = rgb + (v - c)
+        accent = (ob['nu'] * max(float(ni_scale) * 1.875, 0.001)) % 1.0
+        return np.clip(rgb * (0.85 + 0.25 * accent), 0.0, 1.0)
 
-    r: scalar base radius; anisotropy handled by external scale in transform.
-    power: p >= 1. Larger p -> boxier.
-    We approximate distance as (||p||_p / r - 1) * r.
+# --- Primitive SDFs (local space) ---
+def sd_sphere(p, r):
+    return np.linalg.norm(p) - r
+
+def sd_box(p, b):  # b = (sx,sy,sz)
+    q = np.abs(p) - b
+    return np.linalg.norm(np.maximum(q,0.0)) + min(q.max(), 0.0)
+
+def sd_capsule_y(p, r, h):  # Y-axis capsule height=h
+    a = np.array([0.0,-0.5*h,0.0])
+    b = np.array([0.0, 0.5*h,0.0])
+    pa = p - a; ba = b - a
+    t = clamp(np.dot(pa,ba)/(np.dot(ba,ba)+1e-12), 0.0, 1.0)
+    return np.linalg.norm(pa - ba*t) - r
+
+def sd_torus_y(p, R, r):
+    qx = np.sqrt(p[0]*p[0] + p[2]*p[2]) - R
+    return np.sqrt(qx*qx + p[1]*p[1]) - r
+
+def sd_torus4d(p, R1, R2, r, w_slice=0.0):
+    """4D torus (duocylinder) with 3D cross-section at w=w_slice
+    R1, R2 are major radii of two orthogonal circles
+    r is minor radius (tube thickness)
+    w_slice is the 4th dimension coordinate for cross-section
     """
-    px, py, pz = abs(float(p[0])), abs(float(p[1])), abs(float(p[2]))
-    pwr = max(1.0, float(power))
-    rp = max(1e-6, float(r))
-    val = (px**pwr + py**pwr + pz**pwr) ** (1.0/pwr)
-    return (val / rp - 1.0) * rp
+    # In 4D: x²+y² and z²+w² form two perpendicular circles
+    # For 3D visualization, we treat z as the 4th dimension w
+    circle1_radius = np.sqrt(p[0]*p[0] + p[1]*p[1])
+    circle2_radius = np.sqrt(p[2]*p[2] + w_slice*w_slice)
+    
+    # Distance to the 4D torus surface
+    d1 = circle1_radius - R1
+    d2 = circle2_radius - R2
+    return np.sqrt(d1*d1 + d2*d2) - r
 
-def qc_value_and_bound(p, scale, dirs=None):
-    """Compute quasi-crystal value f and a conservative gradient bound K.
-
-    f(x) = sum_i cos(dot(k_i, x*scale)); with |grad f| <= sum_i |k_i|*scale
-    We choose |k_i|=1 so K = n*scale.
+def sd_mandelbulb(p, power=8.0, bailout=2.0, max_iter=16):
+    """3D Mandelbulb fractal distance estimation
+    power: fractal power (8.0 is classic)
+    bailout: escape radius 
+    max_iter: iteration limit for performance
     """
-    import math
-    if dirs is None:
-        # 7 directions using golden angle spread
-        phis = [i*2.39996322973 for i in range(7)]  # golden angle
-        dirs = [
-            np.array([math.cos(a)*math.sin(b), math.sin(a)*math.sin(b), math.cos(b)], dtype=np.float64)
-            for a,b in [(0.0,0.0)]
-        ]
-        dirs = []
-        for i in range(7):
-            a = phis[i]
-            z = 1.0 - 2.0*(i+0.5)/7.0
-            rxy = math.sqrt(max(1e-6, 1.0 - z*z))
-            dirs.append(np.array([math.cos(a)*rxy, math.sin(a)*rxy, z], dtype=np.float64))
-    ps = float(scale)
-    f = 0.0
-    for k in dirs:
-        f += math.cos(ps * float(np.dot(k, p)))
-    K = len(dirs) * abs(ps)
-    return f, max(K, 1e-3)
+    z = p.copy()
+    dr = 1.0
+    r = 0.0
+    
+    for i in range(int(max_iter)):
+        r = np.linalg.norm(z)
+        if r > bailout:
+            break
+
+        # Avoid singularities but keep iterating for inner points
+        r_safe = max(r, 1e-6)
+
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
+        phi = np.arctan2(z[1], z[0])
+
+        zr = r_safe ** (power - 1.0)
+        dr = zr * power * dr + 1.0
+
+        zr *= r_safe
+        sin_theta = np.sin(theta * power)
+        z = zr * np.array([
+            sin_theta * np.cos(phi * power),
+            sin_theta * np.sin(phi * power),
+            np.cos(theta * power)
+        ]) + p
+    
+    # Improved distance estimation
+    if r < bailout:
+        return 0.0  # Inside the set
+    else:
+        return 0.5 * np.log(r) * r / max(dr, 1e-6)
+
+
+def _palette(t, a=None, b=None, c=None, d=None):
+    """Simple palette matching the GLSL 'palette' helper used in shaders.
+    a,b,c,d are RGB triplets or scalars. Returns np.array RGB in [0,1].
+    """
+    if a is None: a = np.array([0.50,0.50,0.50], dtype=np.float64)
+    if b is None: b = np.array([0.50,0.50,0.50], dtype=np.float64)
+    if c is None: c = np.array([1.00,1.00,1.00], dtype=np.float64)
+    if d is None: d = np.array([0.00,0.33,0.67], dtype=np.float64)
+    # ensure arrays
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    c = np.asarray(c, dtype=np.float64)
+    d = np.asarray(d, dtype=np.float64)
+    return a + b * np.cos(2.0 * np.pi * (c * t + d))
+
+
+def mandelbulb_iter_cpu(p, power=8.0, bailout=2.0, max_iter=16, orbit_shell=0.0):
+    """CPU replicate of the Mandelbulb orbit calculation used by the shader.
+    Returns dict with trapPlane, trapShell, r, nu, dr, lastZ, iter
+    """
+    z = p.copy().astype(np.float64)
+    dr = 1.0
+    r = 0.0
+    trapPlane = 1e9
+    trapShell = 1e9
+    lastZ = z.copy()
+    iters = 0
+    for i in range(int(max_iter)):
+        r = np.linalg.norm(z)
+        if r > bailout:
+            iters = i
+            break
+        r_safe = max(r, 1e-12)
+        trapPlane = min(trapPlane, abs(z[1]))
+        if orbit_shell > 0.0:
+            trapShell = min(trapShell, abs(r_safe - orbit_shell))
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
+        phi = np.arctan2(z[1], z[0])
+        zr = r_safe ** (power - 1.0)
+        dr = dr * power * zr + 1.0
+        zr = zr * r_safe
+        sin_t = np.sin(theta * power)
+        newZ = zr * np.array([
+            sin_t * np.cos(phi * power),
+            sin_t * np.sin(phi * power),
+            np.cos(theta * power)
+        ], dtype=np.float64)
+        z = newZ + p
+        lastZ = z.copy()
+        iters = i + 1
+
+    rr = max(r, 1e-12)
+    log_base = max(power, 1.001)
+    if rr > 1.0:
+        nu = float(iters) + 1.0 - np.log(np.log(rr)) / np.log(log_base)
+    else:
+        nu = float(iters)
+
+    return {
+        'trapPlane': float(trapPlane),
+        'trapShell': float(trapShell),
+        'r': float(r),
+        'nu': float(nu),
+        'dr': float(dr),
+        'lastZ': lastZ,
+        'iter': int(iters)
+    }
+
+
+def mandelbulb_color_cpu(p, power=8.0, bailout=2.0, max_iter=16, mode=1, ni_scale=0.08, orbit_shell=1.0):
+    """Compute a color for point p inside/outside Mandelbulb matching shader modes.
+    mode: 0 smooth escape, 1 orbit trap, 2 angular/phase
+    """
+    ob = mandelbulb_iter_cpu(p, power, bailout, max_iter, orbit_shell)
+    # palettes and constants similar to fragment shader
+    A = np.array([0.50, 0.50, 0.50], dtype=np.float64)
+    B = np.array([0.50, 0.50, 0.50], dtype=np.float64)
+    C = np.array([1.00, 1.00, 1.00], dtype=np.float64)
+    D = np.array([0.00, 0.33, 0.67], dtype=np.float64)
+
+    if mode == 0:
+        t = ob['nu'] * float(ni_scale)
+        return np.clip(_palette(t, A, B, C, D), 0.0, 1.0)
+    elif mode == 1:
+        a = np.exp(-8.0 * ob['trapPlane'])
+        b = np.exp(-6.0 * ob['trapShell'])
+        t = max(0.0, min(1.0, a + 0.5 * b))
+        base = (1.0 - t) * np.array([0.1,0.2,0.5]) + t * np.array([0.9,0.9,0.2])
+        ni = (ob['nu'] * max(float(ni_scale) * 1.25, 0.001)) % 1.0
+        return np.clip(base * (0.85 + 0.3 * ni), 0.0, 1.0)
+    else:
+        z = ob['lastZ']
+        r_safe = max(np.linalg.norm(z), 1e-12)
+        phi = np.arctan2(z[1], z[0])
+        theta = np.arccos(np.clip(z[2] / r_safe, -1.0, 1.0))
+        h = (phi / (2.0 * np.pi)) % 1.0
+        s = np.clip(theta / np.pi, 0.0, 1.0)
+        v = 0.9
+        c = v * s
+        x = c * (1.0 - abs((h * 6.0) % 2.0 - 1.0))
+        if h < 1.0/6.0:
+            rgb = np.array([c, x, 0.0])
+        elif h < 2.0/6.0:
+            rgb = np.array([x, c, 0.0])
+        elif h < 3.0/6.0:
+            rgb = np.array([0.0, c, x])
+        elif h < 4.0/6.0:
+            rgb = np.array([0.0, x, c])
+        elif h < 5.0/6.0:
+            rgb = np.array([x, 0.0, c])
+        else:
+            rgb = np.array([c, 0.0, x])
+        rgb = rgb + (v - c)
+        accent = (ob['nu'] * max(float(ni_scale) * 1.875, 0.001)) % 1.0
+        return np.clip(rgb * (0.85 + 0.25 * accent), 0.0, 1.0)
 
 # --- New Primitives ---
 def sd_gyroid(p, scale=1.0, tau=0.0, thickness=0.05):

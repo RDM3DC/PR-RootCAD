@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
     QScrollArea, QSizePolicy, QInputDialog, QToolButton, QGridLayout,
-    QTextEdit, QLineEdit, QListWidget, QListWidgetItem
+    QTextEdit, QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
+    QMessageBox, QProgressDialog
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
@@ -26,7 +27,9 @@ from adaptivecad.aacore.sdf import (
 )
 import time, os
 import json
-from functools import partial
+import importlib.util
+import ctypes
+from functools import partial, lru_cache
 import logging
 log = logging.getLogger("adaptivecad.gui")
 try:
@@ -63,6 +66,49 @@ except Exception:
     RadialToolWheelOverlay = None  # type: ignore
     ToolSpec = None  # type: ignore
     _HAVE_WHEEL = False
+
+_CUPY_INIT_ERROR: str | None = None
+
+
+@lru_cache(maxsize=1)
+def _cupy_available() -> bool:
+    try:
+        global _CUPY_INIT_ERROR
+        if importlib.util.find_spec("cupy") is None:
+            _CUPY_INIT_ERROR = "CuPy package not found"
+            return False
+        if sys.platform.startswith("win"):
+            try:
+                # Ensure nvrtc64_120_0.dll and friends from the pip CUDA runtimes are discoverable
+                candidate_specs = [
+                    importlib.util.find_spec("nvidia.cuda_runtime"),
+                    importlib.util.find_spec("nvidia.cuda_nvrtc"),
+                ]
+                for spec in candidate_specs:
+                    if not spec or not spec.origin:
+                        continue
+                    base = Path(spec.origin).resolve().parent
+                    for sub in ("bin", "lib", "Lib", "DLLs"):
+                        dll_dir = base / sub
+                        if dll_dir.exists():
+                            try:
+                                os.add_dll_directory(str(dll_dir))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+        import cupy  # type: ignore
+
+        cupy.zeros((1,), dtype=cupy.float32)  # minimal allocation to confirm runtime
+        _CUPY_INIT_ERROR = None
+        return True
+    except Exception as exc:
+        _CUPY_INIT_ERROR = str(exc)
+        try:
+            log.debug("CuPy unavailable: %s", _CUPY_INIT_ERROR)
+        except Exception:
+            pass
+        return False
 
     # --- 2D Sketch Overlay (Polyline + Snaps) ---------------------------------
     SNAP_PX = 10  # pixel radius for snapping
@@ -1352,6 +1398,10 @@ class AnalyticViewport(QOpenGLWidget):
         # Lightweight 2D polyline overlays (for algorithm visuals)
         # Each entry: { 'pts': [(x,y),...], 'color': (r,g,b), 'width': int, 'scale': (sx,sy), 'offset': (ox,oy) }
         self._poly_overlays = []
+        # Triangle mesh overlays (reloaded exports, diagnostics)
+        self._mesh_prog = None
+        self._mesh_uniforms: dict[str, int] = {}
+        self._mesh_overlays: list[dict[str, object]] = []
 
     # Resolve a sketch reference used by dimension tools into a world XY np.array([x,y], float32)
     def _ref_to_xy(self, ref):
@@ -1427,6 +1477,88 @@ class AnalyticViewport(QOpenGLWidget):
         glAttachShader(self.prog, vsh); glAttachShader(self.prog, fsh); glLinkProgram(self.prog)
         if not glGetProgramiv(self.prog, GL_LINK_STATUS): raise RuntimeError(glGetProgramInfoLog(self.prog).decode())
         glDeleteShader(vsh); glDeleteShader(fsh)
+
+        # Mesh overlay shader (renders triangle meshes on top of the raymarched scene)
+        mesh_vs_src = (
+            "#version 330 core\n"
+            "layout(location=0) in vec3 a_pos;\n"
+            "layout(location=1) in vec3 a_norm;\n"
+            "layout(location=2) in vec3 a_color;\n"
+            "uniform mat4 u_mvp;\n"
+            "uniform mat4 u_model;\n"
+            "uniform mat3 u_normal;\n"
+            "out vec3 v_normal;\n"
+            "out vec3 v_color;\n"
+            "out vec3 v_world_pos;\n"
+            "void main(){\n"
+            "    vec4 world = u_model * vec4(a_pos, 1.0);\n"
+            "    v_world_pos = world.xyz;\n"
+            "    v_normal = u_normal * a_norm;\n"
+            "    v_color = a_color;\n"
+            "    gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
+            "}\n"
+        )
+        mesh_fs_src = (
+            "#version 330 core\n"
+            "in vec3 v_normal;\n"
+            "in vec3 v_color;\n"
+            "in vec3 v_world_pos;\n"
+            "out vec4 FragColor;\n"
+            "uniform vec3 u_cam_pos;\n"
+            "uniform vec3 u_light_dir;\n"
+            "uniform vec3 u_fallback_color;\n"
+            "uniform int u_has_vertex_color;\n"
+            "void main(){\n"
+            "    vec3 N = normalize(v_normal);\n"
+            "    vec3 L = normalize(u_light_dir);\n"
+            "    vec3 V = normalize(u_cam_pos - v_world_pos);\n"
+            "    vec3 base = mix(u_fallback_color, clamp(v_color, 0.0, 1.0), float(u_has_vertex_color));\n"
+            "    float diff = max(dot(N, L), 0.0);\n"
+            "    vec3 H = normalize(L + V);\n"
+            "    float spec = pow(max(dot(N, H), 0.0), 32.0);\n"
+            "    vec3 color = base * (0.25 + 0.75 * diff) + spec * 0.2;\n"
+            "    FragColor = vec4(color, 1.0);\n"
+            "}\n"
+        )
+        try:
+            mesh_prog = glCreateProgram()
+            mesh_vs = glCreateShader(GL_VERTEX_SHADER)
+            glShaderSource(mesh_vs, mesh_vs_src)
+            glCompileShader(mesh_vs)
+            if not glGetShaderiv(mesh_vs, GL_COMPILE_STATUS):
+                raise RuntimeError(glGetShaderInfoLog(mesh_vs).decode())
+            mesh_fs = glCreateShader(GL_FRAGMENT_SHADER)
+            glShaderSource(mesh_fs, mesh_fs_src)
+            glCompileShader(mesh_fs)
+            if not glGetShaderiv(mesh_fs, GL_COMPILE_STATUS):
+                raise RuntimeError(glGetShaderInfoLog(mesh_fs).decode())
+            glAttachShader(mesh_prog, mesh_vs)
+            glAttachShader(mesh_prog, mesh_fs)
+            glLinkProgram(mesh_prog)
+            if not glGetProgramiv(mesh_prog, GL_LINK_STATUS):
+                raise RuntimeError(glGetProgramInfoLog(mesh_prog).decode())
+            glDeleteShader(mesh_vs)
+            glDeleteShader(mesh_fs)
+            self._mesh_prog = mesh_prog
+            self._mesh_uniforms = {
+                "u_mvp": glGetUniformLocation(mesh_prog, "u_mvp"),
+                "u_model": glGetUniformLocation(mesh_prog, "u_model"),
+                "u_normal": glGetUniformLocation(mesh_prog, "u_normal"),
+                "u_cam_pos": glGetUniformLocation(mesh_prog, "u_cam_pos"),
+                "u_light_dir": glGetUniformLocation(mesh_prog, "u_light_dir"),
+                "u_fallback_color": glGetUniformLocation(mesh_prog, "u_fallback_color"),
+                "u_has_vertex_color": glGetUniformLocation(mesh_prog, "u_has_vertex_color"),
+            }
+        except Exception as exc:
+            log.debug(f"Mesh overlay shader init failed: {exc}")
+            try:
+                if 'mesh_prog' in locals():
+                    glDeleteProgram(mesh_prog)
+            except Exception:
+                pass
+            self._mesh_prog = None
+            self._mesh_uniforms = {}
+
         # fullscreen quad
         self._vao = glGenVertexArrays(1); glBindVertexArray(self._vao)
         v = np.array([-1,-1,  1,-1, -1, 1,   1,1], dtype=np.float32)
@@ -1506,6 +1638,7 @@ class AnalyticViewport(QOpenGLWidget):
         glClearColor(*self.scene.bg_color, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
         self._render_scene_internal(debug_override=None)
+        self._draw_mesh_overlays()
         # Sketch overlay
         try:
             panel = self.parent()
@@ -1688,6 +1821,250 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform1f(U("u_fractal_ni_scale"), float(self.fractal_ni_scale))
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+
+    def _view_matrix(self) -> np.ndarray:
+        R = self._cam_basis().astype(np.float32)
+        view = np.identity(4, dtype=np.float32)
+        rot = R.T
+        view[:3, :3] = rot
+        view[:3, 3] = -rot @ self.cam_pos.astype(np.float32)
+        return view
+
+    def _projection_matrix(self) -> np.ndarray:
+        w = max(1, self.width())
+        h = max(1, self.height())
+        aspect = float(w) / float(h)
+        fov = np.radians(45.0)
+        f = 1.0 / np.tan(0.5 * fov)
+        near = 0.1
+        far = float(max(1.0, getattr(self, 'far_plane', 200.0)))
+        proj = np.zeros((4, 4), dtype=np.float32)
+        proj[0, 0] = f / aspect
+        proj[1, 1] = f
+        proj[2, 2] = (far + near) / (near - far)
+        proj[2, 3] = (2.0 * far * near) / (near - far)
+        proj[3, 2] = -1.0
+        return proj
+
+    def _delete_mesh_overlay_gl(self, overlay: dict[str, object]) -> None:
+        try:
+            vao = int(overlay.get('vao', 0) or 0)
+            if vao:
+                glDeleteVertexArrays(1, [vao])
+        except Exception:
+            pass
+        try:
+            vbo = int(overlay.get('vbo', 0) or 0)
+            if vbo:
+                glDeleteBuffers(1, [vbo])
+        except Exception:
+            pass
+        try:
+            ebo = int(overlay.get('ebo', 0) or 0)
+            if ebo:
+                glDeleteBuffers(1, [ebo])
+        except Exception:
+            pass
+
+    def _clear_mesh_overlays_locked(self) -> None:
+        if not getattr(self, '_mesh_overlays', None):
+            return
+        for overlay in list(self._mesh_overlays):
+            self._delete_mesh_overlay_gl(overlay)
+        self._mesh_overlays = []
+
+    def clear_mesh_overlays(self) -> None:
+        if not getattr(self, '_mesh_overlays', None):
+            return
+        ctx = self.context()
+        if ctx is None:
+            self._mesh_overlays = []
+            return
+        try:
+            self.makeCurrent()
+        except Exception:
+            self._mesh_overlays = []
+            return
+        try:
+            self._clear_mesh_overlays_locked()
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+        self.update()
+
+    def _build_mesh_overlay(self, mesh, *, source_path: str | None = None) -> dict[str, object]:
+        import numpy as _np
+
+        if mesh is None or getattr(mesh, 'vertices', None) is None:
+            raise ValueError("Mesh data is empty")
+
+        vertices = _np.asarray(mesh.vertices, dtype=_np.float32)
+        if vertices.size == 0:
+            raise ValueError("Mesh has no vertices")
+
+        faces = _np.asarray(mesh.faces, dtype=_np.uint32)
+        if faces.size == 0:
+            raise ValueError("Mesh has no faces")
+
+        try:
+            normals = _np.asarray(mesh.vertex_normals, dtype=_np.float32)
+        except Exception:
+            normals = _np.zeros_like(vertices, dtype=_np.float32)
+
+        if normals.shape != vertices.shape or not _np.isfinite(normals).all():
+            try:
+                mesh.fix_normals()
+                normals = _np.asarray(mesh.vertex_normals, dtype=_np.float32)
+            except Exception:
+                normals = _np.zeros_like(vertices, dtype=_np.float32)
+        normals = _np.nan_to_num(normals, nan=0.0, posinf=0.0, neginf=0.0)
+
+        colors = None
+        try:
+            vc = getattr(mesh.visual, 'vertex_colors', None)
+            if vc is not None and len(vc) == len(vertices):
+                colors = _np.asarray(vc, dtype=_np.float32)
+        except Exception:
+            colors = None
+
+        has_color = False
+        if colors is not None and colors.size:
+            if colors.shape[1] >= 3:
+                colors = colors[:, :3]
+            if colors.max() > 1.5:
+                colors = colors / 255.0
+            colors = _np.clip(colors.astype(_np.float32), 0.0, 1.0)
+            has_color = True
+        else:
+            colors = _np.zeros((vertices.shape[0], 3), dtype=_np.float32)
+
+        interleaved = _np.hstack((vertices, normals, colors)).astype(_np.float32, copy=False)
+        stride = interleaved.shape[1] * interleaved.dtype.itemsize
+        indices = _np.ascontiguousarray(faces.reshape(-1), dtype=_np.uint32)
+
+        vao = glGenVertexArrays(1)
+        vbo = glGenBuffers(1)
+        ebo = glGenBuffers(1)
+        created = dict(vao=vao, vbo=vbo, ebo=ebo)
+        try:
+            glBindVertexArray(vao)
+            glBindBuffer(GL_ARRAY_BUFFER, vbo)
+            glBufferData(GL_ARRAY_BUFFER, interleaved.nbytes, interleaved, GL_STATIC_DRAW)
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
+
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+            glEnableVertexAttribArray(1)
+            offset_normals = ctypes.c_void_p(3 * interleaved.dtype.itemsize)
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, offset_normals)
+            glEnableVertexAttribArray(2)
+            offset_colors = ctypes.c_void_p(6 * interleaved.dtype.itemsize)
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, offset_colors)
+
+            glBindVertexArray(0)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+        except Exception:
+            glBindVertexArray(0)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+            self._delete_mesh_overlay_gl(created)
+            raise
+
+        fallback = colors.mean(axis=0).astype(_np.float32) if has_color else _np.array([0.85, 0.75, 0.55], dtype=_np.float32)
+        fallback = _np.clip(fallback, 0.0, 1.0)
+
+        overlay = {
+            'vao': vao,
+            'vbo': vbo,
+            'ebo': ebo,
+            'count': int(indices.size),
+            'has_color': has_color,
+            'model': _np.identity(4, dtype=_np.float32),
+            'normal': _np.identity(3, dtype=_np.float32),
+            'fallback': fallback,
+            'path': source_path or "",
+        }
+        return overlay
+
+    def add_mesh_overlay(self, mesh, *, source_path: str | None = None, replace_existing: bool = True) -> tuple[bool, str | None]:
+        if self._mesh_prog is None:
+            return False, "Mesh overlay shader unavailable"
+        if mesh is None:
+            return False, "No mesh to add"
+        if self.context() is None:
+            return False, "OpenGL context not ready"
+        try:
+            self.makeCurrent()
+        except Exception as exc:
+            return False, f"Unable to activate GL context: {exc}"
+        try:
+            if replace_existing:
+                self._clear_mesh_overlays_locked()
+            overlay = self._build_mesh_overlay(mesh, source_path=source_path)
+            self._mesh_overlays.append(overlay)
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+        self.update()
+        return True, None
+
+    def _draw_mesh_overlays(self) -> None:
+        if not self._mesh_prog or not self._mesh_overlays:
+            return
+        try:
+            glUseProgram(self._mesh_prog)
+        except Exception as exc:
+            log.debug(f"Mesh overlay program unavailable: {exc}")
+            return
+
+        view = self._view_matrix()
+        proj = self._projection_matrix()
+        mvp_uniform = self._mesh_uniforms.get('u_mvp') if self._mesh_uniforms else None
+        if mvp_uniform is None:
+            return
+
+        cam_pos = np.array(self.cam_pos, dtype=np.float32)
+        light_dir = np.array(self.scene.env_light, dtype=np.float32)
+        norm = np.linalg.norm(light_dir)
+        if norm < 1e-5:
+            light_dir = np.array([0.6, 0.8, 0.9], dtype=np.float32)
+        else:
+            light_dir = (light_dir / norm).astype(np.float32)
+
+        glUniform3fv(self._mesh_uniforms['u_cam_pos'], 1, cam_pos)
+        glUniform3fv(self._mesh_uniforms['u_light_dir'], 1, light_dir)
+
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        for overlay in self._mesh_overlays:
+            try:
+                model = np.array(overlay.get('model'), dtype=np.float32)
+                normal = np.array(overlay.get('normal'), dtype=np.float32)
+                mvp = proj @ view @ model
+                glUniformMatrix4fv(self._mesh_uniforms['u_mvp'], 1, GL_FALSE, mvp.astype(np.float32).T)
+                glUniformMatrix4fv(self._mesh_uniforms['u_model'], 1, GL_FALSE, model.astype(np.float32).T)
+                glUniformMatrix3fv(self._mesh_uniforms['u_normal'], 1, GL_FALSE, normal.astype(np.float32).T)
+                fallback = np.array(overlay.get('fallback', np.array([0.8, 0.7, 0.6], dtype=np.float32)), dtype=np.float32)
+                glUniform3fv(self._mesh_uniforms['u_fallback_color'], 1, fallback)
+                glUniform1i(self._mesh_uniforms['u_has_vertex_color'], 1 if overlay.get('has_color') else 0)
+                glBindVertexArray(int(overlay['vao']))
+                glDrawElements(GL_TRIANGLES, int(overlay['count']), GL_UNSIGNED_INT, None)
+            except Exception as exc:
+                log.debug(f"Mesh overlay draw failed: {exc}")
+                continue
+
+        glBindVertexArray(0)
+        glDisable(GL_BLEND)
+        glUseProgram(0)
 
     def _draw_frame(self, debug_override=None):  # retained for other callers
         glViewport(0,0,self.width(), self.height())
@@ -2612,6 +2989,276 @@ class AnalyticViewportPanel(QWidget):
                 output = f"LLM error: {exc}"
             self.finished_text.emit(output)
 
+    class _MandelbulbExportWorker(QThread):
+        progress = Signal(str)
+        finished = Signal(bool, str, str, str)
+
+        def __init__(
+            self,
+            *,
+            resolution: int,
+            extent: float,
+            power: float,
+            bailout: float,
+            max_iter: int,
+            color_mode_index: int,
+            pi_mode: str,
+            pi_base: float,
+            pi_alpha: float,
+            pi_mu: float,
+            norm_mode: str,
+            norm_k: float,
+            norm_r0: float,
+            norm_sigma: float,
+            step_scale: float,
+            use_gpu_colors: bool,
+            outfile: str,
+            transform: np.ndarray | None,
+            scale: float,
+            orbit_shell: float,
+            ni_scale: float,
+            use_gpu: bool,
+            compute_colors: bool,
+            parent: QWidget | None = None,
+        ) -> None:
+            super().__init__(parent)
+            self._resolution = int(max(8, resolution))
+            self._extent = float(max(0.1, extent))
+            self._power = float(max(2.0, power))
+            self._bailout = float(max(1.0, bailout))
+            self._max_iter = int(max(4, max_iter))
+            self._color_mode_index = int(max(0, min(2, color_mode_index)))
+            self._pi_mode = pi_mode if pi_mode in ("fixed", "adaptive") else "fixed"
+            self._pi_base = float(pi_base)
+            self._pi_alpha = float(max(0.0, pi_alpha))
+            self._pi_mu = float(max(0.0, pi_mu))
+            self._norm_mode = norm_mode if norm_mode in ("euclid", "adaptive") else "euclid"
+            self._norm_k = float(max(0.0, norm_k))
+            self._norm_r0 = float(max(0.1, norm_r0))
+            self._norm_sigma = float(max(0.01, norm_sigma))
+            self._step_scale = float(max(0.1, step_scale))
+            self._use_gpu_colors = bool(use_gpu_colors)
+            self._outfile = outfile
+            self._transform = transform.copy() if transform is not None else None
+            self._scale = float(scale if scale != 0.0 else 1.0)
+            self._orbit_shell = float(max(0.0, orbit_shell))
+            self._ni_scale = float(max(0.001, ni_scale))
+            self._use_gpu = bool(use_gpu)
+            self._compute_colors = bool(compute_colors)
+
+        def run(self) -> None:  # pragma: no cover - long-running worker
+            try:
+                from mandelbulb_make import field_sample
+                from skimage.measure import marching_cubes
+                from adaptivecad.aacore.sdf import mandelbulb_color_cpu
+                import numpy as _np
+
+                bounds = (
+                    -self._extent,
+                    self._extent,
+                    -self._extent,
+                    self._extent,
+                    -self._extent,
+                    self._extent,
+                )
+
+                requested_gpu = self._use_gpu
+                mode = "GPU" if requested_gpu else "CPU"
+                self.progress.emit(
+                    f"Sampling field @ res={self._resolution} in bounds={bounds} [{mode}]"
+                )
+                sample_start = time.perf_counter()
+                used_gpu = requested_gpu
+                try:
+                    field, axes = field_sample(
+                        bounds,
+                        self._resolution,
+                        self._power,
+                        self._bailout,
+                        self._max_iter,
+                        self._pi_mode,
+                        self._pi_base,
+                        self._pi_alpha,
+                        self._pi_mu,
+                        use_gpu=self._use_gpu,
+                    )
+                except Exception as exc:
+                    if self._use_gpu:
+                        self.progress.emit("GPU sampling failed; falling back to CPU."
+                                            " (see console for details)")
+                        used_gpu = False
+                        field, axes = field_sample(
+                            bounds,
+                            self._resolution,
+                            self._power,
+                            self._bailout,
+                            self._max_iter,
+                            self._pi_mode,
+                            self._pi_base,
+                            self._pi_alpha,
+                            self._pi_mu,
+                            use_gpu=False,
+                        )
+                    else:
+                        raise
+
+                xs, ys, zs = axes
+                sample_elapsed = time.perf_counter() - sample_start
+                if used_gpu:
+                    detail = ""
+                    try:
+                        import cupy as _cp  # type: ignore
+
+                        dev_id = _cp.cuda.runtime.getDevice()
+                        props = _cp.cuda.runtime.getDeviceProperties(dev_id)
+                        name = props.get("name", b"")
+                        if isinstance(name, bytes):
+                            name = name.decode("utf-8", "ignore")
+                        mem_free, mem_total = _cp.cuda.runtime.memGetInfo()
+                        detail = (
+                            f" on {name.strip()} (free {mem_free / 1e9:.1f}/"
+                            f"{mem_total / 1e9:.1f} GB)"
+                        )
+                    except Exception:
+                        detail = ""
+                    self.progress.emit(
+                        f"Field sampling (GPU) finished in {sample_elapsed:.1f}s{detail}."
+                    )
+                else:
+                    self.progress.emit(
+                        f"Field sampling (CPU) finished in {sample_elapsed:.1f}s."
+                    )
+
+                self.progress.emit("Building mesh from field…")
+                mesh_start = time.perf_counter()
+                
+                # Try using the new build_mesh function with adaptive parameters
+                try:
+                    from mandelbulb_make import build_mesh
+                    color_mode_str = ["ni", "orbit", "angle"][self._color_mode_index]
+                    verts_world, faces, colors = build_mesh(
+                        field, 
+                        (xs, ys, zs), 
+                        color_mode_str, 
+                        self._power, 
+                        self._bailout, 
+                        self._max_iter,
+                        self._pi_mode, 
+                        self._pi_base, 
+                        self._pi_alpha, 
+                        self._pi_mu,
+                        norm_mode=self._norm_mode,
+                        norm_k=self._norm_k,
+                        norm_r0=self._norm_r0,
+                        norm_sigma=self._norm_sigma,
+                        orbit_shell=self._orbit_shell,
+                        use_gpu_colors=self._use_gpu_colors and self._use_gpu
+                    )
+                    mesh_elapsed = time.perf_counter() - mesh_start
+                    
+                    # Apply scale and transform
+                    scale = self._scale if abs(self._scale) > 1e-9 else 1.0
+                    if abs(scale - 1.0) > 1e-9:
+                        verts_world = verts_world / scale
+                        
+                    if self._transform is not None:
+                        verts_h = _np.concatenate(
+                            [verts_world, _np.ones((verts_world.shape[0], 1), dtype=_np.float64)],
+                            axis=1,
+                        )
+                        verts_world = (verts_h @ self._transform.T)[:, :3]
+                    
+                    if self._compute_colors and colors is not None:
+                        colors = (_np.clip(colors, 0.0, 1.0) * 255.0).astype(_np.uint8)
+                    else:
+                        colors = _np.full((len(verts_world), 3), 255, dtype=_np.uint8)
+                        
+                    gpu_status = " (GPU colors)" if (self._use_gpu_colors and self._use_gpu) else ""
+                    self.progress.emit(f"Mesh built in {mesh_elapsed:.1f}s{gpu_status}")
+                    
+                except Exception as e:
+                    # Fallback to original marching cubes approach
+                    self.progress.emit(f"build_mesh failed ({e}), using fallback...")
+                    
+                    vol = _np.transpose(field, (2, 1, 0))
+                    dx = (xs[-1] - xs[0]) / (len(xs) - 1) if len(xs) > 1 else 1.0
+                    dy = (ys[-1] - ys[0]) / (len(ys) - 1) if len(ys) > 1 else 1.0
+                    dz = (zs[-1] - zs[0]) / (len(zs) - 1) if len(zs) > 1 else 1.0
+
+                    self.progress.emit("Running marching cubes …")
+                    verts, faces, _norms, _ = marching_cubes(
+                        vol, level=0.0, spacing=(dz, dy, dx)
+                    )
+
+                    verts_local = _np.zeros((verts.shape[0], 3), dtype=_np.float64)
+                    verts_local[:, 0] = xs[0] + verts[:, 2]
+                    verts_local[:, 1] = ys[0] + verts[:, 1]
+                    verts_local[:, 2] = zs[0] + verts[:, 0]
+
+                    scale = self._scale if abs(self._scale) > 1e-9 else 1.0
+
+                    if self._compute_colors:
+                        if used_gpu:
+                            self.progress.emit(
+                                "Vertex color baking runs on CPU; disable 'Bake Vertex Colors'"
+                                " to skip this step."
+                            )
+                        self.progress.emit("Colorizing vertices …")
+                        colors = _np.zeros((verts_local.shape[0], 3), dtype=_np.uint8)
+                        for i, v in enumerate(verts_local):
+                            if i % 2000 == 0:
+                                self.progress.emit(
+                                    f"Colorizing vertices … ({i}/{len(verts_local)})"
+                                )
+                            col = mandelbulb_color_cpu(
+                                v * scale,
+                                self._power,
+                                self._bailout,
+                                self._max_iter,
+                                self._color_mode_index,
+                                self._ni_scale,
+                                self._orbit_shell,
+                            )
+                            colors[i] = (_np.clip(col, 0.0, 1.0) * 255.0).astype(_np.uint8)
+                    else:
+                        colors = _np.full((verts_local.shape[0], 3), 255, dtype=_np.uint8)
+
+                    if abs(scale - 1.0) > 1e-9:
+                        verts_local = verts_local / scale
+
+                    if self._transform is not None:
+                        verts_h = _np.concatenate(
+                            [verts_local, _np.ones((verts_local.shape[0], 1), dtype=_np.float64)],
+                            axis=1,
+                        )
+                        verts_world = (verts_h @ self._transform.T)[:, :3]
+                    else:
+                        verts_world = verts_local
+
+                self.progress.emit("Saving meshes …")
+                import trimesh as _trimesh
+
+                mesh = _trimesh.Trimesh(
+                    vertices=verts_world.astype(_np.float32),
+                    faces=faces.astype(_np.int64),
+                    process=False,
+                )
+
+                stl_path = f"{self._outfile}.stl"
+                mesh.export(stl_path)
+
+                mesh_vc = mesh.copy()
+                alpha = _np.full(len(colors), 255, dtype=_np.uint8)
+                mesh_vc.visual.vertex_colors = _np.column_stack((colors, alpha))
+                ply_path = f"{self._outfile}_color.ply"
+                mesh_vc.export(ply_path)
+
+                self.finished.emit(True, stl_path, ply_path, "")
+            except Exception as exc:  # pragma: no cover - runtime failure path
+                import traceback
+
+                self.finished.emit(False, "", "", traceback.format_exc())
+
     def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
         super().__init__(parent)
         # Radial wheel defaults (updated before controls are created)
@@ -2677,6 +3324,30 @@ class AnalyticViewportPanel(QWidget):
         self._fractal_mode_box: QComboBox | None = None
         self._fractal_shell_spin: QDoubleSpinBox | None = None
         self._fractal_ni_spin: QDoubleSpinBox | None = None
+
+        # Mandelbulb export controls / workers
+        self._mandelbulb_worker: "AnalyticViewportPanel._MandelbulbExportWorker | None" = None
+        self._mb_progress_dialog: QProgressDialog | None = None
+        self._mb_res_spin: QSpinBox | None = None
+        self._mb_extent_spin: QDoubleSpinBox | None = None
+        self._mb_power_spin: QDoubleSpinBox | None = None
+        self._mb_bailout_spin: QDoubleSpinBox | None = None
+        self._mb_iter_spin: QSpinBox | None = None
+        self._mb_scale_spin: QDoubleSpinBox | None = None
+        self._mb_color_box: QComboBox | None = None
+        self._mb_pi_mode_box: QComboBox | None = None
+        self._mb_pi_base_spin: QDoubleSpinBox | None = None
+        self._mb_pi_alpha_spin: QDoubleSpinBox | None = None
+        self._mb_pi_mu_spin: QDoubleSpinBox | None = None
+        self._mb_export_btn: QPushButton | None = None
+        self._mb_pull_btn: QPushButton | None = None
+        self._mb_status_label: QLabel | None = None
+        self._mb_use_gpu_chk: QCheckBox | None = None
+        self._mb_reload_btn: QPushButton | None = None
+        self._mb_clear_overlay_btn: QPushButton | None = None
+        self._mb_last_export: tuple[str, str] | None = None
+        self._mb_overlay_loaded: bool = False
+        self._mb_colors_chk: QCheckBox | None = None
 
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
@@ -3876,12 +4547,20 @@ class AnalyticViewportPanel(QWidget):
                 self._fractal_ni_spin.blockSignals(True)
                 self._fractal_ni_spin.setValue(float(self.view.fractal_ni_scale))
                 self._fractal_ni_spin.blockSignals(False)
+            if self._mb_color_box is not None:
+                self._mb_color_box.blockSignals(True)
+                self._mb_color_box.setCurrentIndex(int(self.view.fractal_color_mode))
+                self._mb_color_box.blockSignals(False)
         except Exception:
             pass
 
     def _on_fractal_mode_changed(self, idx: int) -> None:
         try:
             self.view.fractal_color_mode = int(idx)
+            if self._mb_color_box is not None and self._mb_color_box.currentIndex() != int(idx):
+                self._mb_color_box.blockSignals(True)
+                self._mb_color_box.setCurrentIndex(int(idx))
+                self._mb_color_box.blockSignals(False)
             self.view.update()
             self.view._save_settings()
         except Exception:
@@ -3902,6 +4581,292 @@ class AnalyticViewportPanel(QWidget):
             self.view._save_settings()
         except Exception:
             pass
+
+    def _on_mandelbulb_export_color_mode_changed(self, idx: int) -> None:
+        try:
+            idx = int(idx)
+            if self._fractal_mode_box is not None:
+                self._fractal_mode_box.blockSignals(True)
+                self._fractal_mode_box.setCurrentIndex(idx)
+                self._fractal_mode_box.blockSignals(False)
+            self._on_fractal_mode_changed(idx)
+        except Exception:
+            pass
+            
+    def _on_norm_mode_changed(self, idx: int) -> None:
+        """Auto-adjust step scale when switching norm modes."""
+        try:
+            if idx == 1:  # Adaptive norm
+                self._mb_step_scale_spin.setValue(0.8)
+                self._mb_step_scale_spin.setToolTip("Recommended: 0.8 for adaptive norm stability.")
+            else:  # Euclidean
+                self._mb_step_scale_spin.setValue(1.0)
+                self._mb_step_scale_spin.setToolTip("Safety factor for ray marching. Use 0.8 with adaptive norm.")
+        except Exception:
+            pass
+
+    def _selected_mandelbulb_prim(self):
+        if not hasattr(self.view, 'scene'):
+            return None
+        if not (0 <= getattr(self, '_current_sel', -1) < len(self.view.scene.prims)):
+            return None
+        pr = self.view.scene.prims[self._current_sel]
+        if pr.kind == KIND_MANDELBULB:
+            return pr
+        return None
+
+    def _apply_mandelbulb_params_to_controls(self, pr) -> None:
+        if pr is None:
+            return
+        try:
+            if self._mb_power_spin is not None:
+                self._mb_power_spin.blockSignals(True)
+                self._mb_power_spin.setValue(float(pr.params[0]))
+                self._mb_power_spin.blockSignals(False)
+            if self._mb_bailout_spin is not None and len(pr.params) > 1:
+                self._mb_bailout_spin.blockSignals(True)
+                self._mb_bailout_spin.setValue(float(pr.params[1]))
+                self._mb_bailout_spin.blockSignals(False)
+            if self._mb_iter_spin is not None and len(pr.params) > 2:
+                self._mb_iter_spin.blockSignals(True)
+                self._mb_iter_spin.setValue(int(max(4, pr.params[2])))
+                self._mb_iter_spin.blockSignals(False)
+            if self._mb_scale_spin is not None and len(pr.params) > 3:
+                self._mb_scale_spin.blockSignals(True)
+                self._mb_scale_spin.setValue(float(pr.params[3]))
+                self._mb_scale_spin.blockSignals(False)
+        except Exception:
+            pass
+
+    def _pull_mandelbulb_params_from_selection(self) -> None:
+        pr = self._selected_mandelbulb_prim()
+        if pr is None:
+            self._set_mb_status("Select a Mandelbulb primitive first.")
+            return
+        self._apply_mandelbulb_params_to_controls(pr)
+        self._set_mb_status(f"Loaded parameters from Mandelbulb #{self._current_sel}.")
+
+    def _set_mb_status(self, text: str) -> None:
+        if self._mb_status_label is not None:
+            self._mb_status_label.setText(text)
+
+    def _update_mandelbulb_export_ui(self, pr) -> None:
+        has_mb = pr is not None and getattr(pr, 'kind', None) == KIND_MANDELBULB
+        if self._mb_export_btn is not None:
+            self._mb_export_btn.setEnabled(has_mb and self._mandelbulb_worker is None)
+        if self._mb_pull_btn is not None:
+            self._mb_pull_btn.setEnabled(has_mb)
+        if self._mb_reload_btn is not None:
+            enable_reload = self._mb_last_export is not None and self._mandelbulb_worker is None
+            self._mb_reload_btn.setEnabled(enable_reload)
+        if self._mb_clear_overlay_btn is not None:
+            self._mb_clear_overlay_btn.setEnabled(self._mb_overlay_loaded)
+        if has_mb:
+            self._apply_mandelbulb_params_to_controls(pr)
+            self._set_mb_status(f"Ready to export Mandelbulb #{self._current_sel}.")
+        else:
+            self._set_mb_status("Select a Mandelbulb primitive to export.")
+
+    def _export_mandelbulb_mesh(self) -> None:
+        if self._mandelbulb_worker is not None:
+            self._set_mb_status("Export already in progress.")
+            return
+        pr = self._selected_mandelbulb_prim()
+        if pr is None:
+            self._set_mb_status("Select a Mandelbulb primitive first.")
+            return
+
+        resolution = self._mb_res_spin.value() if self._mb_res_spin is not None else 160
+        extent = self._mb_extent_spin.value() if self._mb_extent_spin is not None else 1.6
+        power = self._mb_power_spin.value() if self._mb_power_spin is not None else float(pr.params[0])
+        bailout = self._mb_bailout_spin.value() if self._mb_bailout_spin is not None else float(pr.params[1])
+        max_iter = self._mb_iter_spin.value() if self._mb_iter_spin is not None else int(max(4, pr.params[2]))
+        scale = self._mb_scale_spin.value() if self._mb_scale_spin is not None else (pr.params[3] if len(pr.params) > 3 else 1.0)
+        color_mode = self._mb_color_box.currentIndex() if self._mb_color_box is not None else int(self.view.fractal_color_mode)
+        pi_mode = "adaptive" if (self._mb_pi_mode_box is not None and self._mb_pi_mode_box.currentIndex() == 1) else "fixed"
+        pi_base = self._mb_pi_base_spin.value() if self._mb_pi_base_spin is not None else float(np.pi)
+        pi_alpha = self._mb_pi_alpha_spin.value() if self._mb_pi_alpha_spin is not None else 0.0
+        pi_mu = self._mb_pi_mu_spin.value() if self._mb_pi_mu_spin is not None else 0.05
+        orbit_shell = float(getattr(self.view, 'fractal_orbit_shell', 1.0))
+        ni_scale = float(getattr(self.view, 'fractal_ni_scale', 0.08))
+        use_gpu = bool(self._mb_use_gpu_chk.isChecked()) if self._mb_use_gpu_chk is not None else False
+        bake_colors = bool(self._mb_colors_chk.isChecked()) if self._mb_colors_chk is not None else True
+
+        export_root_env = (os.getenv("ADCAD_MANDELBULB_EXPORT_DIR", "") or "").strip()
+        if export_root_env:
+            export_root = Path(export_root_env)
+        else:
+            export_root = Path(__file__).resolve().parent.parent / "exports" / "mandelbulbs"
+        try:
+            export_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            fallback_root = Path.cwd() / "mandelbulb_exports"
+            fallback_root.mkdir(parents=True, exist_ok=True)
+            export_root = fallback_root
+
+        def _tag_float(val: float) -> str:
+            txt = f"{val:.2f}".rstrip("0").rstrip(".")
+            return txt.replace(".", "p") if txt else "0"
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        default_name = f"mandelbulb_p{_tag_float(power)}_res{int(resolution)}_{timestamp}.stl"
+        default_path = str(export_root / default_name)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Mandelbulb Mesh",
+            default_path,
+            "STL (*.stl);;All Files (*)",
+        )
+        if not path:
+            return
+
+        path_obj = Path(path)
+        outfile_path = path_obj.with_suffix("") if path_obj.suffix.lower() == ".stl" else path_obj
+        out_dir = outfile_path.parent
+        if out_dir and out_dir != Path('.'):
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        outfile = str(outfile_path)
+
+        transform = pr.xform.M.astype(np.float64)
+
+        self._mandelbulb_worker = self._MandelbulbExportWorker(
+            resolution=resolution,
+            extent=extent,
+            power=power,
+            bailout=bailout,
+            max_iter=max_iter,
+            color_mode_index=color_mode,
+            pi_mode=pi_mode,
+            pi_base=pi_base,
+            pi_alpha=pi_alpha,
+            pi_mu=pi_mu,
+            norm_mode=["euclid", "adaptive"][self._mb_norm_mode_box.currentIndex()],
+            norm_k=self._mb_norm_k_spin.value(),
+            norm_r0=self._mb_norm_r0_spin.value(),
+            norm_sigma=self._mb_norm_sigma_spin.value(),
+            step_scale=self._mb_step_scale_spin.value(),
+            use_gpu_colors=self._mb_gpu_colors_chk.isChecked(),
+            outfile=outfile,
+            transform=transform,
+            scale=scale,
+            orbit_shell=orbit_shell,
+            ni_scale=ni_scale,
+            use_gpu=use_gpu,
+            compute_colors=bake_colors,
+            parent=self,
+        )
+        self._mandelbulb_worker.progress.connect(self._handle_mandelbulb_export_progress)
+        self._mandelbulb_worker.finished.connect(self._handle_mandelbulb_export_finished)
+
+        dlg = QProgressDialog("Starting Mandelbulb export…", None, 0, 0, self)
+        dlg.setWindowTitle("Exporting Mandelbulb")
+        dlg.setCancelButton(None)
+        dlg.setModal(True)
+        dlg.show()
+        self._mb_progress_dialog = dlg
+        self._set_mb_status("Exporting Mandelbulb…")
+
+        self._mandelbulb_worker.start()
+        self._update_mandelbulb_export_ui(pr)
+
+    def _handle_mandelbulb_export_progress(self, message: str) -> None:
+        self._set_mb_status(message)
+        if self._mb_progress_dialog is not None:
+            self._mb_progress_dialog.setLabelText(message)
+
+    def _handle_mandelbulb_export_finished(self, ok: bool, stl_path: str, ply_path: str, err: str) -> None:
+        if self._mb_progress_dialog is not None:
+            self._mb_progress_dialog.hide()
+            self._mb_progress_dialog.deleteLater()
+            self._mb_progress_dialog = None
+        self._mandelbulb_worker = None
+        self._update_mandelbulb_export_ui(self._selected_mandelbulb_prim())
+        if ok:
+            self._mb_last_export = (stl_path, ply_path)
+            if self._mb_reload_btn is not None:
+                self._mb_reload_btn.setEnabled(True)
+            self._set_mb_status("Export complete.")
+            QMessageBox.information(self, "Mandelbulb Export", f"Saved:\n{stl_path}\n{ply_path}")
+        else:
+            self._set_mb_status("Export failed.")
+            QMessageBox.warning(self, "Mandelbulb Export", err or "Unknown error")
+
+    def _add_last_mandelbulb_export(self) -> None:
+        if self._mb_last_export is None:
+            self._set_mb_status("No Mandelbulb export available to reload.")
+            return
+        if not hasattr(self, 'view') or self.view is None:
+            QMessageBox.warning(self, "Reload Mandelbulb", "Viewport unavailable for mesh overlay.")
+            return
+
+        stl_path, ply_path = self._mb_last_export
+        candidates = [p for p in (ply_path, stl_path) if p]
+        existing = None
+        for candidate in candidates:
+            p = Path(candidate)
+            if p.exists():
+                existing = p
+                break
+        if existing is None:
+            QMessageBox.warning(
+                self,
+                "Reload Mandelbulb",
+                "Last export files could not be found. Please export again.",
+            )
+            return
+
+        try:
+            import trimesh  # type: ignore
+
+            mesh = trimesh.load(str(existing), process=False)
+            if isinstance(mesh, trimesh.Scene):
+                geoms = list(mesh.geometry.values())
+                if not geoms:
+                    raise ValueError("Mesh scene is empty")
+                mesh = trimesh.util.concatenate(geoms)
+            if not isinstance(mesh, trimesh.Trimesh):
+                raise ValueError("Unsupported mesh type")
+            if len(mesh.vertices) == 0:
+                raise ValueError("Mesh has no vertices")
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Reload Mandelbulb",
+                f"Failed to load exported mesh:\n{exc}",
+            )
+            return
+
+        success, error_msg = self.view.add_mesh_overlay(mesh, source_path=str(existing))
+        if success:
+            self._set_mb_status(f"Loaded Mandelbulb overlay from {existing.name}.")
+            self._mb_overlay_loaded = True
+            if self._mb_clear_overlay_btn is not None:
+                self._mb_clear_overlay_btn.setEnabled(True)
+            self.view.update()
+        else:
+            QMessageBox.warning(
+                self,
+                "Reload Mandelbulb",
+                error_msg or "Could not create mesh overlay.",
+            )
+
+    def _clear_mandelbulb_overlay(self) -> None:
+        if not hasattr(self, 'view') or self.view is None:
+            return
+        try:
+            self.view.clear_mesh_overlays()
+            self._mb_overlay_loaded = False
+            if self._mb_clear_overlay_btn is not None:
+                self._mb_clear_overlay_btn.setEnabled(False)
+            self._set_mb_status("Cleared Mandelbulb mesh overlay.")
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Clear Mandelbulb Mesh",
+                f"Could not clear overlay:\n{exc}",
+            )
 
     def _on_section_toggle(self, key: str, checked: bool) -> None:
         if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
@@ -4335,7 +5300,7 @@ class AnalyticViewportPanel(QWidget):
         self._sp_pos = [dspin() for _ in range(3)]
         self._sp_param = [dspin((0,10),0.01,0.5) for _ in range(2)]
         self._sp_beta = dspin((-1,1),0.01,0.0)
-        self._btn_color = QPushButton("Colorâ€¦")
+        self._btn_color = QPushButton("Color...")
         self._op_box = _QCB2(); self._op_box.addItems(["solid","subtract"])
         fe2.addRow("Pos X/Y/Z", self._make_row(self._sp_pos))
         fe2.addRow("Param A/B", self._make_row(self._sp_param))
@@ -4355,7 +5320,7 @@ class AnalyticViewportPanel(QWidget):
         def mspin():
             s = QDoubleSpinBox(); s.setRange(-1000.0,1000.0); s.setSingleStep(0.01); s.setDecimals(4); s.setValue(0.0); return s
         self._sp_move = [mspin() for _ in range(3)]
-        fe2.addRow("Rot Ã‚Â° X/Y/Z", self._make_row(self._sp_rot))
+        fe2.addRow("Rot deg X/Y/Z", self._make_row(self._sp_rot))
         fe2.addRow("Scale X/Y/Z", self._make_row(self._sp_scl))
         def _set_uniform_scale(v: float):
             try:
@@ -4372,6 +5337,11 @@ class AnalyticViewportPanel(QWidget):
         fe2.addRow("Move X/Y/Z", self._make_row(self._sp_move))
         self._nudge_step = QDoubleSpinBox(); self._nudge_step.setRange(0.001,100.0); self._nudge_step.setDecimals(3); self._nudge_step.setSingleStep(0.1); self._nudge_step.setValue(1.0)
         fe2.addRow("Nudge Step", self._nudge_step)
+        # Preview button for selected primitive (CPU low-res raymarch)
+        btn_preview = QPushButton("Preview Primitive")
+        btn_preview.setToolTip("Generate a quick low-resolution CPU preview of the selected primitive (useful when shaders unavailable)")
+        btn_preview.clicked.connect(lambda checked=False, p=self: preview_primitive(p))
+        fe2.addRow(btn_preview)
         self._edit_group.setEnabled(False); vp.addWidget(self._edit_group)
         for sp in self._sp_pos: sp.valueChanged.connect(self._apply_edit)
         for sp in self._sp_param: sp.valueChanged.connect(self._apply_edit)
@@ -4407,6 +5377,99 @@ class AnalyticViewportPanel(QWidget):
         side.addWidget(gb_fractal)
         self._register_section("fractal_color", "Fractal Color", gb_fractal)
         self._sync_fractal_controls()
+
+        # --- Mandelbulb Mesh Export ---
+        gb_mb = QGroupBox("Mandelbulb Mesh Export"); fb_mb = QFormLayout(); gb_mb.setLayout(fb_mb)
+        self._mb_res_spin = QSpinBox(); self._mb_res_spin.setRange(32, 512); self._mb_res_spin.setSingleStep(16); self._mb_res_spin.setValue(256)
+        self._mb_extent_spin = QDoubleSpinBox(); self._mb_extent_spin.setRange(0.2, 4.0); self._mb_extent_spin.setDecimals(3); self._mb_extent_spin.setSingleStep(0.1); self._mb_extent_spin.setValue(1.6)
+        self._mb_power_spin = QDoubleSpinBox(); self._mb_power_spin.setRange(2.0, 16.0); self._mb_power_spin.setDecimals(2); self._mb_power_spin.setSingleStep(0.1); self._mb_power_spin.setValue(8.0)
+        self._mb_bailout_spin = QDoubleSpinBox(); self._mb_bailout_spin.setRange(2.0, 32.0); self._mb_bailout_spin.setDecimals(2); self._mb_bailout_spin.setSingleStep(0.1); self._mb_bailout_spin.setValue(8.0)
+        self._mb_iter_spin = QSpinBox(); self._mb_iter_spin.setRange(4, 96); self._mb_iter_spin.setSingleStep(2); self._mb_iter_spin.setValue(14)
+        self._mb_scale_spin = QDoubleSpinBox(); self._mb_scale_spin.setRange(0.1, 4.0); self._mb_scale_spin.setDecimals(3); self._mb_scale_spin.setSingleStep(0.05); self._mb_scale_spin.setValue(1.0)
+        self._mb_color_box = QComboBox(); self._mb_color_box.addItems(["Smooth Escape", "Orbit Trap", "Angular/Phase"]); self._mb_color_box.setCurrentIndex(int(self.view.fractal_color_mode))
+        self._mb_color_box.currentIndexChanged.connect(self._on_mandelbulb_export_color_mode_changed)
+        self._mb_pi_mode_box = QComboBox(); self._mb_pi_mode_box.addItems(["Fixed π", "Adaptive πₐ"])
+        self._mb_pi_base_spin = QDoubleSpinBox(); self._mb_pi_base_spin.setRange(2.5, 3.5); self._mb_pi_base_spin.setDecimals(8); self._mb_pi_base_spin.setSingleStep(0.0001); self._mb_pi_base_spin.setValue(float(np.pi))
+        self._mb_pi_alpha_spin = QDoubleSpinBox(); self._mb_pi_alpha_spin.setRange(0.0, 1.0); self._mb_pi_alpha_spin.setDecimals(3); self._mb_pi_alpha_spin.setSingleStep(0.01); self._mb_pi_alpha_spin.setValue(0.0)
+        self._mb_pi_mu_spin = QDoubleSpinBox(); self._mb_pi_mu_spin.setRange(0.0, 1.0); self._mb_pi_mu_spin.setDecimals(3); self._mb_pi_mu_spin.setSingleStep(0.01); self._mb_pi_mu_spin.setValue(0.05)
+
+        # Adaptive norm controls
+        self._mb_norm_mode_box = QComboBox(); self._mb_norm_mode_box.addItems(["Euclidean", "Adaptive Norm"])
+        self._mb_norm_k_spin = QDoubleSpinBox(); self._mb_norm_k_spin.setRange(0.0, 1.0); self._mb_norm_k_spin.setDecimals(3); self._mb_norm_k_spin.setSingleStep(0.01); self._mb_norm_k_spin.setValue(0.12)
+        self._mb_norm_r0_spin = QDoubleSpinBox(); self._mb_norm_r0_spin.setRange(0.1, 2.0); self._mb_norm_r0_spin.setDecimals(3); self._mb_norm_r0_spin.setSingleStep(0.05); self._mb_norm_r0_spin.setValue(0.9)
+        self._mb_norm_sigma_spin = QDoubleSpinBox(); self._mb_norm_sigma_spin.setRange(0.01, 1.0); self._mb_norm_sigma_spin.setDecimals(3); self._mb_norm_sigma_spin.setSingleStep(0.01); self._mb_norm_sigma_spin.setValue(0.35)
+        self._mb_step_scale_spin = QDoubleSpinBox(); self._mb_step_scale_spin.setRange(0.1, 2.0); self._mb_step_scale_spin.setDecimals(2); self._mb_step_scale_spin.setSingleStep(0.05); self._mb_step_scale_spin.setValue(1.0)
+        self._mb_step_scale_spin.setToolTip("Safety factor for ray marching. Use 0.8 with adaptive norm.")
+        
+        # Connect adaptive norm mode to auto-adjust step scale
+        self._mb_norm_mode_box.currentIndexChanged.connect(self._on_norm_mode_changed)
+
+        fb_mb.addRow("Resolution", self._mb_res_spin)
+        fb_mb.addRow("Bounds ±", self._mb_extent_spin)
+        fb_mb.addRow("Power", self._mb_power_spin)
+        fb_mb.addRow("Bailout", self._mb_bailout_spin)
+        fb_mb.addRow("Max Iter", self._mb_iter_spin)
+        fb_mb.addRow("Internal Scale", self._mb_scale_spin)
+        fb_mb.addRow("Color Mode", self._mb_color_box)
+        fb_mb.addRow("π Mode", self._mb_pi_mode_box)
+        fb_mb.addRow("π Base", self._mb_pi_base_spin)
+        fb_mb.addRow("π α", self._mb_pi_alpha_spin)
+        fb_mb.addRow("π μ", self._mb_pi_mu_spin)
+        
+        # Adaptive norm controls
+        fb_mb.addRow("Norm Mode", self._mb_norm_mode_box)
+        fb_mb.addRow("Norm k", self._mb_norm_k_spin)
+        fb_mb.addRow("Norm r₀", self._mb_norm_r0_spin)
+        fb_mb.addRow("Norm σ", self._mb_norm_sigma_spin)
+        fb_mb.addRow("Step Scale", self._mb_step_scale_spin)
+
+        self._mb_use_gpu_chk = QCheckBox("Use GPU (CuPy)")
+        have_cupy = _cupy_available()
+        self._mb_use_gpu_chk.setChecked(have_cupy)
+        self._mb_use_gpu_chk.setEnabled(True)
+        if not have_cupy:
+            reason = _CUPY_INIT_ERROR or "Install CuPy (or ensure CUDA is available) to enable GPU sampling."
+            self._mb_use_gpu_chk.setToolTip(str(reason))
+        else:
+            self._mb_use_gpu_chk.setToolTip("Run field sampling on the GPU via CuPy when exporting.")
+        fb_mb.addRow("Acceleration", self._mb_use_gpu_chk)
+
+        self._mb_colors_chk = QCheckBox("Bake Vertex Colors")
+        self._mb_colors_chk.setChecked(True)
+        self._mb_colors_chk.setToolTip("When disabled, skip per-vertex fractal colors to speed up exports.")
+        fb_mb.addRow("Vertex Colors", self._mb_colors_chk)
+        
+        self._mb_gpu_colors_chk = QCheckBox("GPU Vertex Colors")
+        self._mb_gpu_colors_chk.setChecked(have_cupy)
+        self._mb_gpu_colors_chk.setEnabled(True)
+        if not have_cupy:
+            self._mb_gpu_colors_chk.setToolTip("Requires GPU acceleration. Install CuPy to enable.")
+        else:
+            self._mb_gpu_colors_chk.setToolTip("Use GPU RawKernel for fast vertex coloring with adaptive parameters.")
+        fb_mb.addRow("GPU Colors", self._mb_gpu_colors_chk)
+
+        self._mb_pull_btn = QPushButton("Use Selected Mandelbulb")
+        self._mb_pull_btn.setEnabled(False)
+        self._mb_pull_btn.clicked.connect(self._pull_mandelbulb_params_from_selection)
+        self._mb_export_btn = QPushButton("Export STL & PLY…")
+        self._mb_export_btn.setEnabled(False)
+        self._mb_export_btn.clicked.connect(self._export_mandelbulb_mesh)
+        fb_mb.addRow(self._make_row([self._mb_pull_btn, self._mb_export_btn]))
+
+        self._mb_status_label = QLabel("Select a Mandelbulb primitive to export.")
+        self._mb_status_label.setWordWrap(True)
+        fb_mb.addRow(self._mb_status_label)
+
+        self._mb_reload_btn = QPushButton("Add Last Export to Scene")
+        self._mb_reload_btn.setEnabled(False)
+        self._mb_reload_btn.clicked.connect(self._add_last_mandelbulb_export)
+        self._mb_clear_overlay_btn = QPushButton("Clear Loaded Mesh")
+        self._mb_clear_overlay_btn.setEnabled(False)
+        self._mb_clear_overlay_btn.clicked.connect(self._clear_mandelbulb_overlay)
+        fb_mb.addRow(self._make_row([self._mb_reload_btn, self._mb_clear_overlay_btn]))
+
+        side.addWidget(gb_mb)
+        self._register_section("mandelbulb_export", "Mandelbulb Export", gb_mb, default_visible=True)
         
         # --- Tesseract (4D hypercube) ---
         gb_tess = QGroupBox("Tesseract (4D Hypercube)"); ft = QFormLayout(); gb_tess.setLayout(ft)
@@ -4473,7 +5536,7 @@ class AnalyticViewportPanel(QWidget):
         self._mol_bond_thresh = QDoubleSpinBox(); self._mol_bond_thresh.setRange(0.0, 1.0); self._mol_bond_thresh.setDecimals(3); self._mol_bond_thresh.setSingleStep(0.02); self._mol_bond_thresh.setValue(0.2)
         self._mol_autospin = QCheckBox("Auto-Spin"); self._mol_autospin.setChecked(True)
         self._mol_speed = QDoubleSpinBox(); self._mol_speed.setRange(0.0, 360.0); self._mol_speed.setDecimals(1); self._mol_speed.setSingleStep(5.0); self._mol_speed.setValue(25.0)
-        btn_imp_xyz = QPushButton("Import XYZâ€¦")
+        btn_imp_xyz = QPushButton("Import XYZ...")
         btn_imp_xyz.clicked.connect(self._import_xyz_molecule)
         fmol.addRow("Atom Scale", self._mol_atom_scale)
         fmol.addRow("Bond Radius", self._mol_bond_r)
@@ -5156,7 +6219,9 @@ class AnalyticViewportPanel(QWidget):
 
     def _select_prim(self, idx:int):
         if not (0 <= idx < len(self.view.scene.prims)):
-            self._current_sel = -1; self._edit_group.setEnabled(False); return
+            self._current_sel = -1; self._edit_group.setEnabled(False);
+            self._update_mandelbulb_export_ui(None)
+            return
         self._current_sel = idx
         pr = self.view.scene.prims[idx]
         # position from transform matrix (assume affine last column xyz)
@@ -5226,6 +6291,8 @@ class AnalyticViewportPanel(QWidget):
             self._sp_param[1].setToolTip(b_tt)
         except Exception:
             pass
+
+        self._update_mandelbulb_export_ui(pr)
 
     def _apply_edit(self):
         if self._current_sel < 0 or self._current_sel >= len(self.view.scene.prims):
@@ -5412,6 +6479,93 @@ class AnalyticViewportPanel(QWidget):
 
 def create_analytic_viewport_with_panel(parent=None, aacore_scene: AACoreScene | None = None):
     return AnalyticViewportPanel(parent, aacore_scene=aacore_scene)
+
+
+def preview_primitive(panel):
+    """Module-level helper: CPU raymarch preview for a panel's selected primitive."""
+    try:
+        if panel is None:
+            return
+        if not (0 <= getattr(panel, '_current_sel', -1) < len(panel.view.scene.prims)):
+            return
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
+        from PySide6.QtGui import QImage, QPixmap
+        from adaptivecad.aacore.sdf import Scene as _Scene, Prim as _Prim, mandelbulb_color_cpu, KIND_MANDELBULB
+        import numpy as _np
+
+        pr = panel.view.scene.prims[panel._current_sel]
+        tmp_scene = _Scene()
+        pcopy = _Prim(pr.kind, list(pr.params), beta=float(pr.beta), color=tuple(pr.color[:3]), op=pr.op)
+        pcopy.xform.M = pr.xform.M.copy()
+        tmp_scene.add(pcopy)
+
+        W, H = 320, 200
+        img = _np.zeros((H, W, 3), dtype=_np.uint8)
+        cam_pos = getattr(panel.view, 'cam_pos', _np.array([0.0,0.0,6.0], _np.float32)).astype(_np.float64)
+        R = panel.view._cam_basis()
+        fov = 45.0 * (3.141592653589793 / 180.0)
+        aspect = float(W) / float(H)
+        max_steps = 160
+        eps = 1e-3
+        max_dist = 60.0
+
+        def ray_dir(x, y):
+            ndc_x = ((x + 0.5) / W) * 2.0 - 1.0
+            ndc_y = ((y + 0.5) / H) * 2.0 - 1.0
+            ndc_x *= aspect
+            rd = _np.dot(R, _np.array([ndc_x, -ndc_y, -1.0 / _np.tan(0.5 * fov)], dtype=_np.float64))
+            rd = rd / max(1e-12, _np.linalg.norm(rd))
+            return rd
+
+        for j in range(H):
+            for i in range(W):
+                ro = cam_pos.copy(); rd = ray_dir(i, j)
+                t = 0.0; hit = False
+                for _ in range(max_steps):
+                    pw = ro + rd * t
+                    d, _, _ = tmp_scene.sdf(pw)
+                    if d < eps:
+                        hit = True; break
+                    t += max(d, 0.002)
+                    if t > max_dist: break
+                if not hit:
+                    bg = (tmp_scene.bg_color * 255.0).astype(_np.uint8)
+                    img[j, i, :] = bg
+                else:
+                    p_hit = ro + rd * t
+                    delta = eps
+                    nx = tmp_scene.sdf(p_hit + _np.array([delta,0,0]))[0] - tmp_scene.sdf(p_hit - _np.array([delta,0,0]))[0]
+                    ny = tmp_scene.sdf(p_hit + _np.array([0,delta,0]))[0] - tmp_scene.sdf(p_hit - _np.array([0,delta,0]))[0]
+                    nz = tmp_scene.sdf(p_hit + _np.array([0,0,delta]))[0] - tmp_scene.sdf(p_hit - _np.array([0,0,delta]))[0]
+                    n = _np.array([nx, ny, nz], dtype=_np.float64);
+                    n = n / max(1e-9, _np.linalg.norm(n))
+                    if pr.kind == KIND_MANDELBULB:
+                        Mi = _np.linalg.inv(pr.xform.M)
+                        mparams = pr.params
+                        scale = float(mparams[3]) if len(mparams) > 3 else 1.0
+                        pl = (Mi @ _np.array([p_hit[0], p_hit[1], p_hit[2], 1.0]))[:3] * scale
+                        surf = mandelbulb_color_cpu(pl, float(mparams[0]), float(mparams[1]), int(max(4, mparams[2])), int(panel.view.fractal_color_mode), float(panel.view.fractal_ni_scale), float(panel.view.fractal_orbit_shell))
+                    else:
+                        surf = _np.clip(pr.color[:3], 0.0, 1.0)
+                    L = tmp_scene.env_light / max(1e-9, _np.linalg.norm(tmp_scene.env_light))
+                    ndl = max(0.0, float(_np.dot(n, L)))
+                    base = surf * (0.5 + 0.5 * ndl)
+                    col = (_np.clip(base, 0.0, 1.0) * 255.0).astype(_np.uint8)
+                    img[j, i, :] = col
+
+        qimg = QImage(img.data.tobytes(), W, H, QImage.Format.Format_RGB888)
+        dlg = QDialog(panel)
+        dlg.setWindowTitle("Primitive Preview")
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel(dlg)
+        pix = QPixmap.fromImage(qimg)
+        lbl.setPixmap(pix)
+        lay.addWidget(lbl)
+        dlg.setLayout(lay)
+        dlg.exec()
+    except Exception as e:
+        try: log.debug(f"preview_primitive failed: {e}")
+        except Exception: pass
 
 # --- persistence helpers on AnalyticViewport ---
 def _analytic_settings_defaults():
