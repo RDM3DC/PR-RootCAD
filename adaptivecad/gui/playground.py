@@ -130,8 +130,10 @@ if HAS_QT:
 
         def ConvertMeshToAnalyticCmd():
             return _StubCmd("Convert Mesh â†’ Analytic")
+
         def ConvertAnalyticToMeshCmd():
             return _StubCmd("Convert Analytic â†’ Mesh")
+
     from adaptivecad.command_defs import (
         CutCmd,
         ExportAmaCmd,

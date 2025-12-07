@@ -66,8 +66,7 @@ def build_tool_schema(available_tools: List[str]) -> List[dict]:
             "function": {
                 "name": "upgrade_profile_to_pi_a",
                 "description": (
-                    "Mark the current or provided profile as pi_a "
-                    "for downstream operations."
+                    "Mark the current or provided profile as pi_a " "for downstream operations."
                 ),
                 "parameters": {
                     "type": "object",

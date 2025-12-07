@@ -247,6 +247,7 @@ def segment_intersection(
 
         def clamp(t):
             return max(0.0, min(1.0, t))
+
         i0 = a0 + r * clamp(t_min)
         i1 = a0 + r * clamp(t_max)
         if i0.distance_to(i1) <= eps:

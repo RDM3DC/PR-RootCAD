@@ -345,7 +345,6 @@ def process_single_bspline_surface(face_data, kappa):
             # Create new control points array
             new_poles = TColgp_Array2OfPnt(1, nb_u_poles, 1, nb_v_poles)
 
-
             for i in range(1, nb_u_poles + 1):
                 for j in range(1, nb_v_poles + 1):
                     pole = bspline.Pole(i, j)

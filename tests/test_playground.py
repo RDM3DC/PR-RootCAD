@@ -42,7 +42,6 @@ def test_view_mode_methods_present():
 def test_playground_missing_deps(monkeypatch):
     import builtins
 
-
     def fake_import(name, *args, **kwargs):
         if name.startswith("PySide6") or name.startswith("OCC"):
             raise ImportError("mocked missing")

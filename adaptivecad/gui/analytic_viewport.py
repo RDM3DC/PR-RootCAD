@@ -2309,8 +2309,10 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform3f(glGetUniformLocation(self.prog, "u_bg"), *self.scene.bg_color)
         pack = self.scene.to_gpu_structs(max_prims=MAX_PRIMS)
         n = int(pack["count"])
+
         def U(name):
             return glGetUniformLocation(self.prog, name)
+
         glUniform1i(U("u_count"), n)
         glUniform1iv(U("u_kind"), n, pack["kind"])
         glUniform1iv(U("u_op"), n, pack["op"])

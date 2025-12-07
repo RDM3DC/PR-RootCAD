@@ -147,10 +147,7 @@ if __name__ == "__main__":
         print(f"Manifest: {ama_content.manifest}")
         for part in ama_content.parts:
             brep_len = len(part.brep_data) if part.brep_data else 0
-            print(
-                f"Part: {part.name}, Metadata: {part.metadata}, "
-                f"BREP length: {brep_len}"
-            )
+            print(f"Part: {part.name}, Metadata: {part.metadata}, " f"BREP length: {brep_len}")
     else:
         print("Failed to read AMA file.")
 
