@@ -5,6 +5,7 @@ import pytest
 def occ_installed():
     try:
         import OCC.Core  # noqa: F401
+
         return True
     except Exception:
         return False

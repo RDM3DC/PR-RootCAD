@@ -35,11 +35,12 @@ except Exception as _params_err:  # Optional numpy dependency may be missing
     ParamEnv = None  # type: ignore[assignment]
 from .spacetime import (
     Event,
-    minkowski_interval,
-    lorentz_boost_x,
     apply_boost,
     light_cone,
+    lorentz_boost_x,
+    minkowski_interval,
 )
+
 try:
     from .cosmic_curve_tools import (
         BizarreCurveFeature,
@@ -57,13 +58,14 @@ except Exception as _cosmic_err:  # Optional scientific deps
     NDFieldExplorerFeature = None  # type: ignore[assignment]
 try:
     from .quantum_visualization import (
-        QuantumState,
-        WavefunctionVisualizer,
         EntanglementVisualizer,
         QuantumFieldVisualizer,
+        QuantumState,
+        WavefunctionVisualizer,
     )
 except Exception as _quantum_err:  # SciPy or related optional deps missing
     import logging as _logging
+
     _logging.getLogger("adaptivecad").debug(
         "Quantum visualization modules unavailable (optional): %s", _quantum_err
     )
@@ -75,26 +77,31 @@ except Exception as _quantum_err:  # SciPy or related optional deps missing
 
 def generate_gcode_from_shape(*args, **kwargs):
     from .gcode_generator import generate_gcode_from_shape
+
     return generate_gcode_from_shape(*args, **kwargs)
 
 
 def generate_gcode_from_ama_file(*args, **kwargs):
     from .gcode_generator import generate_gcode_from_ama_file
+
     return generate_gcode_from_ama_file(*args, **kwargs)
 
 
 def generate_gcode_from_ama_data(*args, **kwargs):
     from .gcode_generator import generate_gcode_from_ama_data
+
     return generate_gcode_from_ama_data(*args, **kwargs)
 
 
 def load_stl(*args, **kwargs):
     """Convenience wrapper for :func:`simple_stl.load_stl`."""
     from .simple_stl import load_stl as _load_stl
+
     return _load_stl(*args, **kwargs)
 
 
 def export_slices_from_ama(*args, **kwargs):
     """Convenience wrapper for :func:`slice_export.export_slices_from_ama`."""
     from .slice_export import export_slices_from_ama as _export
+
     return _export(*args, **kwargs)

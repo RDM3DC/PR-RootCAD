@@ -4,8 +4,8 @@ Run the AdaptiveCAD Full Playground with advanced shapes, modeling tools,
 settings menu and view cube.
 """
 
-import sys
 import os
+import sys
 
 # Ensure adaptivecad is in the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,5 +24,6 @@ except ImportError as e:
 except Exception as e:
     print(f"Error running playground: {e}")
     import traceback
+
     traceback.print_exc()
     sys.exit(1)

@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 # Debug launcher for AdaptiveCAD playground
 
-import sys
-import os
-import traceback
-
 # Configure logging
 import logging
+import os
+import sys
+import traceback
+
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='playground_debug.log',
-    filemode='w'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    filename="playground_debug.log",
+    filemode="w",
 )
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ try:
     logger.debug("Starting import of MainWindow")
     # Import and run the playground module
     from adaptivecad.gui.playground import MainWindow
+
     logger.debug("Successfully imported MainWindow")
 
     if __name__ == "__main__":

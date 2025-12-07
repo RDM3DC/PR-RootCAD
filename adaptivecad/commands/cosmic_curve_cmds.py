@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from adaptivecad.command_defs import BaseCmd, DOCUMENT, rebuild_scene
+from adaptivecad.command_defs import DOCUMENT, BaseCmd, rebuild_scene
 from adaptivecad.cosmic_curve_tools import (
     BizarreCurveFeature,
     CosmicSplineFeature,
@@ -9,6 +9,7 @@ from adaptivecad.cosmic_curve_tools import (
 
 try:
     from PySide6.QtWidgets import QInputDialog
+
     HAS_QT = True
 except Exception:
     HAS_QT = False
@@ -23,7 +24,9 @@ class BizarreCurveCmd(BaseCmd):
         if BizarreCurveFeature is None:
             return
 
-        r, ok = QInputDialog.getDouble(mw.win, "Bizarre Curve", "Base Radius:", 10.0, 0.1, 1000.0, 2)
+        r, ok = QInputDialog.getDouble(
+            mw.win, "Bizarre Curve", "Base Radius:", 10.0, 0.1, 1000.0, 2
+        )
         if not ok:
             return
         h, ok = QInputDialog.getDouble(mw.win, "Bizarre Curve", "Height:", 50.0, 0.1, 1000.0, 2)
@@ -51,7 +54,9 @@ class CosmicSplineCmd(BaseCmd):
         if not HAS_QT:
             return
 
-        npts, ok = QInputDialog.getInt(mw.win, "Cosmic Spline", "Number of control points:", 4, 2, 20, 1)
+        npts, ok = QInputDialog.getInt(
+            mw.win, "Cosmic Spline", "Number of control points:", 4, 2, 20, 1
+        )
         if not ok:
             return
         pts = []
@@ -69,7 +74,9 @@ class CosmicSplineCmd(BaseCmd):
         degree, ok = QInputDialog.getInt(mw.win, "Cosmic Spline", "Degree:", 3, 2, 5, 1)
         if not ok:
             return
-        curv, ok = QInputDialog.getDouble(mw.win, "Cosmic Spline", "Cosmic Curvature:", 0.5, -10.0, 10.0, 2)
+        curv, ok = QInputDialog.getDouble(
+            mw.win, "Cosmic Spline", "Cosmic Curvature:", 0.5, -10.0, 10.0, 2
+        )
         if not ok:
             return
 
@@ -105,4 +112,3 @@ class NDFieldExplorerCmd(BaseCmd):
         feat = NDFieldExplorerFeature(dims, size, ftype)
         DOCUMENT.append(feat)
         rebuild_scene(mw.view._display)
-

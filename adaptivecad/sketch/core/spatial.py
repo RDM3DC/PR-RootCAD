@@ -89,13 +89,17 @@ class SpatialIndex:
     def update(self, entity_id: str, bounds: AABB2, payload: Optional[object] = None) -> None:
         self.insert(entity_id, bounds, payload)
 
-    def query(self, region: AABB2, *, include_payload: bool = False) -> Iterator[Tuple[str, Optional[object]]]:
+    def query(
+        self, region: AABB2, *, include_payload: bool = False
+    ) -> Iterator[Tuple[str, Optional[object]]]:
         for entity_id, (bounds, payload) in self._items.items():
             if bounds.intersects(region):
                 yield (entity_id, payload if include_payload else None)
 
     def all_items(self) -> List[Tuple[str, AABB2, Optional[object]]]:
-        return [(entity_id, bounds, payload) for entity_id, (bounds, payload) in self._items.items()]
+        return [
+            (entity_id, bounds, payload) for entity_id, (bounds, payload) in self._items.items()
+        ]
 
 
 __all__ = ["AABB2", "SpatialIndex", "VecLike"]

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 try:
     from PySide6.QtWidgets import QApplication
-    from .playground import MainWindow, HAS_GUI
+
+    from .playground import HAS_GUI, MainWindow
 except Exception:  # pragma: no cover - optional GUI deps missing
     HAS_GUI = False
 

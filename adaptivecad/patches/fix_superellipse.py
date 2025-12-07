@@ -2,6 +2,7 @@
 
 from adaptivecad.command_defs import Feature
 
+
 # Define the missing SuperellipseFeature class
 class SuperellipseFeature(Feature):
     def __init__(self, rx, ry, n, segments=60):
@@ -16,14 +17,19 @@ class SuperellipseFeature(Feature):
 
     @staticmethod
     def _make_shape(params):
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeEdge
-        from OCC.Core.gp import gp_Pnt
         import numpy as np
+        from OCC.Core.BRepBuilderAPI import (
+            BRepBuilderAPI_MakeEdge,
+            BRepBuilderAPI_MakeFace,
+            BRepBuilderAPI_MakeWire,
+        )
+        from OCC.Core.gp import gp_Pnt
+
         rx = params["rx"]
         ry = params["ry"]
         n = params["n"]
         segments = params["segments"]
-        
+
         # Generate points for superellipse: |x/rx|^n + |y/ry|^n = 1
         ts = np.linspace(0, 2 * np.pi, segments)
         # Convert parametric equations for superellipse
@@ -34,26 +40,26 @@ class SuperellipseFeature(Feature):
             sin_t = np.sin(t)
             cos_t_abs = abs(cos_t)
             sin_t_abs = abs(sin_t)
-            
+
             # Handle zero case to avoid division by zero
             if cos_t_abs < 1e-10:
                 x = 0
             else:
-                x = rx * np.sign(cos_t) * (cos_t_abs ** (2/n))
-                
+                x = rx * np.sign(cos_t) * (cos_t_abs ** (2 / n))
+
             if sin_t_abs < 1e-10:
                 y = 0
             else:
-                y = ry * np.sign(sin_t) * (sin_t_abs ** (2/n))
-            
+                y = ry * np.sign(sin_t) * (sin_t_abs ** (2 / n))
+
             pts.append(gp_Pnt(x, y, 0))
-        
+
         # Create a wire from the points
         wire = BRepBuilderAPI_MakeWire()
         for i in range(segments):
             edge = BRepBuilderAPI_MakeEdge(pts[i], pts[(i + 1) % segments]).Edge()
             wire.Add(edge)
-        
+
         # Create a face from the wire
         face = BRepBuilderAPI_MakeFace(wire.Wire()).Face()
         return face
@@ -61,12 +67,21 @@ class SuperellipseFeature(Feature):
     def rebuild(self):
         self.shape = self._make_shape(self.params)
 
+
 # Define the missing NewSuperellipseCmd class
 class NewSuperellipseCmd:
     def __init__(self):
         pass
+
     def run(self, mw):
-        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QSpinBox
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QDoubleSpinBox,
+            QFormLayout,
+            QSpinBox,
+        )
+
         class ParamDialog(QDialog):
             def __init__(self, parent=None):
                 super().__init__(parent)
@@ -93,7 +108,7 @@ class NewSuperellipseCmd:
                 buttons.accepted.connect(self.accept)
                 buttons.rejected.connect(self.reject)
                 layout.addWidget(buttons)
-        
+
         dlg = ParamDialog(mw.win)
         if not dlg.exec():
             return
@@ -101,10 +116,11 @@ class NewSuperellipseCmd:
         ry = dlg.ry.value()
         n = dlg.n.value()
         segments = dlg.segments.value()
-        
+
         feat = SuperellipseFeature(rx, ry, n, segments)
         try:
             from adaptivecad.command_defs import DOCUMENT
+
             DOCUMENT.append(feat)
         except Exception:
             pass
@@ -113,8 +129,10 @@ class NewSuperellipseCmd:
         mw.view._display.FitAll()
         mw.win.statusBar().showMessage(f"Superellipse created: rx={rx}, ry={ry}, n={n}", 3000)
 
+
 # Patch the adaptivecad.gui.playground module
 import adaptivecad.gui.playground
+
 adaptivecad.gui.playground.SuperellipseFeature = SuperellipseFeature
 adaptivecad.gui.playground.NewSuperellipseCmd = NewSuperellipseCmd
 

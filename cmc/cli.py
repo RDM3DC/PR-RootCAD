@@ -1,6 +1,11 @@
-import argparse, json, sys, numpy as np
-from .one_d import encode_1d, decode_1d
-from .two_d import encode_2d, decode_2d
+import argparse
+import json
+
+import numpy as np
+
+from .one_d import decode_1d, encode_1d
+from .two_d import decode_2d, encode_2d
+
 
 def encode_1d_main(argv=None):
     ap = argparse.ArgumentParser(description="CMC encode 1D")
@@ -12,6 +17,7 @@ def encode_1d_main(argv=None):
     x = np.load(args.infile).astype(np.float32)
     pkg = encode_1d(x, tau=args.tau, max_err=args.max_err)
     json.dump(pkg, open(args.out, "w"))
+
 
 def decode_1d_main(argv=None):
     ap = argparse.ArgumentParser(description="CMC decode 1D")
@@ -25,6 +31,7 @@ def decode_1d_main(argv=None):
     y = decode_1d(pkg, n=args.n, alpha=args.alpha, mu=args.mu)
     np.save(args.out, y)
 
+
 def encode_2d_main(argv=None):
     ap = argparse.ArgumentParser(description="CMC encode 2D paths")
     ap.add_argument("--in", dest="infile", required=True, help="Input .npy (N,2) float array")
@@ -35,6 +42,7 @@ def encode_2d_main(argv=None):
     pts = np.load(args.infile).astype(np.float32)
     pkg = encode_2d(pts, tau_rad=args.tau_rad, max_err=args.max_err)
     json.dump(pkg, open(args.out, "w"))
+
 
 def decode_2d_main(argv=None):
     ap = argparse.ArgumentParser(description="CMC decode 2D paths")
@@ -47,4 +55,5 @@ def decode_2d_main(argv=None):
     pkg = json.load(open(args.infile, "r"))
     out = decode_2d(pkg, m=args.m, alpha=args.alpha, mu=args.mu)
     import numpy as np
+
     np.save(args.out, out)

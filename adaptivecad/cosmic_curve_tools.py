@@ -1,5 +1,6 @@
 import math
 from typing import List, Tuple
+
 import numpy as np
 
 from adaptivecad.command_defs import Feature
@@ -8,17 +9,19 @@ from adaptivecad.ndfield import NDField
 
 # Optional dependencies
 try:
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCC.Core.GeomAPI import GeomAPI_PointsToBSplineCurve
     from OCC.Core.gp import gp_Pnt
     from OCC.Core.TColgp import TColgp_Array1OfPnt
-    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
-    from OCC.Core.GeomAPI import GeomAPI_PointsToBSplineCurve
-    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+
     HAS_OCC = True
 except Exception:
     HAS_OCC = False
 
 try:
     from scipy.integrate import odeint  # type: ignore
+
     HAS_SCIPY = True
 except Exception:
     HAS_SCIPY = False
@@ -27,8 +30,9 @@ except Exception:
 class BizarreCurveFeature(Feature):
     """Curve with hyperbolic distortions or a Lorentz attractor trajectory."""
 
-    def __init__(self, base_radius: float, height: float, frequency: float,
-                 distortion: float, segments: int):
+    def __init__(
+        self, base_radius: float, height: float, frequency: float, distortion: float, segments: int
+    ):
         params = {
             "base_radius": base_radius,
             "height": height,
@@ -75,7 +79,11 @@ class BizarreCurveFeature(Feature):
             rng = mx - mn
             rng[rng == 0] = 1.0
             scaled = (traj - mn) / rng
-            scaled = scaled * [base_radius * 2, base_radius * 2, height] - [base_radius, base_radius, 0]
+            scaled = scaled * [base_radius * 2, base_radius * 2, height] - [
+                base_radius,
+                base_radius,
+                0,
+            ]
             for i, (x, y, z) in enumerate(scaled):
                 points.SetValue(i + 1, gp_Pnt(float(x), float(y), float(z)))
         else:
@@ -92,7 +100,9 @@ class BizarreCurveFeature(Feature):
                 chaos_x = 0.1 * distortion * math.sin(23 * angle + t)
                 chaos_y = 0.1 * distortion * math.cos(17 * angle - t)
                 chaos_z = 0.05 * distortion * math.sin(13 * angle * t)
-                points.SetValue(i + 1, gp_Pnt(float(x + chaos_x), float(y + chaos_y), float(z + chaos_z)))
+                points.SetValue(
+                    i + 1, gp_Pnt(float(x + chaos_x), float(y + chaos_y), float(z + chaos_z))
+                )
 
         try:
             spline_builder = GeomAPI_PointsToBSplineCurve(points, 3, 8, False, 1e-6)
@@ -109,7 +119,9 @@ class BizarreCurveFeature(Feature):
 class CosmicSplineFeature(Feature):
     """B-spline curve influenced by a cosmic curvature factor."""
 
-    def __init__(self, control_points: List[Tuple[float, float, float]], degree: int, cosmic_curvature: float):
+    def __init__(
+        self, control_points: List[Tuple[float, float, float]], degree: int, cosmic_curvature: float
+    ):
         params = {
             "control_points": control_points,
             "degree": degree,
@@ -199,7 +211,7 @@ class NDFieldExplorerFeature(Feature):
         total = int(np.prod(grid_shape))
         real = np.random.normal(0, 1, total)
         imag = np.random.normal(0, 1, total)
-        values = np.sqrt(real ** 2 + imag ** 2)
+        values = np.sqrt(real**2 + imag**2)
         return values.reshape(grid_shape)
 
     def _generate_cosmic_web(self, grid_shape):
@@ -216,4 +228,3 @@ class NDFieldExplorerFeature(Feature):
             return BRepPrimAPI_MakeBox(grid_size, grid_size, grid_size).Shape()
         except Exception:
             return None
-

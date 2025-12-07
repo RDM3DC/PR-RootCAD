@@ -3,12 +3,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import NamedTuple, Optional, Tuple, List
+from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
 try:
-    from scipy.special import sph_harm, assoc_laguerre
+    from scipy.special import assoc_laguerre, sph_harm
+
     SCIPY_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     SCIPY_AVAILABLE = False
@@ -39,7 +40,7 @@ def _fallback_assoc_laguerre(rho: np.ndarray, p: int, k: int) -> np.ndarray:
         # crude approximation
         result = np.ones_like(rho)
         for i in range(p):
-            result *= (-rho + k + 2 + i)
+            result *= -rho + k + 2 + i
         return result
 
 
@@ -105,11 +106,13 @@ class WavefunctionVisualizer:
         a0 = self.config.BOHR_RADIUS
         rho = 2 * r / (n * a0)
         if SCIPY_AVAILABLE:
-            normalization = math.sqrt((2 / (n * a0))**3 * math.factorial(n - l - 1) / (2 * n * math.factorial(n + l)))
+            normalization = math.sqrt(
+                (2 / (n * a0)) ** 3 * math.factorial(n - l - 1) / (2 * n * math.factorial(n + l))
+            )
             laguerre = assoc_laguerre(rho, n - l - 1, 2 * l + 1)
             return normalization * rho**l * np.exp(-rho / 2) * laguerre
         # Fallback approximation
-        normalization = (2 / (n * a0))**3
+        normalization = (2 / (n * a0)) ** 3
         laguerre = _fallback_assoc_laguerre(rho, n - l - 1, 2 * l + 1)
         return normalization * rho**l * np.exp(-rho / 2) * laguerre
 
@@ -119,7 +122,9 @@ class WavefunctionVisualizer:
             return sph_harm(m, l, phi, theta)
         return _fallback_spherical_harmonic(m, l, theta, phi)
 
-    def hydrogen_wavefunction(self, n: int, l: int, m: int) -> Tuple[Tuple[int, int, int], np.ndarray]:
+    def hydrogen_wavefunction(
+        self, n: int, l: int, m: int
+    ) -> Tuple[Tuple[int, int, int], np.ndarray]:
         if not (n > 0 and 0 <= l < n and -l <= m <= l):
             raise ValueError(f"Invalid quantum numbers: n={n}, l={l}, m={m}")
         x, y, z = create_3d_grid(self.grid_size, self.x_range, self.y_range, self.z_range)
@@ -146,7 +151,9 @@ class EntanglementVisualizer:
         state = QuantumState(mapping[state_type], ["|00⟩", "|01⟩", "|10⟩", "|11⟩"])
         return state.normalize()
 
-    def calculate_entanglement_entropy(self, state: QuantumState, subsystem: List[int] | None = None) -> float:
+    def calculate_entanglement_entropy(
+        self, state: QuantumState, subsystem: List[int] | None = None
+    ) -> float:
         if state.dimension & (state.dimension - 1) != 0:
             raise ValueError("State dimension must be a power of 2")
         subsystem = subsystem or [0]

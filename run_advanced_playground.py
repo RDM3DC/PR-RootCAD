@@ -13,8 +13,8 @@ This script launches the fixed AdaptiveCAD GUI playground with the following:
   - Ellipsoid
 """
 
-import sys
 import os
+import sys
 
 # Add project root to path
 script_dir = os.path.dirname(os.path.abspath(__file__))

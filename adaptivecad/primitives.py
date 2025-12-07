@@ -1,31 +1,40 @@
-from OCC.Core.gp import gp_Pnt, gp_Ax2, gp_Dir
+import math
+
+from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakeWire,
+)
 from OCC.Core.BRepPrimAPI import (
-    BRepPrimAPI_MakeSphere,
-    BRepPrimAPI_MakeTorus,
     BRepPrimAPI_MakeCone,
     BRepPrimAPI_MakeRevol,
+    BRepPrimAPI_MakeSphere,
+    BRepPrimAPI_MakeTorus,
 )
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace
-from OCC.Core.BRep import BRep_Builder
+from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt
 from OCC.Core.TopoDS import TopoDS_Compound
-import math
+
 
 def make_ball(center, radius):
     c = gp_Pnt(*center)
     return BRepPrimAPI_MakeSphere(c, radius).Shape()
 
-def make_torus(center, major_radius, minor_radius, axis=(0,0,1)):
+
+def make_torus(center, major_radius, minor_radius, axis=(0, 0, 1)):
     c = gp_Pnt(*center)
     ax = gp_Ax2(c, gp_Dir(*axis))
     return BRepPrimAPI_MakeTorus(ax, major_radius, minor_radius).Shape()
 
-def make_cone(center, radius1, radius2, height, axis=(0,0,1)):
+
+def make_cone(center, radius1, radius2, height, axis=(0, 0, 1)):
     """Create a truncated cone shape."""
     c = gp_Pnt(*center)
     ax = gp_Ax2(c, gp_Dir(*axis))
     return BRepPrimAPI_MakeCone(ax, radius1, radius2, height).Shape()
 
-def make_revolve(profile, axis_point, axis_dir=(0,0,1), angle_deg=360):
+
+def make_revolve(profile, axis_point, axis_dir=(0, 0, 1), angle_deg=360):
     """Revolve a profile edge/wire about an axis to create a solid."""
     ax = gp_Ax2(gp_Pnt(*axis_point), gp_Dir(*axis_dir))
     angle_rad = math.radians(angle_deg)
@@ -72,7 +81,9 @@ def make_mobius(center, major_radius=30.0, width=8.0, twists=1, nu=160, nv=16):
             e2 = BRepBuilderAPI_MakeEdge(p10, p11).Edge()
             e3 = BRepBuilderAPI_MakeEdge(p11, p00).Edge()
             wire = BRepBuilderAPI_MakeWire()
-            wire.Add(e1); wire.Add(e2); wire.Add(e3)
+            wire.Add(e1)
+            wire.Add(e2)
+            wire.Add(e3)
             try:
                 f1 = BRepBuilderAPI_MakeFace(wire.Wire()).Face()
                 builder.Add(comp, f1)
@@ -84,7 +95,9 @@ def make_mobius(center, major_radius=30.0, width=8.0, twists=1, nu=160, nv=16):
             e2 = BRepBuilderAPI_MakeEdge(p11, p01).Edge()
             e3 = BRepBuilderAPI_MakeEdge(p01, p00).Edge()
             wire = BRepBuilderAPI_MakeWire()
-            wire.Add(e1); wire.Add(e2); wire.Add(e3)
+            wire.Add(e1)
+            wire.Add(e2)
+            wire.Add(e3)
             try:
                 f2 = BRepBuilderAPI_MakeFace(wire.Wire()).Face()
                 builder.Add(comp, f2)

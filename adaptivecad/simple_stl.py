@@ -1,6 +1,6 @@
 import os
 import struct
-from typing import Tuple, List
+from typing import List, Tuple
 
 import numpy as np
 
@@ -16,7 +16,7 @@ def load_stl(path: str) -> Tuple[np.ndarray, np.ndarray]:
         raise FileNotFoundError(path)
 
     with open(path, "rb") as f:
-        header = f.read(80)
+        f.read(80)
         tri_bytes = f.read(4)
         if len(tri_bytes) == 4:
             tri_count = struct.unpack("<I", tri_bytes)[0]
@@ -24,17 +24,17 @@ def load_stl(path: str) -> Tuple[np.ndarray, np.ndarray]:
             expected = tri_count * 50
             if len(remaining) == expected:
                 # Binary STL
-                dtype = np.dtype([
-                    ("normal", "<3f4"),
-                    ("v1", "<3f4"),
-                    ("v2", "<3f4"),
-                    ("v3", "<3f4"),
-                    ("attr", "<H"),
-                ])
-                data = np.frombuffer(remaining, dtype=dtype, count=tri_count)
-                verts, faces = _deduplicate(
-                    np.vstack([data["v1"], data["v2"], data["v3"]])
+                dtype = np.dtype(
+                    [
+                        ("normal", "<3f4"),
+                        ("v1", "<3f4"),
+                        ("v2", "<3f4"),
+                        ("v3", "<3f4"),
+                        ("attr", "<H"),
+                    ]
                 )
+                data = np.frombuffer(remaining, dtype=dtype, count=tri_count)
+                verts, faces = _deduplicate(np.vstack([data["v1"], data["v2"], data["v3"]]))
                 return verts, faces
         # Not binary, fall back to ASCII parsing
 
@@ -54,9 +54,7 @@ def load_stl(path: str) -> Tuple[np.ndarray, np.ndarray]:
         for line in f:
             parts = line.strip().split()
             if len(parts) >= 4 and parts[0] == "vertex":
-                cur_vertices.append(
-                    (float(parts[1]), float(parts[2]), float(parts[3]))
-                )
+                cur_vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
                 if len(cur_vertices) == 3:
                     idx = [add_vertex(v) for v in cur_vertices]
                     faces_list.append(tuple(idx))

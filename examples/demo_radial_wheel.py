@@ -2,8 +2,8 @@
 
 import sys
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
 from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
 from adaptivecad.ui.radial_tool_wheel import RadialToolWheelOverlay, ToolSpec
 

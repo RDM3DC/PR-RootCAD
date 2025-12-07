@@ -1,25 +1,33 @@
 from __future__ import annotations
-from dataclasses import asdict
-from typing import Dict, List, Optional
-from pathlib import Path
+
 import json
+from dataclasses import asdict
+from pathlib import Path
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .macro_engine import MacroDef, MacroParam, MacroStep, MacroEngine
+from .macro_engine import MacroDef, MacroEngine, MacroParam, MacroStep
 
 # Store user tools under home directory
 _DEF_DIR = Path.home() / ".adaptivecad" / "tools"
 _DEF_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def _from_json(d: dict) -> MacroDef:
     params = [MacroParam(**p) for p in d.get("params", [])]
     steps = [MacroStep(**s) for s in d.get("steps", [])]
     return MacroDef(
-        id=d["id"], name=d["name"], version=d.get("version","1.0"),
-        author=d.get("author","user"), description=d.get("description",""),
-        params=params, steps=steps, ui=d.get("ui", {})
+        id=d["id"],
+        name=d["name"],
+        version=d.get("version", "1.0"),
+        author=d.get("author", "user"),
+        description=d.get("description", ""),
+        params=params,
+        steps=steps,
+        ui=d.get("ui", {}),
     )
+
 
 class ToolRegistry(QObject):
     changed = Signal()  # emitted on add/remove/update
@@ -68,8 +76,10 @@ class ToolRegistry(QObject):
             del self._macros[tool_id]
             p = self._path(tool_id)
             if p.exists():
-                try: p.unlink()
-                except Exception: pass
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
             self.changed.emit()
 
     # ---------- Execute ----------

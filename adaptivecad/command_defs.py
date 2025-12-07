@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 """Simple command framework for the AdaptiveCAD GUI.
 
 This module defines primitives for creating and manipulating geometry in the
@@ -11,16 +10,15 @@ package can be used without installing ``pythonocc-core`` or ``PyQt``.
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from adaptivecad.gcode_generator import generate_gcode_from_shape
 from adaptivecad.params import ParamEnv
 
-from adaptivecad.gcode_generator import generate_gcode_from_shape
-
 try:  # Optional OCC dependency
-    from OCC.Core.gp import gp_Pnt  # type: ignore
     from OCC.Core.BRepPrimAPI import (  # type: ignore
         BRepPrimAPI_MakeBox,
         BRepPrimAPI_MakeCylinder,
     )
+    from OCC.Core.gp import gp_Pnt  # type: ignore
     from OCC.Core.TopoDS import TopoDS_Shape  # type: ignore
 except Exception:  # pragma: no cover - optional dependency missing
     gp_Pnt = None  # type: ignore
@@ -32,15 +30,16 @@ from adaptivecad.nd_math import identityN
 # Optional GUI helpers
 # ---------------------------------------------------------------------------
 
+
 def _require_command_modules():
     """Import optional GUI modules required for command execution."""
     try:
-        from PySide6.QtWidgets import QInputDialog, QFileDialog
         from OCC.Core.BRepPrimAPI import (
             BRepPrimAPI_MakeBox,
             BRepPrimAPI_MakeCylinder,
         )
         from OCC.Core.StlAPI import StlAPI_Writer
+        from PySide6.QtWidgets import QFileDialog, QInputDialog
     except Exception as exc:  # pragma: no cover - import error path
         raise RuntimeError(
             "GUI extras not installed. Run:\n   conda install -c conda-forge pythonocc-core pyside6"
@@ -59,6 +58,7 @@ def _require_command_modules():
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Feature:
 
@@ -68,6 +68,7 @@ class Feature:
             # Box
             if self.name == "Box":
                 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+
                 l = float(self.params.get("l", 50))
                 w = float(self.params.get("w", 50))
                 h = float(self.params.get("h", 20))
@@ -75,12 +76,14 @@ class Feature:
             # Cylinder
             elif self.name == "Cyl":
                 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
                 r = float(self.params.get("r", 10))
                 h = float(self.params.get("h", 40))
                 self.shape = BRepPrimAPI_MakeCylinder(r, h).Shape()
             # Cone
             elif self.name == "Cone":
                 from adaptivecad.primitives import make_cone
+
                 center = self.params.get("center", [0, 0, 0])
                 r1 = float(self.params.get("base_radius", 10))
                 r2 = float(self.params.get("top_radius", 0))
@@ -89,12 +92,14 @@ class Feature:
             # Sphere (Ball)
             elif self.name == "Ball":
                 from adaptivecad.primitives import make_ball
+
                 center = self.params.get("center", [0, 0, 0])
                 radius = float(self.params.get("radius", 10))
                 self.shape = make_ball(center, radius)
             # Torus
             elif self.name == "Torus":
                 from adaptivecad.primitives import make_torus
+
                 center = self.params.get("center", [0, 0, 0])
                 major = float(self.params.get("major_radius", 30))
                 minor = float(self.params.get("minor_radius", 7))
@@ -102,32 +107,32 @@ class Feature:
             # Add more primitives as needed
         except Exception as e:
             print(f"[Feature.rebuild] Error rebuilding {self.name}: {e}")
-    """Record for a model feature."""
 
+    """Record for a model feature."""
 
     name: str
     params: Dict[str, Any]
     shape: Any  # OCC TopoDS_Shape
     local_transform: Any = None
     dim: int = None
-    parent: 'Feature' = None  # Parent feature for hierarchy
+    parent: "Feature" = None  # Parent feature for hierarchy
     children: list = None
-
 
     def __post_init__(self):
         # Set dim from params if not provided
         if self.dim is None:
-            self.dim = self.params.get('dim', 3)
+            self.dim = self.params.get("dim", 3)
         # Set local_transform to identity if not provided
         if self.local_transform is None:
             self.local_transform = identityN(self.dim)
         else:
             import numpy as np
+
             self.local_transform = np.asarray(self.local_transform)
         if self.children is None:
             self.children = []
 
-    def eval_param(self, key, env: 'ParamEnv'):
+    def eval_param(self, key, env: "ParamEnv"):
         """Evaluate a parameter as a possible expression using ``env``."""
         val = self.params.get(key)
         if isinstance(val, (int, float)):
@@ -149,6 +154,7 @@ class Feature:
 
     def world_transform(self):
         import numpy as np
+
         t = np.array(self.local_transform)
         p = self.parent
         while p is not None:
@@ -156,26 +162,25 @@ class Feature:
             p = p.parent
         return t
 
-
     def as_dict(self):
         d = dict(
             name=self.name,
             params=self.params,
             dim=self.dim,
             local_transform=self.local_transform.tolist(),
-            parent=self.parent.name if self.parent else None
+            parent=self.parent.name if self.parent else None,
         )
         return d
 
     def get_reference_point(self):
         # Try OCC shape center of mass
-        if hasattr(self, 'shape') and hasattr(self.shape, 'CenterOfMass'):
+        if hasattr(self, "shape") and hasattr(self.shape, "CenterOfMass"):
             return self.shape.CenterOfMass()
         # Try stored param
-        if hasattr(self, 'params') and "center" in self.params:
+        if hasattr(self, "params") and "center" in self.params:
             return self.params["center"]
         # Fallback: first vertex or origin
-        if hasattr(self, 'vertices') and self.vertices:
+        if hasattr(self, "vertices") and self.vertices:
             return self.vertices[0]
         return [0.0] * self.dim
 
@@ -183,10 +188,10 @@ class Feature:
         # For a box: corners; for a sphere: center; for curve: endpoints
         points = []
         # Example: collect vertices if present
-        if hasattr(self, 'vertices') and self.vertices:
+        if hasattr(self, "vertices") and self.vertices:
             points.extend(self.vertices)
         # Example: add center if present
-        if hasattr(self, 'center'):
+        if hasattr(self, "center"):
             points.append(self.center)
         # Add more as needed for your shape types
         # Fallback: reference point
@@ -200,49 +205,55 @@ class Feature:
 
         try:
             return util(self)
-        except Exception:            return []
+        except Exception:
+            return []
 
     def apply_translation(self, delta):
         print(f"[DEBUG] apply_translation called on {self.name} with delta: {delta}")
-        from adaptivecad.nd_math import translationN
         import numpy as np
-        if hasattr(self, 'local_transform') and self.local_transform is not None:
-            print(f"[DEBUG] Applying translation to local_transform matrix")
+
+        from adaptivecad.nd_math import translationN
+
+        if hasattr(self, "local_transform") and self.local_transform is not None:
+            print("[DEBUG] Applying translation to local_transform matrix")
             self.local_transform = np.dot(translationN(delta), self.local_transform)
-            print(f"[DEBUG] Local transform updated")
+            print("[DEBUG] Local transform updated")
         else:
-            print(f"[DEBUG] No local_transform found, initializing...")
+            print("[DEBUG] No local_transform found, initializing...")
             # Initialize local_transform if it doesn't exist
             self.local_transform = np.eye(4)  # 4x4 identity matrix
             self.local_transform = np.dot(translationN(delta), self.local_transform)
-            print(f"[DEBUG] Local transform initialized and updated")
-        
+            print("[DEBUG] Local transform initialized and updated")
+
         # For OCC shapes, you may need to rebuild the shape at the new position
-        print(f"[DEBUG] Checking if shape rebuild is needed...")
-        if hasattr(self, 'shape') and self.shape is not None:
+        print("[DEBUG] Checking if shape rebuild is needed...")
+        if hasattr(self, "shape") and self.shape is not None:
             try:
-                print(f"[DEBUG] Attempting to rebuild shape with new translation...")
-                from OCC.Core.gp import gp_Trsf, gp_Vec
+                print("[DEBUG] Attempting to rebuild shape with new translation...")
                 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
-                
+                from OCC.Core.gp import gp_Trsf, gp_Vec
+
                 # Apply the translation to the actual OCC shape
                 trsf = gp_Trsf()
                 trsf.SetTranslation(gp_Vec(float(delta[0]), float(delta[1]), float(delta[2])))
                 new_shape = BRepBuilderAPI_Transform(self.shape, trsf, True).Shape()
                 self.shape = new_shape
-                print(f"[DEBUG] Shape rebuilt successfully with translation")
+                print("[DEBUG] Shape rebuilt successfully with translation")
             except Exception as e:
                 print(f"[DEBUG] Error rebuilding shape: {e}")
                 import traceback
+
                 traceback.print_exc()
         else:
-            print(f"[DEBUG] No shape to rebuild")
+            print("[DEBUG] No shape to rebuild")
 
     def apply_scale(self, factor):
         """Uniform or per-axis scaling of the feature."""
-        from adaptivecad.nd_math import scalingN
         import numpy as np
-        if hasattr(self, 'local_transform') and self.local_transform is not None:
+
+        from adaptivecad.nd_math import scalingN
+
+        if hasattr(self, "local_transform") and self.local_transform is not None:
             self.local_transform = np.dot(scalingN(factor, self.dim), self.local_transform)
 
 
@@ -253,6 +264,7 @@ DOCUMENT: List[Feature] = []
 def rebuild_scene(display) -> None:
     """Re-display only active shapes in the document (hide consumed ones)."""
     from adaptivecad.display_utils import smoother_display
+
     display.EraseAll()
     # Find all consumed targets (by Move/Boolean features)
     consumed = set()
@@ -270,29 +282,44 @@ def rebuild_scene(display) -> None:
                 consumed.add(int(tool))
     # Explicitly remove consumed features from OCC display if possible
     for i, feat in enumerate(DOCUMENT):
-        if getattr(feat, 'params', {}).get('consumed', False):
-            print(f"[rebuild_scene] Feature '{feat.name}' (index {i}) is consumed. Attempting to remove from display.") # DEBUG
+        if getattr(feat, "params", {}).get("consumed", False):
+            print(
+                f"[rebuild_scene] Feature '{feat.name}' (index {i}) is consumed. Attempting to remove from display."
+            )  # DEBUG
             try:
-                if hasattr(display, 'Context') and hasattr(feat, 'shape') and feat.shape is not None:
+                if (
+                    hasattr(display, "Context")
+                    and hasattr(feat, "shape")
+                    and feat.shape is not None
+                ):
                     if display.Context.IsDisplayed(feat.shape):
                         display.Context.Remove(feat.shape, True)
             except Exception:
                 pass
     # Only display features not consumed by a later feature and not marked as consumed
-    from OCC.Core.gp import gp_Trsf
-    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
     import numpy as np
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCC.Core.gp import gp_Trsf
+
     for i, feat in enumerate(DOCUMENT):
-        if i not in consumed and not getattr(feat, 'params', {}).get('consumed', False):
+        if i not in consumed and not getattr(feat, "params", {}).get("consumed", False):
             shape = feat.shape
             try:
                 T = np.array(feat.world_transform(), dtype=float)
                 trsf = gp_Trsf()
                 trsf.SetValues(
-                    T[0, 0], T[0, 1], T[0, 2],
-                    T[1, 0], T[1, 1], T[1, 2],
-                    T[2, 0], T[2, 1], T[2, 2],
-                    T[0, 3], T[1, 3], T[2, 3]
+                    T[0, 0],
+                    T[0, 1],
+                    T[0, 2],
+                    T[1, 0],
+                    T[1, 1],
+                    T[1, 2],
+                    T[2, 0],
+                    T[2, 1],
+                    T[2, 2],
+                    T[0, 3],
+                    T[1, 3],
+                    T[2, 3],
                 )
                 shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
             except Exception:
@@ -304,6 +331,7 @@ def rebuild_scene(display) -> None:
 # ---------------------------------------------------------------------------
 # Command classes
 # ---------------------------------------------------------------------------
+
 
 class BaseCmd:
     """Base command interface."""
@@ -380,9 +408,7 @@ class ExportStlCmd(BaseCmd):
         if not DOCUMENT:
             return
 
-        path, _filter = QFileDialog.getSaveFileName(
-            mw.win, "Save STL", filter="STL (*.stl)"
-        )
+        path, _filter = QFileDialog.getSaveFileName(mw.win, "Save STL", filter="STL (*.stl)")
         if not path:
             return
 
@@ -400,8 +426,9 @@ class ExportStlCmd(BaseCmd):
         scale = 1.0 if unit == "mm" else 1.0 / 25.4
         shape = DOCUMENT[-1].shape
         if scale != 1.0:
-            from OCC.Core.gp import gp_Trsf, gp_Pnt
             from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+            from OCC.Core.gp import gp_Pnt, gp_Trsf
+
             trsf = gp_Trsf()
             trsf.SetScale(gp_Pnt(0, 0, 0), scale)
             shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
@@ -429,9 +456,7 @@ class ExportAmaCmd(BaseCmd):
         if not DOCUMENT:
             return
 
-        path, _filter = QFileDialog.getSaveFileName(
-            mw.win, "Save AMA", filter="AMA (*.ama)"
-        )
+        path, _filter = QFileDialog.getSaveFileName(mw.win, "Save AMA", filter="AMA (*.ama)")
         if not path:
             return
 
@@ -447,6 +472,7 @@ class ExportAmaCmd(BaseCmd):
             return
 
         from adaptivecad.io.ama_writer import write_ama
+
         write_ama(DOCUMENT, path, units=unit)
         mw.win.statusBar().showMessage(f"AMA saved ➡ {path}")
 
@@ -455,8 +481,9 @@ class ExportGCodeCmd(BaseCmd):
     title = "Export G-code"
 
     def run(self, mw) -> None:  # pragma: no cover - runtime GUI path
-        import tempfile
         import os
+        import tempfile
+
         (
             QInputDialog,
             QFileDialog,
@@ -471,33 +498,40 @@ class ExportGCodeCmd(BaseCmd):
         # First, we need to save as AMA temporarily
         with tempfile.NamedTemporaryFile(suffix=".ama", delete=False) as tmp_ama:
             tmp_ama_path = tmp_ama.name
-        
+
         # Write the current document to the temporary AMA file
         from adaptivecad.io.ama_writer import write_ama
+
         write_ama(DOCUMENT, tmp_ama_path)
-        
+
         # Ask for G-code settings
         safe_height, ok1 = QInputDialog.getDouble(
-            mw.win, "Safe Height (mm)", "Enter safe height for rapid movements:", 10.0, 1.0, 100.0, 1
+            mw.win,
+            "Safe Height (mm)",
+            "Enter safe height for rapid movements:",
+            10.0,
+            1.0,
+            100.0,
+            1,
         )
         if not ok1:
             os.remove(tmp_ama_path)
             return
-            
+
         cut_depth, ok2 = QInputDialog.getDouble(
             mw.win, "Cut Depth (mm)", "Enter cutting depth:", 1.0, 0.1, 20.0, 1
         )
         if not ok2:
             os.remove(tmp_ama_path)
             return
-            
+
         feed_rate, ok3 = QInputDialog.getDouble(
             mw.win, "Feed Rate (mm/min)", "Enter feed rate:", 100.0, 10.0, 1000.0, 1
         )
         if not ok3:
             os.remove(tmp_ama_path)
             return
-            
+
         tool_diameter, ok4 = QInputDialog.getDouble(
             mw.win, "Tool Diameter (mm)", "Enter tool diameter:", 3.0, 0.1, 20.0, 1
         )
@@ -524,10 +558,11 @@ class ExportGCodeCmd(BaseCmd):
         if not path:
             os.remove(tmp_ama_path)
             return
-        
+
         try:
             # Create milling strategy with user settings
             from adaptivecad.io.gcode_generator import SimpleMilling, ama_to_gcode
+
             strategy = SimpleMilling(
                 safe_height=safe_height,
                 cut_depth=cut_depth,
@@ -570,17 +605,23 @@ class ExportGCodeDirectCmd(BaseCmd):
 
         # Ask for G-code parameters
         safe_height, ok1 = QInputDialog.getDouble(
-            mw.win, "Safe Height (mm)", "Enter safe height for rapid movements:", 10.0, 1.0, 100.0, 1
+            mw.win,
+            "Safe Height (mm)",
+            "Enter safe height for rapid movements:",
+            10.0,
+            1.0,
+            100.0,
+            1,
         )
         if not ok1:
             return
-            
+
         cut_depth, ok2 = QInputDialog.getDouble(
             mw.win, "Cut Depth (mm)", "Enter cutting depth:", 1.0, 0.1, 20.0, 1
         )
         if not ok2:
             return
-            
+
         tool_diameter, ok3 = QInputDialog.getDouble(
             mw.win, "Tool Diameter (mm)", "Enter tool diameter:", 6.0, 0.1, 20.0, 1
         )
@@ -611,11 +652,11 @@ class ExportGCodeDirectCmd(BaseCmd):
             gcode = generate_gcode_from_shape(
                 shape, shape_name, tool_diameter, use_mm=(unit == "mm")
             )
-            
+
             # Save to file
-            with open(path, 'w') as f:
+            with open(path, "w") as f:
                 f.write(gcode)
-                
+
             mw.win.statusBar().showMessage(f"G-code (direct) saved ➡ {path}")
         except Exception as e:
             mw.win.statusBar().showMessage(f"Failed to generate G-code: {str(e)}")
@@ -625,21 +666,23 @@ class ExportGCodeDirectCmd(BaseCmd):
 # Curve commands
 # ---------------------------------------------------------------------------
 
+
 class NewBezierCmd(BaseCmd):
     title = "Bezier Curve"
 
     def run(self, mw) -> None:
         try:
-            from OCC.Core.Geom import Geom_BezierCurve
             from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-            from OCC.Core.TColgp import TColgp_Array1OfPnt
+            from OCC.Core.Geom import Geom_BezierCurve
             from OCC.Core.gp import gp_Pnt
+            from OCC.Core.TColgp import TColgp_Array1OfPnt
         except ImportError:
             mw.win.statusBar().showMessage("Bezier API missing – button disabled")
             return
 
         # Simple point picker dialog (replace with snap-assisted dialog for production)
         from PySide6.QtWidgets import QInputDialog
+
         points = []
         for i in range(3):
             x, ok = QInputDialog.getDouble(mw.win, f"Bezier Point {i+1}", "X (mm)", 0.0)
@@ -658,7 +701,9 @@ class NewBezierCmd(BaseCmd):
             arr.SetValue(i, p)
         curve = Geom_BezierCurve(arr)
         edge = BRepBuilderAPI_MakeEdge(curve).Edge()
-        DOCUMENT.append(Feature("Bezier", {"points": [[p.X(), p.Y(), p.Z()] for p in points]}, edge))
+        DOCUMENT.append(
+            Feature("Bezier", {"points": [[p.X(), p.Y(), p.Z()] for p in points]}, edge)
+        )
         rebuild_scene(mw.view._display)
 
 
@@ -667,16 +712,17 @@ class NewBSplineCmd(BaseCmd):
 
     def run(self, mw) -> None:
         try:
-            from OCC.Core.Geom import Geom_BSplineCurve
             from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-            from OCC.Core.TColgp import TColgp_Array1OfPnt
-            from OCC.Core.TColStd import TColStd_Array1OfReal, TColStd_Array1OfInteger
+            from OCC.Core.Geom import Geom_BSplineCurve
             from OCC.Core.gp import gp_Pnt
+            from OCC.Core.TColgp import TColgp_Array1OfPnt
+            from OCC.Core.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
         except ImportError:
             mw.win.statusBar().showMessage("BSpline API missing – button disabled")
             return
 
         from PySide6.QtWidgets import QInputDialog
+
         points = []
         for i in range(4):
             x, ok = QInputDialog.getDouble(mw.win, f"B-spline Point {i+1}", "X (mm)", 0.0)
@@ -698,17 +744,20 @@ class NewBSplineCmd(BaseCmd):
         knots.SetValue(1, 0.0)
         knots.SetValue(2, 1.0)
         mults = TColStd_Array1OfInteger(1, 2)
-        mults.SetValue(1, degree+1)
-        mults.SetValue(2, degree+1)
+        mults.SetValue(1, degree + 1)
+        mults.SetValue(2, degree + 1)
         curve = Geom_BSplineCurve(arr, knots, mults, degree)
         edge = BRepBuilderAPI_MakeEdge(curve).Edge()
-        DOCUMENT.append(Feature("BSpline", {"points": [[p.X(), p.Y(), p.Z()] for p in points]}, edge))
+        DOCUMENT.append(
+            Feature("BSpline", {"points": [[p.X(), p.Y(), p.Z()] for p in points]}, edge)
+        )
         rebuild_scene(mw.view._display)
 
 
 # ---------------------------------------------------------------------------
 # Move/Transform command
 # ---------------------------------------------------------------------------
+
 
 class MoveCmd(BaseCmd):
     title = "Move"
@@ -720,9 +769,10 @@ class MoveCmd(BaseCmd):
             mw.win.statusBar().showMessage("No shapes to move!")
             return
         print(f"[DEBUG] DOCUMENT has {len(DOCUMENT)} shapes")
-        
+
         # Let user select a shape by index (simple for now)
         from PySide6.QtWidgets import QInputDialog
+
         items = [f"{i}: {feat.name}" for i, feat in enumerate(DOCUMENT)]
         print(f"[DEBUG] Available shapes: {items}")
         idx, ok = QInputDialog.getItem(mw.win, "Select Shape to Move", "Shape:", items, 0, False)
@@ -733,44 +783,50 @@ class MoveCmd(BaseCmd):
         print(f"[DEBUG] Selected shape index: {shape_idx}")
         shape = DOCUMENT[shape_idx].shape
         print(f"[DEBUG] Selected shape: {DOCUMENT[shape_idx].name}")
-        
+
         # Get translation values
         dx, ok = QInputDialog.getDouble(mw.win, "Move", "dx (mm)", 10.0)
         if not ok:
             print("[DEBUG] User cancelled dx input")
             return
         print(f"[DEBUG] dx = {dx}")
-        
+
         dy, ok = QInputDialog.getDouble(mw.win, "Move", "dy (mm)", 0.0)
         if not ok:
             print("[DEBUG] User cancelled dy input")
             return
         print(f"[DEBUG] dy = {dy}")
-        
+
         dz, ok = QInputDialog.getDouble(mw.win, "Move", "dz (mm)", 0.0)
         if not ok:
             print("[DEBUG] User cancelled dz input")
             return
         print(f"[DEBUG] dz = {dz}")
-        
+
         # Apply translation
         print("[DEBUG] Applying translation using OpenCascade...")
-        from OCC.Core.gp import gp_Trsf, gp_Vec
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
-        trsf = gp_Trsf(); trsf.SetTranslation(gp_Vec(dx, dy, dz))
+        from OCC.Core.gp import gp_Trsf, gp_Vec
+
+        trsf = gp_Trsf()
+        trsf.SetTranslation(gp_Vec(dx, dy, dz))
         moved_shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
         print("[DEBUG] Translation applied successfully")
-        
+
         # Mark the source shape as consumed (hidden)
-        if hasattr(DOCUMENT[shape_idx], 'params'):
-            DOCUMENT[shape_idx].params['consumed'] = True
-            print(f"[MoveCmd] Feature '{DOCUMENT[shape_idx].name}' (index {shape_idx}) marked as consumed: {DOCUMENT[shape_idx].params}") # DEBUG
-        
+        if hasattr(DOCUMENT[shape_idx], "params"):
+            DOCUMENT[shape_idx].params["consumed"] = True
+            print(
+                f"[MoveCmd] Feature '{DOCUMENT[shape_idx].name}' (index {shape_idx}) marked as consumed: {DOCUMENT[shape_idx].params}"
+            )  # DEBUG
+
         # Create new moved feature
-        new_feature = Feature("Move", {"target": shape_idx, "dx": dx, "dy": dy, "dz": dz}, moved_shape)
+        new_feature = Feature(
+            "Move", {"target": shape_idx, "dx": dx, "dy": dy, "dz": dz}, moved_shape
+        )
         DOCUMENT.append(new_feature)
         print(f"[DEBUG] Created new moved feature: {new_feature.name}")
-        
+
         print("[DEBUG] Rebuilding scene...")
         rebuild_scene(mw.view._display)
         print("[DEBUG] MoveCmd completed successfully")
@@ -798,9 +854,7 @@ class ScaleCmd(BaseCmd):
             return
 
         if mode == "Uniform":
-            factor, ok = QInputDialog.getDouble(
-                mw.win, "Scale", "Scale factor:", 1.0, 0.1, 10.0, 2
-            )
+            factor, ok = QInputDialog.getDouble(mw.win, "Scale", "Scale factor:", 1.0, 0.1, 10.0, 2)
             if not ok:
                 return
             scale_value: float | list[float] = factor
@@ -810,16 +864,14 @@ class ScaleCmd(BaseCmd):
                 mw.win,
                 "Scale",
                 f"Scale factors (comma-separated, {dim} values):",
-                text=','.join(['1.0'] * dim),
+                text=",".join(["1.0"] * dim),
             )
             if not ok:
                 return
             try:
-                parts = [float(x) for x in factors_str.split(',')]
+                parts = [float(x) for x in factors_str.split(",")]
                 if len(parts) != dim:
-                    mw.win.statusBar().showMessage(
-                        f"Expected {dim} values, got {len(parts)}"
-                    )
+                    mw.win.statusBar().showMessage(f"Expected {dim} values, got {len(parts)}")
                     return
                 scale_value = parts
             except ValueError:
@@ -838,9 +890,9 @@ class MirrorCmd(BaseCmd):
             mw.win.statusBar().showMessage("Select object to mirror!")
             return
 
-        from PySide6.QtWidgets import QInputDialog
-        from OCC.Core.gp import gp_Trsf, gp_Ax2, gp_Pnt, gp_Dir
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+        from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+        from PySide6.QtWidgets import QInputDialog
 
         plane, ok = QInputDialog.getItem(
             mw.win,
@@ -862,9 +914,7 @@ class MirrorCmd(BaseCmd):
         trsf = gp_Trsf()
         trsf.SetMirror(axes[plane])
 
-        mirrored_shape = BRepBuilderAPI_Transform(
-            mw.selected_feature.shape, trsf, True
-        ).Shape()
+        mirrored_shape = BRepBuilderAPI_Transform(mw.selected_feature.shape, trsf, True).Shape()
 
         idx = DOCUMENT.index(mw.selected_feature)
         if hasattr(mw.selected_feature, "params"):
@@ -878,13 +928,16 @@ class MirrorCmd(BaseCmd):
 # Boolean (Union, Cut) commands
 # ---------------------------------------------------------------------------
 
+
 class UnionCmd(BaseCmd):
     title = "Union"
+
     def run(self, mw) -> None:
         if len(DOCUMENT) < 2:
             mw.win.statusBar().showMessage("Need at least two shapes for Union!")
             return
         from PySide6.QtWidgets import QInputDialog
+
         items = [f"{i}: {feat.name}" for i, feat in enumerate(DOCUMENT)]
         idx1, ok = QInputDialog.getItem(mw.win, "Select Target (A)", "Target:", items, 0, False)
         if not ok:
@@ -897,22 +950,26 @@ class UnionCmd(BaseCmd):
         a = DOCUMENT[i1].shape
         b = DOCUMENT[i2].shape
         from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
         fused = BRepAlgoAPI_Fuse(a, b).Shape()
         # Mark the target and tool as consumed (hidden)
-        if hasattr(DOCUMENT[i1], 'params'):
-            DOCUMENT[i1].params['consumed'] = True
-        if hasattr(DOCUMENT[i2], 'params'):
-            DOCUMENT[i2].params['consumed'] = True
+        if hasattr(DOCUMENT[i1], "params"):
+            DOCUMENT[i1].params["consumed"] = True
+        if hasattr(DOCUMENT[i2], "params"):
+            DOCUMENT[i2].params["consumed"] = True
         DOCUMENT.append(Feature("Union", {"target": i1, "tool": i2}, fused))
         rebuild_scene(mw.view._display)
 
+
 class CutCmd(BaseCmd):
     title = "Cut"
+
     def run(self, mw) -> None:
         if len(DOCUMENT) < 2:
             mw.win.statusBar().showMessage("Need at least two shapes for Cut!")
             return
         from PySide6.QtWidgets import QInputDialog
+
         items = [f"{i}: {feat.name}" for i, feat in enumerate(DOCUMENT)]
         idx1, ok = QInputDialog.getItem(mw.win, "Select Target (A)", "Target:", items, 0, False)
         if not ok:
@@ -925,11 +982,14 @@ class CutCmd(BaseCmd):
         a = DOCUMENT[i1].shape
         b = DOCUMENT[i2].shape
         from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
+
         cut = BRepAlgoAPI_Cut(a, b).Shape()
         # Mark the target as consumed (hidden)
-        if hasattr(DOCUMENT[i1], 'params'):
-            DOCUMENT[i1].params['consumed'] = True
-            print(f"[CutCmd] Feature '{DOCUMENT[i1].name}' (index {i1}) marked as consumed: {DOCUMENT[i1].params}") # DEBUG
+        if hasattr(DOCUMENT[i1], "params"):
+            DOCUMENT[i1].params["consumed"] = True
+            print(
+                f"[CutCmd] Feature '{DOCUMENT[i1].name}' (index {i1}) marked as consumed: {DOCUMENT[i1].params}"
+            )  # DEBUG
         DOCUMENT.append(Feature("Cut", {"target": i1, "tool": i2}, cut))
         rebuild_scene(mw.view._display)
 
@@ -938,52 +998,76 @@ class CutCmd(BaseCmd):
 # NDBox and NDField commands
 # ---------------------------------------------------------------------------
 
+
 class NewNDBoxCmd(BaseCmd):
     title = "ND Box"
+
     def run(self, mw) -> None:
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.ndbox import NDBox
+
         # Ask for dimension
         dim, ok = QInputDialog.getInt(mw.win, "ND Box", "Dimension (N):", 3, 1)
         if not ok:
             return
         # Ask for center and size as comma-separated
-        center_str, ok = QInputDialog.getText(mw.win, "ND Box", f"Center (comma-separated, {dim} values):", text=','.join(['0']*dim))
+        center_str, ok = QInputDialog.getText(
+            mw.win, "ND Box", f"Center (comma-separated, {dim} values):", text=",".join(["0"] * dim)
+        )
         if not ok:
             return
-        size_str, ok = QInputDialog.getText(mw.win, "ND Box", f"Size (comma-separated, {dim} values):", text=','.join(['10']*dim))
+        size_str, ok = QInputDialog.getText(
+            mw.win, "ND Box", f"Size (comma-separated, {dim} values):", text=",".join(["10"] * dim)
+        )
         if not ok:
             return
-        center = [float(x) for x in center_str.split(',')]
-        size = [float(x) for x in size_str.split(',')]
+        center = [float(x) for x in center_str.split(",")]
+        size = [float(x) for x in size_str.split(",")]
         box = NDBox(center, size)
         DOCUMENT.append(Feature("NDBox", {"center": center, "size": size, "dim": dim}, box))
         rebuild_scene(mw.view._display)
 
+
 class NewNDFieldCmd(BaseCmd):
     title = "ND Field"
+
     def run(self, mw) -> None:
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.ndfield import NDField
+
         # Ask for dimension
         dim, ok = QInputDialog.getInt(mw.win, "ND Field", "Dimension (N):", 3, 1)
         if not ok:
             return
         # Ask for grid shape as comma-separated
-        grid_str, ok = QInputDialog.getText(mw.win, "ND Field", f"Grid shape (comma-separated, {dim} values):", text=','.join(['2']*dim))
+        grid_str, ok = QInputDialog.getText(
+            mw.win,
+            "ND Field",
+            f"Grid shape (comma-separated, {dim} values):",
+            text=",".join(["2"] * dim),
+        )
         if not ok:
             return
-        grid_shape = [int(x) for x in grid_str.split(',')]
+        grid_shape = [int(x) for x in grid_str.split(",")]
         num_vals = 1
         for n in grid_shape:
             num_vals *= n
         # Ask for values as comma-separated (default: zeros)
-        values_str, ok = QInputDialog.getText(mw.win, "ND Field", f"Values (comma-separated, {num_vals} values):", text=','.join(['0']*num_vals))
+        values_str, ok = QInputDialog.getText(
+            mw.win,
+            "ND Field",
+            f"Values (comma-separated, {num_vals} values):",
+            text=",".join(["0"] * num_vals),
+        )
         if not ok:
             return
-        values = [float(x) for x in values_str.split(',')]
+        values = [float(x) for x in values_str.split(",")]
         field = NDField(grid_shape, values)
-        DOCUMENT.append(Feature("NDField", {"grid_shape": grid_shape, "values": values, "dim": dim}, field))
+        DOCUMENT.append(
+            Feature("NDField", {"grid_shape": grid_shape, "values": values, "dim": dim}, field)
+        )
         rebuild_scene(mw.view._display)
 
 
@@ -991,12 +1075,18 @@ class NewNDFieldCmd(BaseCmd):
 # Ball and Torus commands
 # ---------------------------------------------------------------------------
 
+
 class NewBallCmd(BaseCmd):
     title = "Ball"
+
     def run(self, mw):
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.primitives import make_ball
-        center_str, ok = QInputDialog.getText(mw.win, "Ball Center", "Center (x,y,z):", text="0,0,0")
+
+        center_str, ok = QInputDialog.getText(
+            mw.win, "Ball Center", "Center (x,y,z):", text="0,0,0"
+        )
         if not ok:
             return
         center = [float(x) for x in center_str.split(",")]
@@ -1007,12 +1097,18 @@ class NewBallCmd(BaseCmd):
         DOCUMENT.append(Feature("Ball", dict(center=center, radius=radius), shape))
         rebuild_scene(mw.view._display)
 
+
 class NewTorusCmd(BaseCmd):
     title = "Torus"
+
     def run(self, mw):
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.primitives import make_torus
-        center_str, ok = QInputDialog.getText(mw.win, "Torus Center", "Center (x,y,z):", text="0,0,0")
+
+        center_str, ok = QInputDialog.getText(
+            mw.win, "Torus Center", "Center (x,y,z):", text="0,0,0"
+        )
         if not ok:
             return
         center = [float(x) for x in center_str.split(",")]
@@ -1023,16 +1119,23 @@ class NewTorusCmd(BaseCmd):
         if not ok:
             return
         shape = make_torus(center, maj, minr)
-        DOCUMENT.append(Feature("Torus", dict(center=center, major_radius=maj, minor_radius=minr), shape))
+        DOCUMENT.append(
+            Feature("Torus", dict(center=center, major_radius=maj, minor_radius=minr), shape)
+        )
         rebuild_scene(mw.view._display)
+
 
 class NewMobiusCmd(BaseCmd):
     title = "Mobius Strip"
 
     def run(self, mw):
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.primitives import make_mobius
-        center_str, ok = QInputDialog.getText(mw.win, "Mobius Center", "Center (x,y,z):", text="0,0,0")
+
+        center_str, ok = QInputDialog.getText(
+            mw.win, "Mobius Center", "Center (x,y,z):", text="0,0,0"
+        )
         if not ok:
             return
         center = [float(x) for x in center_str.split(",")]
@@ -1043,16 +1146,23 @@ class NewMobiusCmd(BaseCmd):
         if not ok:
             return
         shape = make_mobius(center, major_radius=major, width=width)
-        DOCUMENT.append(Feature("Mobius", dict(center=center, major_radius=major, width=width), shape))
+        DOCUMENT.append(
+            Feature("Mobius", dict(center=center, major_radius=major, width=width), shape)
+        )
         rebuild_scene(mw.view._display)
+
 
 class NewConeCmd(BaseCmd):
     title = "Cone"
 
     def run(self, mw):
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.primitives import make_cone
-        center_str, ok = QInputDialog.getText(mw.win, "Cone Center", "Center (x,y,z):", text="0,0,0")
+
+        center_str, ok = QInputDialog.getText(
+            mw.win, "Cone Center", "Center (x,y,z):", text="0,0,0"
+        )
         if not ok:
             return
         center = [float(x) for x in center_str.split(",")]
@@ -1066,14 +1176,20 @@ class NewConeCmd(BaseCmd):
         if not ok:
             return
         shape = make_cone(center, r1, r2, height)
-        DOCUMENT.append(Feature("Cone", dict(center=center, base_radius=r1, top_radius=r2, height=height), shape))
+        DOCUMENT.append(
+            Feature(
+                "Cone", dict(center=center, base_radius=r1, top_radius=r2, height=height), shape
+            )
+        )
         rebuild_scene(mw.view._display)
+
 
 class RevolveCmd(BaseCmd):
     title = "Revolve"
 
     def run(self, mw):
         from PySide6.QtWidgets import QInputDialog
+
         from adaptivecad.primitives import make_revolve
 
         curve_items = [
@@ -1083,18 +1199,24 @@ class RevolveCmd(BaseCmd):
             mw.win.statusBar().showMessage("No profile curves found!")
             return
 
-        idx, ok = QInputDialog.getItem(mw.win, "Revolve", "Select profile curve:", curve_items, 0, False)
+        idx, ok = QInputDialog.getItem(
+            mw.win, "Revolve", "Select profile curve:", curve_items, 0, False
+        )
         if not ok:
             return
         curve_idx = int(idx.split(":")[0])
         profile = DOCUMENT[curve_idx].shape
 
-        axis_origin_str, ok = QInputDialog.getText(mw.win, "Axis Origin", "Axis origin (x,y,z):", text="0,0,0")
+        axis_origin_str, ok = QInputDialog.getText(
+            mw.win, "Axis Origin", "Axis origin (x,y,z):", text="0,0,0"
+        )
         if not ok:
             return
         axis_origin = [float(x) for x in axis_origin_str.split(",")]
 
-        axis_dir_str, ok = QInputDialog.getText(mw.win, "Axis Direction", "Axis direction (dx,dy,dz):", text="0,0,1")
+        axis_dir_str, ok = QInputDialog.getText(
+            mw.win, "Axis Direction", "Axis direction (dx,dy,dz):", text="0,0,1"
+        )
         if not ok:
             return
         axis_dir = [float(x) for x in axis_dir_str.split(",")]
@@ -1107,7 +1229,9 @@ class RevolveCmd(BaseCmd):
         DOCUMENT.append(
             Feature(
                 "Revolve",
-                dict(profile=curve_idx, axis_origin=axis_origin, axis_dir=axis_dir, angle=angle_deg),
+                dict(
+                    profile=curve_idx, axis_origin=axis_origin, axis_dir=axis_dir, angle=angle_deg
+                ),
                 shape,
             )
         )
@@ -1118,10 +1242,10 @@ class LoftCmd(BaseCmd):
     title = "Loft"
 
     def run(self, mw) -> None:
-        from PySide6.QtWidgets import QInputDialog
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
-        from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Ax2, gp_Circ
         from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+        from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+        from PySide6.QtWidgets import QInputDialog
 
         r1, ok = QInputDialog.getDouble(mw.win, "Loft", "Bottom radius:", 10.0, 0.1)
         if not ok:
@@ -1152,10 +1276,10 @@ class SweepAlongPathCmd(BaseCmd):
     title = "Sweep"
 
     def run(self, mw) -> None:
-        from PySide6.QtWidgets import QInputDialog
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
-        from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Ax2, gp_Circ
         from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+        from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+        from PySide6.QtWidgets import QInputDialog
 
         radius, ok = QInputDialog.getDouble(mw.win, "Sweep", "Profile radius:", 5.0, 0.1)
         if not ok:
@@ -1182,21 +1306,23 @@ class ShellCmd(BaseCmd):
         if not DOCUMENT:
             mw.win.statusBar().showMessage("No shapes to shell!")
             return
-        from PySide6.QtWidgets import QInputDialog
         from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
         from OCC.Core.TopTools import TopTools_ListOfShape
+        from PySide6.QtWidgets import QInputDialog
 
         items = [f"{i}: {feat.name}" for i, feat in enumerate(DOCUMENT)]
         idx_str, ok = QInputDialog.getItem(mw.win, "Shell", "Select shape:", items, 0, False)
         if not ok:
             return
-        idx = int(idx_str.split(":" )[0])
+        idx = int(idx_str.split(":")[0])
         thickness, ok = QInputDialog.getDouble(mw.win, "Shell", "Thickness:", 1.0, 0.01)
         if not ok:
             return
 
         maker = BRepOffsetAPI_MakeThickSolid()
-        maker.MakeThickSolidByJoin(DOCUMENT[idx].shape, TopTools_ListOfShape(), -abs(thickness), 1e-3)
+        maker.MakeThickSolidByJoin(
+            DOCUMENT[idx].shape, TopTools_ListOfShape(), -abs(thickness), 1e-3
+        )
         maker.Build()
         shape = maker.Shape()
         DOCUMENT.append(Feature("Shell", {"source": idx, "thickness": thickness}, shape))
@@ -1210,8 +1336,8 @@ class IntersectCmd(BaseCmd):
         if len(DOCUMENT) < 2:
             mw.win.statusBar().showMessage("Need at least two shapes for Intersect!")
             return
-        from PySide6.QtWidgets import QInputDialog
         from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
+        from PySide6.QtWidgets import QInputDialog
 
         items = [f"{i}: {feat.name}" for i, feat in enumerate(DOCUMENT)]
         idx1, ok = QInputDialog.getItem(mw.win, "Select A", "Target:", items, 0, False)
@@ -1220,15 +1346,15 @@ class IntersectCmd(BaseCmd):
         idx2, ok = QInputDialog.getItem(mw.win, "Select B", "Tool:", items, 1, False)
         if not ok:
             return
-        i1 = int(idx1.split(":" )[0])
-        i2 = int(idx2.split(":" )[0])
+        i1 = int(idx1.split(":")[0])
+        i2 = int(idx2.split(":")[0])
         a = DOCUMENT[i1].shape
         b = DOCUMENT[i2].shape
         common = BRepAlgoAPI_Common(a, b).Shape()
         # Mark the target and tool as consumed (hidden)
-        if hasattr(DOCUMENT[i1], 'params'):
-            DOCUMENT[i1].params['consumed'] = True
-        if hasattr(DOCUMENT[i2], 'params'):
-            DOCUMENT[i2].params['consumed'] = True
+        if hasattr(DOCUMENT[i1], "params"):
+            DOCUMENT[i1].params["consumed"] = True
+        if hasattr(DOCUMENT[i2], "params"):
+            DOCUMENT[i2].params["consumed"] = True
         DOCUMENT.append(Feature("Intersect", {"target": i1, "tool": i2}, common))
         rebuild_scene(mw.view._display)

@@ -3,17 +3,17 @@ import math
 import pytest
 
 from adaptivecad.sketch.geometry import (
-    Vec2,
-    Transform2D,
-    orientation,
-    is_colinear,
-    distance_point_to_line,
-    segment_intersection,
     Intersection,
-    line_circle_intersections,
-    segment_circle_intersections,
+    Transform2D,
+    Vec2,
     closest_point_on_segment,
+    distance_point_to_line,
+    is_colinear,
+    line_circle_intersections,
+    orientation,
     polyline_length,
+    segment_circle_intersections,
+    segment_intersection,
 )
 
 
@@ -103,4 +103,3 @@ def test_closest_point_on_segment_and_polyline_length():
 def test_intersection_none_when_segments_apart():
     inter = segment_intersection(Vec2(0, 0), Vec2(1, 0), Vec2(0, 1), Vec2(1, 1))
     assert inter == Intersection.none()
-

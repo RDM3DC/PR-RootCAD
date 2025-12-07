@@ -1,6 +1,6 @@
 import math
 
-from adaptivecad.linalg import Vec3, Quaternion
+from adaptivecad.linalg import Quaternion, Vec3
 
 
 def test_quaternion_rotation():

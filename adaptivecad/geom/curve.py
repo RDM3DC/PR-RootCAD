@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+
 from ..linalg import Vec3
+
 
 class Curve(ABC):
     """Abstract parametric curve."""

@@ -29,8 +29,8 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Optional deps
 try:  # pragma: no cover - optional
@@ -45,16 +45,18 @@ from adaptivecad_entangled_fields import (
     wire_metrics,
 )
 
-
 # ---------------------------------------------------------------------------
 # Scenario modifiers
 # ---------------------------------------------------------------------------
 
+
 def _gaussian(x: np.ndarray, y: np.ndarray, x0: float, y0: float, s: float) -> np.ndarray:
-    return np.exp(-(((x - x0) ** 2 + (y - y0) ** 2) / (2 * s ** 2)))
+    return np.exp(-(((x - x0) ** 2 + (y - y0) ** 2) / (2 * s**2)))
 
 
-def apply_scenario(lam: np.ndarray, alpha: np.ndarray, scenario: str) -> Tuple[np.ndarray, np.ndarray]:
+def apply_scenario(
+    lam: np.ndarray, alpha: np.ndarray, scenario: str
+) -> Tuple[np.ndarray, np.ndarray]:
     """Apply simple analytic scenarios to the λ–α fields.
 
     Scenarios:
@@ -78,8 +80,8 @@ def apply_scenario(lam: np.ndarray, alpha: np.ndarray, scenario: str) -> Tuple[n
         g = (X > 0).astype(float)
         lam += g * 0.5
     elif scenario == "rim":
-        R = np.sqrt(X ** 2 + Y ** 2)
-        g = np.exp(-((R - 0.7) ** 2) / (2 * 0.1 ** 2))
+        R = np.sqrt(X**2 + Y**2)
+        g = np.exp(-((R - 0.7) ** 2) / (2 * 0.1**2))
         lam += g
         alpha += g
     elif scenario == "multi_hotspot":
@@ -161,7 +163,9 @@ def evaluate_fields(
 # ---------------------------------------------------------------------------
 
 
-def run_stage(rhos: Iterable[float], stage: str, args, mask, X, Y, figs_dir: Path) -> Tuple[List[Dict[str, float]], List[Dict[str, float]], List[Path]]:
+def run_stage(
+    rhos: Iterable[float], stage: str, args, mask, X, Y, figs_dir: Path
+) -> Tuple[List[Dict[str, float]], List[Dict[str, float]], List[Path]]:
     metrics: List[Dict[str, float]] = []
     summary: List[Dict[str, float]] = []
     panels: List[Path] = []
@@ -193,16 +197,22 @@ def run_stage(rhos: Iterable[float], stage: str, args, mask, X, Y, figs_dir: Pat
             stage_rows.append(row)
 
             # plotting individual fields for GIF panels
-            lam_field, alpha_field = correlated_fields(args.nx, args.ny, corr=rho, sigma=args.sigma, seed=seed)
+            lam_field, alpha_field = correlated_fields(
+                args.nx, args.ny, corr=rho, sigma=args.sigma, seed=seed
+            )
             lam_field, alpha_field = apply_scenario(lam_field, alpha_field, args.scenario)
             lam_plot = np.where(mask, lam_field, np.nan)
             alpha_plot = np.where(mask, alpha_field, np.nan)
             panel_path = figs_dir / f"{stage}_rho{rho:.3f}_seed{seed}.png"
             fig, axs = plt.subplots(1, 2, figsize=(6, 3))
-            im0 = axs[0].imshow(lam_plot, origin="lower", extent=(-args.R, args.R, -args.R, args.R), cmap="viridis")
+            im0 = axs[0].imshow(
+                lam_plot, origin="lower", extent=(-args.R, args.R, -args.R, args.R), cmap="viridis"
+            )
             axs[0].set_title("λ")
             fig.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04)
-            im1 = axs[1].imshow(alpha_plot, origin="lower", extent=(-args.R, args.R, -args.R, args.R), cmap="plasma")
+            im1 = axs[1].imshow(
+                alpha_plot, origin="lower", extent=(-args.R, args.R, -args.R, args.R), cmap="plasma"
+            )
             axs[1].set_title("α")
             fig.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04)
             fig.suptitle(f"ρ={rho:.3f} seed={seed}")
@@ -212,14 +222,20 @@ def run_stage(rhos: Iterable[float], stage: str, args, mask, X, Y, figs_dir: Pat
             panels.append(panel_path)
 
         # average over seeds for summary
-        rho_metrics = {k: np.mean([r[k] for r in stage_rows]) for k in stage_rows[0].keys() if k not in {"seed"}}
+        rho_metrics = {
+            k: np.mean([r[k] for r in stage_rows])
+            for k in stage_rows[0].keys()
+            if k not in {"seed"}
+        }
         rho_metrics["stage"] = stage
         summary.append(rho_metrics)
 
     return metrics, summary, panels
 
 
-def choose_best(summary: List[Dict[str, float]], density_max: float, tau_max: float) -> Dict[str, float]:
+def choose_best(
+    summary: List[Dict[str, float]], density_max: float, tau_max: float
+) -> Dict[str, float]:
     valid = [r for r in summary if r["density"] <= density_max and r["tau"] <= tau_max]
     if not valid:
         return {}
@@ -275,7 +291,11 @@ def publish_json(row: Dict[str, float]) -> None:
 
 def main() -> None:  # pragma: no cover - CLI tool
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scenario", choices=["hotspot", "shear_band", "rim", "multi_hotspot", "uniform"], default="hotspot")
+    ap.add_argument(
+        "--scenario",
+        choices=["hotspot", "shear_band", "rim", "multi_hotspot", "uniform"],
+        default="hotspot",
+    )
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--coarse", type=float, nargs="+", default=[0.0, 0.5, 0.9])
     ap.add_argument("--refine_width", type=float, default=0.2)
@@ -313,7 +333,9 @@ def main() -> None:  # pragma: no cover - CLI tool
     mask = inside_hex_xy(X, Y, args.R)
 
     # stage 1: coarse
-    metrics_coarse, summary_coarse, panels = run_stage(args.coarse, "coarse", args, mask, X, Y, figs_dir)
+    metrics_coarse, summary_coarse, panels = run_stage(
+        args.coarse, "coarse", args, mask, X, Y, figs_dir
+    )
     best_coarse = choose_best(summary_coarse, args.density_max, args.tau_max)
     if best_coarse:
         centre = best_coarse["rho"]
@@ -324,7 +346,9 @@ def main() -> None:  # pragma: no cover - CLI tool
     r_start = max(0.0, centre - args.refine_width / 2)
     r_end = min(1.0, centre + args.refine_width / 2)
     refine_rhos = np.arange(r_start, r_end + 1e-9, args.refine_step)
-    metrics_refine, summary_refine, panels_r = run_stage(refine_rhos, "refine", args, mask, X, Y, figs_dir)
+    metrics_refine, summary_refine, panels_r = run_stage(
+        refine_rhos, "refine", args, mask, X, Y, figs_dir
+    )
     panels.extend(panels_r)
 
     # write CSVs

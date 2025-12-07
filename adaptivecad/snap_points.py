@@ -18,10 +18,10 @@ def snap_points_2d(feature):
         if SNAP_TYPES.get("Endpoint", False):
             points += [(pt, "Endpoint") for pt in corners]
         if SNAP_TYPES.get("Midpoint", False):
-            mids = [[l/2, 0, z], [l, w/2, z], [l/2, w, z], [0, w/2, z]]
+            mids = [[l / 2, 0, z], [l, w / 2, z], [l / 2, w, z], [0, w / 2, z]]
             points += [(pt, "Midpoint") for pt in mids]
         if SNAP_TYPES.get("Center", False):
-            points.append(([l/2, w/2, z], "Center"))
+            points.append(([l / 2, w / 2, z], "Center"))
     elif name == "Line":
         p1, p2 = params.get("points", ([0, 0, 0], [0, 0, 0]))
         if SNAP_TYPES.get("Endpoint", False):

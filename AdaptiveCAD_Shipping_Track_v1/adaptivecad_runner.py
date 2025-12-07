@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-import argparse, subprocess, sys, json, shlex
+import argparse
+import shlex
+import subprocess
+import sys
 from pathlib import Path
+
 
 def run(cmd):
     print(">>", cmd)
@@ -10,11 +14,16 @@ def run(cmd):
         print(proc.stderr, file=sys.stderr)
     return proc.returncode, proc.stdout
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scenario", default="hotspot", choices=["hotspot","shear_band","rim","multi_hotspot","uniform"])
+    ap.add_argument(
+        "--scenario",
+        default="hotspot",
+        choices=["hotspot", "shear_band", "rim", "multi_hotspot", "uniform"],
+    )
     ap.add_argument("--outdir", default="runs/out")
-    ap.add_argument("--seeds", nargs="+", type=int, default=[0,1,2])
+    ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--density_max", type=float, default=0.15)
     ap.add_argument("--tau_max", type=float, default=4.0)
@@ -24,8 +33,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     # 1) Optimizer (coarse → refine) with plots + GIF
-    opt_cmd = f"python adaptivecad_fields_optimizer.py --scenario {args.scenario} --seeds " + " ".join(map(str,args.seeds)) + \
-              f" --density_max {args.density_max} --tau_max {args.tau_max} --outdir {out}"
+    opt_cmd = (
+        f"python adaptivecad_fields_optimizer.py --scenario {args.scenario} --seeds "
+        + " ".join(map(str, args.seeds))
+        + f" --density_max {args.density_max} --tau_max {args.tau_max} --outdir {out}"
+    )
     if args.publish:
         opt_cmd += " --publish"
     rc, out_txt = run(opt_cmd)
@@ -42,7 +54,10 @@ def main():
 
     print("\n=== DONE ===")
     print(f"Artifacts in: {out}")
-    print("Search for: entangled_sweep_metrics.csv, summary_* .csv, figs/*.png, figs/*.gif, redshift_selection.csv")
+    print(
+        "Search for: entangled_sweep_metrics.csv, summary_* .csv, figs/*.png, figs/*.gif, redshift_selection.csv"
+    )
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

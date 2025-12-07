@@ -1,6 +1,7 @@
 import json
-from adaptivecad.sketch.units import Units, to_internal, from_internal
-from adaptivecad.sketch.model import SketchDocument, Point, Line, Dimension, DimensionKind
+
+from adaptivecad.sketch.model import Dimension, DimensionKind, Line, Point, SketchDocument
+from adaptivecad.sketch.units import Units, from_internal, to_internal
 
 
 def test_unit_conversions():
@@ -15,7 +16,9 @@ def test_roundtrip_json():
     doc.points.append(Point(id="p1", x=0.0, y=0.0))
     doc.points.append(Point(id="p2", x=10.0, y=0.0))
     doc.lines.append(Line(id="l1", a="p1", b="p2"))
-    doc.dimensions.append(Dimension(id="d1", kind=DimensionKind.Horizontal, refs=["p1","p2"], value=None))
+    doc.dimensions.append(
+        Dimension(id="d1", kind=DimensionKind.Horizontal, refs=["p1", "p2"], value=None)
+    )
 
     s = doc.to_json()
     doc2 = SketchDocument.from_json(s)

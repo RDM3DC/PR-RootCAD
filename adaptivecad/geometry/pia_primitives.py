@@ -4,7 +4,9 @@ import math
 from typing import Any, Dict, List, Tuple
 
 
-def pi_circle_points(radius: float, cx: float = 0.0, cy: float = 0.0, segments: int = 256) -> List[Tuple[float, float]]:
+def pi_circle_points(
+    radius: float, cx: float = 0.0, cy: float = 0.0, segments: int = 256
+) -> List[Tuple[float, float]]:
     """Sample a circle into evenly spaced points (carrying pi_a semantics elsewhere)."""
     pts: List[Tuple[float, float]] = []
     for i in range(segments):

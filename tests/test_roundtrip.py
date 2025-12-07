@@ -1,7 +1,7 @@
+import base64
 
-import json, base64
-from atc.encoder import encode
 from atc.decoder import decode
+from atc.encoder import encode
 
 CASES = [
     "I am in it, okay?  YES!",
@@ -12,11 +12,13 @@ CASES = [
     "No punctuation just   spaces   and CAPS",
 ]
 
+
 def test_roundtrip_cases():
     for t in CASES:
         pkg = encode(t)
         out = decode(pkg)
         assert out == t
+
 
 def test_lengths_align():
     t = "Hello,   world!!!  OK?"

@@ -1,12 +1,16 @@
 from __future__ import annotations
+
 from enum import Enum
+
 
 class Units(str, Enum):
     MM = "mm"
     IN = "in"
 
+
 # Internal unit is millimeters.
 _MM_PER_IN = 25.4
+
 
 def to_internal(value: float, units: Units) -> float:
     """Convert a value from given units to internal (mm)."""
@@ -15,6 +19,7 @@ def to_internal(value: float, units: Units) -> float:
     if units == Units.IN:
         return float(value) * _MM_PER_IN
     raise ValueError(f"Unsupported units: {units}")
+
 
 def from_internal(value_mm: float, units: Units) -> float:
     """Convert a value from internal (mm) to given units."""

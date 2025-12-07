@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from math import cos, hypot, isclose, sin, sqrt
 from typing import Iterable, Optional, Sequence, Tuple
 
-
 # A single tolerance used throughout the predicates.  Individual
 # functions accept optional overrides when tighter/looser tolerances are
 # required by callers.
@@ -66,9 +65,7 @@ class Vec2:
         return (self - other).length()
 
     def almost_equals(self, other: "Vec2", eps: float = EPSILON) -> bool:
-        return isclose(self.x, other.x, abs_tol=eps) and isclose(
-            self.y, other.y, abs_tol=eps
-        )
+        return isclose(self.x, other.x, abs_tol=eps) and isclose(self.y, other.y, abs_tol=eps)
 
 
 @dataclass(frozen=True)
@@ -248,7 +245,8 @@ def segment_intersection(
         if t_max < -eps or t_min > 1.0 + eps:
             return Intersection.none()
 
-        clamp = lambda t: max(0.0, min(1.0, t))
+        def clamp(t):
+            return max(0.0, min(1.0, t))
         i0 = a0 + r * clamp(t_min)
         i1 = a0 + r * clamp(t_max)
         if i0.distance_to(i1) <= eps:
@@ -317,4 +315,3 @@ def polyline_length(points: Iterable[Vec2]) -> float:
             total += prev.distance_to(pt)
         prev = pt
     return total
-

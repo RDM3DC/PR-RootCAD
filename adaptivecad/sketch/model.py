@@ -1,10 +1,12 @@
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
-from enum import Enum
-from typing import List, Optional, Dict, Any, Tuple
+
 import json
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from .units import Units
+
 
 # --- Entities ---
 @dataclass
@@ -14,6 +16,7 @@ class Point:
     y: float
     construction: bool = False
 
+
 @dataclass
 class Line:
     id: str
@@ -21,13 +24,15 @@ class Line:
     b: str  # point id
     construction: bool = False
 
+
 @dataclass
 class Arc:
     id: str
     center: str  # point id
-    start: str   # point id
-    end: str     # point id
+    start: str  # point id
+    end: str  # point id
     construction: bool = False
+
 
 @dataclass
 class Circle:
@@ -35,6 +40,7 @@ class Circle:
     center: str  # point id
     radius: float
     construction: bool = False
+
 
 @dataclass
 class Bezier:
@@ -45,12 +51,14 @@ class Bezier:
     p3: Optional[str] = None  # optional for quadratic (p3 None)
     construction: bool = False
 
+
 @dataclass
 class Polyline:
     id: str
     verts: List[str]  # point ids in order
     closed: bool = False
     construction: bool = False
+
 
 # --- Dimensions ---
 class DimensionKind(str, Enum):
@@ -61,6 +69,7 @@ class DimensionKind(str, Enum):
     Radius = "radius"
     Diameter = "diameter"
 
+
 @dataclass
 class Dimension:
     id: str
@@ -68,6 +77,7 @@ class Dimension:
     refs: List[str]  # point ids and/or entity ids (depending on kind)
     value: Optional[float] = None  # driving value (None = driven/annotation)
     style: Dict[str, Any] = field(default_factory=dict)
+
 
 # --- Constraints ---
 class ConstraintKind(str, Enum):
@@ -80,12 +90,14 @@ class ConstraintKind(str, Enum):
     Tangent = "tangent"
     Concentric = "concentric"
 
+
 @dataclass
 class Constraint:
     id: str
     kind: ConstraintKind
     refs: List[str]
     params: Dict[str, Any] = field(default_factory=dict)
+
 
 # --- Document ---
 @dataclass
@@ -117,34 +129,51 @@ class SketchDocument:
     def from_json(s: str) -> "SketchDocument":
         o = json.loads(s)
         doc = SketchDocument(units=Units(o.get("units", "mm")))
+
         def add_points(lst):
             for it in lst:
                 doc.points.append(Point(**it))
+
         def add_lines(lst):
             for it in lst:
                 doc.lines.append(Line(**it))
+
         def add_arcs(lst):
             for it in lst:
                 doc.arcs.append(Arc(**it))
+
         def add_circles(lst):
             for it in lst:
                 doc.circles.append(Circle(**it))
+
         def add_beziers(lst):
             for it in lst:
                 doc.beziers.append(Bezier(**it))
+
         def add_polylines(lst):
             for it in lst:
                 doc.polylines.append(Polyline(**it))
+
         def add_dims(lst):
             for it in lst:
-                kind = DimensionKind(it["kind"]) if isinstance(it.get("kind"), str) else it.get("kind")
-                it2 = dict(it); it2["kind"] = kind
+                kind = (
+                    DimensionKind(it["kind"]) if isinstance(it.get("kind"), str) else it.get("kind")
+                )
+                it2 = dict(it)
+                it2["kind"] = kind
                 doc.dimensions.append(Dimension(**it2))
+
         def add_cons(lst):
             for it in lst:
-                kind = ConstraintKind(it["kind"]) if isinstance(it.get("kind"), str) else it.get("kind")
-                it2 = dict(it); it2["kind"] = kind
+                kind = (
+                    ConstraintKind(it["kind"])
+                    if isinstance(it.get("kind"), str)
+                    else it.get("kind")
+                )
+                it2 = dict(it)
+                it2["kind"] = kind
                 doc.constraints.append(Constraint(**it2))
+
         add_points(o.get("points", []))
         add_lines(o.get("lines", []))
         add_arcs(o.get("arcs", []))
