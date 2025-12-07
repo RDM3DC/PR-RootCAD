@@ -1944,7 +1944,8 @@ class AnalyticViewport(QOpenGLWidget):
         )
         self._sk_dragging = False
         # Lightweight 2D polyline overlays (for algorithm visuals)
-        # Each entry: { 'pts': [(x,y),...], 'color': (r,g,b), 'width': int, 'scale': (sx,sy), 'offset': (ox,oy) }
+        # Each entry: { 'pts': [(x,y),...], 'color': (r,g,b), 'width': int,
+        #              'scale': (sx,sy), 'offset': (ox,oy) }
         self._poly_overlays = []
 
     # Resolve a sketch reference used by dimension tools into a world XY np.array([x,y], float32)
@@ -2725,7 +2726,9 @@ class AnalyticViewport(QOpenGLWidget):
                 self.update()
                 return
             elif mode == "dimension":
-                # Typed placement: Linear/H/V = pick A, pick B, then click to set offset; Radius/Diameter use circle center
+                # Typed placement: Linear/H/V = pick A, pick B,
+                # then click to set offset;
+                # Radius/Diameter use circle center
                 # If we are in placing phase, compute offset and finalize
                 if panel._sketch._dim_placing and isinstance(panel._sketch._dim_place_data, dict):
                     dt = panel._sketch._dim_place_data.get("type", "linear")

@@ -284,7 +284,8 @@ def rebuild_scene(display) -> None:
     for i, feat in enumerate(DOCUMENT):
         if getattr(feat, "params", {}).get("consumed", False):
             print(
-                f"[rebuild_scene] Feature '{feat.name}' (index {i}) is consumed. Attempting to remove from display."
+                f"[rebuild_scene] Feature '{feat.name}' (index {i}) is consumed. "
+                "Attempting to remove from display."
             )  # DEBUG
             try:
                 if (
@@ -817,7 +818,9 @@ class MoveCmd(BaseCmd):
         if hasattr(DOCUMENT[shape_idx], "params"):
             DOCUMENT[shape_idx].params["consumed"] = True
             print(
-                f"[MoveCmd] Feature '{DOCUMENT[shape_idx].name}' (index {shape_idx}) marked as consumed: {DOCUMENT[shape_idx].params}"
+                f"[MoveCmd] Feature '{DOCUMENT[shape_idx].name}' "
+                f"(index {shape_idx}) marked as consumed: "
+                f"{DOCUMENT[shape_idx].params}"
             )  # DEBUG
 
         # Create new moved feature
@@ -988,7 +991,8 @@ class CutCmd(BaseCmd):
         if hasattr(DOCUMENT[i1], "params"):
             DOCUMENT[i1].params["consumed"] = True
             print(
-                f"[CutCmd] Feature '{DOCUMENT[i1].name}' (index {i1}) marked as consumed: {DOCUMENT[i1].params}"
+                f"[CutCmd] Feature '{DOCUMENT[i1].name}' (index {i1}) "
+                f"marked as consumed: {DOCUMENT[i1].params}"
             )  # DEBUG
         DOCUMENT.append(Feature("Cut", {"target": i1, "tool": i2}, cut))
         rebuild_scene(mw.view._display)

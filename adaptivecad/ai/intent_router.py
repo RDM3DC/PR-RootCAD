@@ -65,7 +65,10 @@ def build_tool_schema(available_tools: List[str]) -> List[dict]:
             "type": "function",
             "function": {
                 "name": "upgrade_profile_to_pi_a",
-                "description": "Mark the current or provided profile as pi_a for downstream operations.",
+                "description": (
+                    "Mark the current or provided profile as pi_a "
+                    "for downstream operations."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -259,7 +262,8 @@ def chat_with_tools(
     system = {
         "role": "system",
         "content": (
-            "You are the AdaptiveCAD Copilot. Follow the guide and prefer AdaptiveCAD-native constructs.\n\n"
+            "You are the AdaptiveCAD Copilot. "
+            "Follow the guide and prefer AdaptiveCAD-native constructs.\n\n"
             "### Guide\n" + static_guide + "\n\n"
             "### Repo-context (top matches)\n" + dynamic_ctx
         ),

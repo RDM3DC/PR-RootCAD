@@ -83,7 +83,8 @@ def read_ama(file_path):
                         part_metadata = json.load(pf_meta)
                 else:
                     print(
-                        f"Warning: Metadata file '{meta_file_name}' not found for part '{part_name}'."
+                        f"Warning: Metadata file '{meta_file_name}' "
+                        f"not found for part '{part_name}'."
                     )
 
                 parts.append(AMAPart(name=part_name, brep_data=brep_data, metadata=part_metadata))
@@ -145,8 +146,10 @@ if __name__ == "__main__":
         print("Successfully read AMA file.")
         print(f"Manifest: {ama_content.manifest}")
         for part in ama_content.parts:
+            brep_len = len(part.brep_data) if part.brep_data else 0
             print(
-                f"Part: {part.name}, Metadata: {part.metadata}, BREP length: {len(part.brep_data) if part.brep_data else 0}"
+                f"Part: {part.name}, Metadata: {part.metadata}, "
+                f"BREP length: {brep_len}"
             )
     else:
         print("Failed to read AMA file.")

@@ -105,9 +105,11 @@ class DrapedSheetCmd(BaseCmd):
 
         try:
             # Create BSpline surface from the array of points
-            # Constructor: GeomAPI_PointsToBSplineSurface(Points, DegMin, DegMax, Continuity, Tol)
+            # Constructor: GeomAPI_PointsToBSplineSurface(
+            #   Points, DegMin, DegMax, Continuity, Tol)
             # Using default degrees by not specifying DegMin/DegMax initially.
-            # surface_builder = GeomAPI_PointsToBSplineSurface(projected_points_array, 3, 8, GeomAbs_C2, 1e-3)
+            # surface_builder = GeomAPI_PointsToBSplineSurface(
+            #   projected_points_array, 3, 8, GeomAbs_C2, 1e-3)
             surface_builder = GeomAPI_PointsToBSplineSurface(
                 projected_points_array
             )  # Simpler constructor
