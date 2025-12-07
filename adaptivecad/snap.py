@@ -1,11 +1,12 @@
 import numpy as np
 
+
 class SnapManager:
     def __init__(self, tol_px=12):
         self.strategies = []
         self.strategy_enabled = {}
         self.tol_px = tol_px  # screen-space tolerance (pixels)
-        self.enabled = True   # master snap toggle
+        self.enabled = True  # master snap toggle
 
     def set_tolerance(self, pixels):
         """Set the snap tolerance in pixels."""

@@ -1,23 +1,26 @@
 # Check environment configuration for AdaptiveCAD
 # This script helps diagnose conda environment issues
 
-import sys
-import platform
 import os
-import subprocess
+import platform
+import sys
 from pathlib import Path
+
 
 def green(text):
     """Print text in green color"""
     return f"\033[92m{text}\033[0m"
 
+
 def red(text):
     """Print text in red color"""
     return f"\033[91m{text}\033[0m"
 
+
 def yellow(text):
     """Print text in yellow color"""
     return f"\033[93m{text}\033[0m"
+
 
 print(f"{'=' * 50}")
 print(f"{green('AdaptiveCAD Environment Diagnostic Tool')}")
@@ -39,17 +42,14 @@ else:
 # 3. Check if the adaptivecad package is installed
 try:
     import adaptivecad
+
     print(f"AdaptiveCAD Package: {green('Installed')}")
     print(f"    Location: {green(Path(adaptivecad.__file__).parent)}")
 except ImportError:
     print(f"AdaptiveCAD Package: {red('Not installed or not in Python path')}")
 
 # 4. Check required dependencies
-dependencies = [
-    "numpy",
-    "pyside6",
-    "pythonocc-core"
-]
+dependencies = ["numpy", "pyside6", "pythonocc-core"]
 
 print("\nChecking dependencies:")
 for dep in dependencies:
@@ -63,7 +63,7 @@ for dep in dependencies:
             version = module.version
         else:
             version = "Unknown version"
-        
+
         module_file = getattr(module, "__file__", "Unknown location")
         print(f"  ✓ {dep}: {green(f'Installed - {version}')}")
         print(f"      Location: {Path(module_file).parent}")
@@ -74,12 +74,14 @@ for dep in dependencies:
 print("\nChecking critical modules:")
 try:
     from adaptivecad.gui import playground
+
     print(f"  ✓ adaptivecad.gui.playground: {green('Available')}")
 except ImportError as e:
     print(f"  ✗ adaptivecad.gui.playground: {red(f'Not available - {e}')}")
 
 try:
     from adaptivecad.commands.import_conformal import ImportConformalCmd
+
     print(f"  ✓ adaptivecad.commands.import_conformal: {green('Available')}")
 except ImportError as e:
     print(f"  ✗ adaptivecad.commands.import_conformal: {red(f'Not available - {e}')}")

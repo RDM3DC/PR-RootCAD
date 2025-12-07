@@ -11,12 +11,12 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QSlider,
-    QComboBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -83,7 +83,9 @@ class NDChessWidget(QWidget):
 
     def paintEvent(self, event) -> None:
         ax1, ax2 = self.active_axes
-        fixed = [slice(None) if i in self.active_axes else self.slices[i] for i in range(len(self.dims))]
+        fixed = [
+            slice(None) if i in self.active_axes else self.slices[i] for i in range(len(self.dims))
+        ]
         grid = self.board[tuple(fixed)]
         cell = 40
         off = 20

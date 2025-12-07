@@ -4,11 +4,12 @@ This module includes simple classes for vectors, 4x4 affine matrices and
 quaternions. It is intentionally lightweight so early parts of the
 project can depend on it without external dependencies.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Iterable, List
+from dataclasses import dataclass
+from typing import Iterable
 
 
 @dataclass
@@ -94,12 +95,14 @@ class Matrix4:
         wx, wy, wz = q.w * x2, q.w * y2, q.w * z2
         xx, xy, xz = q.x * x2, q.x * y2, q.x * z2
         yy, yz, zz = q.y * y2, q.y * z2, q.z * z2
-        m = Matrix4([
-            [1 - (yy + zz), xy - wz, xz + wy, 0.0],
-            [xy + wz, 1 - (xx + zz), yz - wx, 0.0],
-            [xz - wy, yz + wx, 1 - (xx + yy), 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ])
+        m = Matrix4(
+            [
+                [1 - (yy + zz), xy - wz, xz + wy, 0.0],
+                [xy + wz, 1 - (xx + zz), yz - wx, 0.0],
+                [xz - wy, yz + wx, 1 - (xx + yy), 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
         return m
 
     def __matmul__(self, other: "Matrix4") -> "Matrix4":

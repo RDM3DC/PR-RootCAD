@@ -26,14 +26,14 @@ def make_frame(R: float, size: int = 384) -> np.ndarray:
     lin = np.linspace(-1.0, 1.0, s, dtype=np.float32)
     xv, yv = np.meshgrid(lin, lin)
     r_norm = R / (s / 2.0)
-    r2 = xv ** 2 + yv ** 2
-    mask = r2 <= r_norm ** 2 + 1e-9
+    r2 = xv**2 + yv**2
+    mask = r2 <= r_norm**2 + 1e-9
 
     zv = np.zeros_like(xv)
-    zv[mask] = np.sqrt(np.maximum(r_norm ** 2 - r2[mask], 0.0))
+    zv[mask] = np.sqrt(np.maximum(r_norm**2 - r2[mask], 0.0))
 
     nx, ny, nz = xv.copy(), yv.copy(), zv.copy()
-    norm = np.sqrt(nx ** 2 + ny ** 2 + nz ** 2) + 1e-9
+    norm = np.sqrt(nx**2 + ny**2 + nz**2) + 1e-9
     nx /= norm
     ny /= norm
     nz /= norm
@@ -80,7 +80,7 @@ def make_frame(R: float, size: int = 384) -> np.ndarray:
         a2 = np.cos(2 * np.pi * f * (0.5 * u + (np.sqrt(3) / 2) * v))
         a3 = np.cos(2 * np.pi * f * ((-0.5) * u + (np.sqrt(3) / 2) * v))
         hex_lines = np.abs(a1 * a2 * a3)
-        lines = hex_lines ** 8
+        lines = hex_lines**8
         img[..., 1] += w_molecular * 0.15 * lines
         img[..., 0] += w_molecular * 0.05 * lines
 
@@ -88,14 +88,14 @@ def make_frame(R: float, size: int = 384) -> np.ndarray:
         Y10 = np.cos(theta)
         Y11c = np.sin(theta) * np.cos(phi)
         Y11s = np.sin(theta) * np.sin(phi)
-        density = Y10 ** 2 + 0.5 * (Y11c ** 2 + Y11s ** 2)
+        density = Y10**2 + 0.5 * (Y11c**2 + Y11s**2)
         lobes = density / (density.max() + 1e-9)
         img[..., 2] += w_atomic * 0.25 * lobes
         img[..., 0] += w_atomic * 0.05 * lobes
 
     if w_nuclear > 1e-6:
-        rr = np.sqrt(xv ** 2 + yv ** 2)
-        core = np.exp(- (rr / (r_norm * 0.2 + 1e-6)) ** 2)
+        rr = np.sqrt(xv**2 + yv**2)
+        core = np.exp(-((rr / (r_norm * 0.2 + 1e-6)) ** 2))
         img[..., 0] += w_nuclear * 0.25 * core
         img[..., 1] += w_nuclear * 0.05 * core
         img[..., 2] += w_nuclear * 0.05 * core

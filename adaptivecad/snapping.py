@@ -1,7 +1,7 @@
-from OCC.Core.gp import gp_Pnt
-from OCC.Core.AIS import AIS_Point, AIS_Shape
+from OCC.Core.AIS import AIS_Shape
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-from OCC.Display.OCCViewer import Viewer3d
+from OCC.Core.gp import gp_Pnt
+
 
 class SnapStrategy:
     def __init__(self, viewer_display):
@@ -22,11 +22,12 @@ class SnapStrategy:
         self.is_active = not self.is_active
         return self.is_active
 
+
 class GridStrategy(SnapStrategy):
     def __init__(self, viewer_display, grid_step=10.0, snap_increment_divisor=10):
         super().__init__(viewer_display)
         self.grid_step = grid_step  # e.g., 10.0 mm
-        self.snap_increment = grid_step / snap_increment_divisor # e.g., 1.0 mm
+        self.snap_increment = grid_step / snap_increment_divisor  # e.g., 1.0 mm
         self.name = "GridSnap"
 
     def snap(self, x_screen, y_screen) -> gp_Pnt | None:
@@ -38,28 +39,31 @@ class GridStrategy(SnapStrategy):
         # and snap to the dynamic grid plane.
         # For MVP, let's assume snapping on XY plane view from Z axis.
         pnt_3d_world = self.viewer_display.View.ConvertToGrid(x_screen, y_screen)
-        
+
         # Snap to the snap_increment
         snapped_x = round(pnt_3d_world.X() / self.snap_increment) * self.snap_increment
         snapped_y = round(pnt_3d_world.Y() / self.snap_increment) * self.snap_increment
-        snapped_z = round(pnt_3d_world.Z() / self.snap_increment) * self.snap_increment # Or keep Z as is, depending on grid plane
+        (
+            round(pnt_3d_world.Z() / self.snap_increment) * self.snap_increment
+        )  # Or keep Z as is, depending on grid plane
 
         # For now, assume grid is on XY plane, so Z is 0 or based on active sketch plane
         # Let's simplify and snap Z as well, or keep it from the converted point
         # For a true dynamic grid, this Z would be on the grid plane.
-        snapped_pnt = gp_Pnt(snapped_x, snapped_y, pnt_3d_world.Z()) 
+        snapped_pnt = gp_Pnt(snapped_x, snapped_y, pnt_3d_world.Z())
         # print(f"GridSnap: Screen ({x_screen},{y_screen}) -> World ({pnt_3d_world.X():.2f},{pnt_3d_world.Y():.2f},{pnt_3d_world.Z():.2f}) -> Snapped ({snapped_x:.2f},{snapped_y:.2f},{snapped_pnt.Z():.2f})")
         return snapped_pnt
 
     def set_grid_step(self, step):
         self.grid_step = step
-        self.snap_increment = step / 10 # As per blueprint
+        self.snap_increment = step / 10  # As per blueprint
+
 
 class SnapManager:
     def __init__(self, viewer_display):
         self.viewer_display = viewer_display
         self.strategies: list[SnapStrategy] = []
-        self.snap_tolerance_pixels = 8 # As per blueprint
+        self.snap_tolerance_pixels = 8  # As per blueprint
         self._current_snap_marker: list[AIS_Shape] | None = None
 
     def add_strategy(self, strategy: SnapStrategy):
@@ -67,13 +71,12 @@ class SnapManager:
 
     def get_strategy(self, name: str) -> SnapStrategy | None:
         for s in self.strategies:
-            if hasattr(s, 'name') and s.name == name:
+            if hasattr(s, "name") and s.name == name:
                 return s
         return None
 
     def on_mouse_move(self, x_screen, y_screen):
         snapped_point = None
-        active_strategy = None
 
         for strategy in self.strategies:
             if strategy.is_active:
@@ -81,8 +84,7 @@ class SnapManager:
                 current_snap = strategy.snap(x_screen, y_screen)
                 if current_snap:
                     snapped_point = current_snap
-                    active_strategy = strategy
-                    break # First active strategy that snaps wins
+                    break  # First active strategy that snaps wins
 
         if self._current_snap_marker:
             for marker in self._current_snap_marker:
@@ -94,7 +96,7 @@ class SnapManager:
             self._current_snap_marker = create_crosshair_at_point(snapped_point)
             for marker in self._current_snap_marker:
                 self.viewer_display.Context.Display(marker, True)
-        
+
         return snapped_point
 
     def toggle_grid_snap(self) -> bool:
@@ -102,7 +104,9 @@ class SnapManager:
         if grid_strategy:
             is_now_active = grid_strategy.toggle()
             print(f"Grid Snap {'activated' if is_now_active else 'deactivated'}")
-            if not is_now_active and self._current_snap_marker: # Clear marker if grid snap deactivated
+            if (
+                not is_now_active and self._current_snap_marker
+            ):  # Clear marker if grid snap deactivated
                 for marker in self._current_snap_marker:
                     self.viewer_display.Context.Remove(marker, True)
                 self._current_snap_marker = None
@@ -118,15 +122,15 @@ class SnapManager:
             return
 
         # Example logic:
-        if view_magnification > 500: # Zoomed in a lot
+        if view_magnification > 500:  # Zoomed in a lot
             new_step = 0.1
         elif view_magnification > 100:
             new_step = 1.0
         elif view_magnification > 20:
             new_step = 10.0
-        else: # Zoomed out
+        else:  # Zoomed out
             new_step = 100.0
-        
+
         if grid_strategy.grid_step != new_step:
             grid_strategy.set_grid_step(new_step)
             # print(f"Grid step updated to: {new_step} mm due to zoom: {view_magnification}")
@@ -150,6 +154,3 @@ def create_crosshair_at_point(point: gp_Pnt, size: float = 2.0) -> list[AIS_Shap
         gp_Pnt(point.X(), point.Y() + half, point.Z()),
     ).Edge()
     return [AIS_Shape(edge_x), AIS_Shape(edge_y)]
-
-
-

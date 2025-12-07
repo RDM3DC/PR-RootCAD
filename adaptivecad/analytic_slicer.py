@@ -1,4 +1,5 @@
 """Analytic B-rep slicing helpers."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -26,7 +27,7 @@ def slice_brep_for_layer(shape: Any, z: float):
     """
     try:
         from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
-        from OCC.Core.gp import gp_Pln, gp_Ax3, gp_Dir, gp_Pnt
+        from OCC.Core.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
     except Exception as exc:  # pragma: no cover - optional dependency
         raise ImportError("pythonocc-core is required for analytic slicing") from exc
 

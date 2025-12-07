@@ -1,10 +1,9 @@
-import math
 import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QPointF
+from PySide6.QtWidgets import QApplication
 
 from adaptivecad.ui.radial_tool_wheel import RadialToolWheel, ToolSpec
 
@@ -18,7 +17,12 @@ def qapp():
 
 
 def _make_wheel(tools=None, **kwargs):
-    tools = tools or [ToolSpec("A", "a"), ToolSpec("B", "b"), ToolSpec("C", "c"), ToolSpec("D", "d")]
+    tools = tools or [
+        ToolSpec("A", "a"),
+        ToolSpec("B", "b"),
+        ToolSpec("C", "c"),
+        ToolSpec("D", "d"),
+    ]
     wheel = RadialToolWheel(None, tools=tools, **kwargs)
     wheel.resize(400, 400)
     return wheel

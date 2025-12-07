@@ -1,17 +1,17 @@
 ﻿from __future__ import annotations
 
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDockWidget,
-    QWidget,
-    QVBoxLayout,
     QHBoxLayout,
-    QTextEdit,
+    QLabel,
     QLineEdit,
     QPushButton,
-    QLabel,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from adaptivecad.ai.intent_router import CADActionBus, chat_with_tools
@@ -21,7 +21,15 @@ from adaptivecad.plugins.tool_registry import ToolRegistry
 class _LLMWorker(QThread):
     finished_text = Signal(str)
 
-    def __init__(self, text: str, tools: List[str], bus: CADActionBus, model: str, prior: List[Dict[str, str]] | None = None, registry: Optional[ToolRegistry] = None):
+    def __init__(
+        self,
+        text: str,
+        tools: List[str],
+        bus: CADActionBus,
+        model: str,
+        prior: List[Dict[str, str]] | None = None,
+        registry: Optional[ToolRegistry] = None,
+    ):
         super().__init__()
         self.text = text
         self.tools = tools
@@ -111,7 +119,9 @@ class AICopilotDock(QDockWidget):
         self._history.append({"role": "user", "content": text})
         self.input.clear()
         self.send_btn.setEnabled(False)
-        self._worker = _LLMWorker(text, self._tools, self._bus, self._model, prior=self._history, registry=self._registry)
+        self._worker = _LLMWorker(
+            text, self._tools, self._bus, self._model, prior=self._history, registry=self._registry
+        )
         self._worker.finished_text.connect(self._on_done)
         self._worker.start()
 

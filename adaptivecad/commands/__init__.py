@@ -1,38 +1,38 @@
 """Convenience exports for command classes used in the GUI playground."""
 
 from ..command_defs import (
-    BaseCmd,
-    Feature,
     DOCUMENT,
-    rebuild_scene,
-    NewBoxCmd,
+    BaseCmd,
+    CutCmd,
     ExportAmaCmd,
-    RevolveCmd,
-    ExportStlCmd,
     ExportGCodeCmd,
     ExportGCodeDirectCmd,
+    ExportStlCmd,
+    Feature,
+    IntersectCmd,
+    LoftCmd,
     MoveCmd,
-    UnionCmd,
-    CutCmd,
-    ScaleCmd,
+    NewBallCmd,
+    NewBezierCmd,
+    NewBoxCmd,
+    NewBSplineCmd,
+    NewConeCmd,
     NewNDBoxCmd,
     NewNDFieldCmd,
-    NewBezierCmd,
-    NewBSplineCmd,
-    NewBallCmd,
     NewTorusCmd,
-    NewConeCmd,
-    LoftCmd,
-    SweepAlongPathCmd,
+    RevolveCmd,
+    ScaleCmd,
     ShellCmd,
-    IntersectCmd,
+    SweepAlongPathCmd,
+    UnionCmd,
     _require_command_modules,
+    rebuild_scene,
 )
 
 try:
-    from .pi_square_cmd import PiSquareCmd
     from .draped_sheet_cmd import DrapedSheetCmd
     from .import_conformal import ImportConformalCmd
+    from .pi_square_cmd import PiSquareCmd
 except Exception:  # optional OCC deps may be missing
     PiSquareCmd = None
     DrapedSheetCmd = None

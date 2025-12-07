@@ -1,10 +1,15 @@
-import argparse, base64, json, sys
-from typing import Dict, List
+import argparse
+import base64
+import json
+import sys
 from collections import deque
-from .utils import make_style_byte, pack_style_bytes, PUNCT2CODE
+from typing import Dict, List
+
+from .utils import PUNCT2CODE, make_style_byte, pack_style_bytes
 
 PUNCT_SET = set([".", ",", "!", "?", ";", ":"])
 ZERO_WIDTH = "\u200b"  # zero-width carrier
+
 
 def encode(text: str) -> Dict[str, str]:
     carriers: List[str] = []
@@ -68,6 +73,7 @@ def encode(text: str) -> Dict[str, str]:
     style_b64 = base64.b64encode(pack_style_bytes(style_bytes)).decode("ascii")
     return {"carriers": carriers_str, "style_b64": style_b64}
 
+
 def main():
     ap = argparse.ArgumentParser(description="ATC encoder")
     ap.add_argument("--text", type=str, help="Input text")
@@ -75,7 +81,8 @@ def main():
     ap.add_argument("--out", type=str, default="-", help="Write JSON to path or '-'")
     args = ap.parse_args()
     if (args.text is None) == (args.infile is None):
-        print("Provide exactly one of --text or --infile", file=sys.stderr); sys.exit(1)
+        print("Provide exactly one of --text or --infile", file=sys.stderr)
+        sys.exit(1)
     text = args.text if args.text is not None else open(args.infile, "r", encoding="utf-8").read()
     pkg = encode(text)
     out_json = json.dumps(pkg, ensure_ascii=False, indent=2)
@@ -83,6 +90,7 @@ def main():
         print(out_json)
     else:
         open(args.out, "w", encoding="utf-8").write(out_json)
+
 
 if __name__ == "__main__":
     main()

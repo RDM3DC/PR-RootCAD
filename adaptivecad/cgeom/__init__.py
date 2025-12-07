@@ -8,7 +8,7 @@ class AABB:
 
     def contains(self, p):
         return (
-            self.min.x <= p.x <= self.max.x and
-            self.min.y <= p.y <= self.max.y and
-            self.min.z <= p.z <= self.max.z
+            self.min.x <= p.x <= self.max.x
+            and self.min.y <= p.y <= self.max.y
+            and self.min.z <= p.z <= self.max.z
         )

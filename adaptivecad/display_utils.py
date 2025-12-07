@@ -1,5 +1,7 @@
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from adaptivecad.settings import MESH_DEFLECTION, MESH_ANGLE
+
+from adaptivecad.settings import MESH_ANGLE, MESH_DEFLECTION
+
 
 def smoother_display(display, shape, deflection=None, angle=None, color=None):
     # Use settings if not overridden
@@ -14,6 +16,7 @@ def smoother_display(display, shape, deflection=None, angle=None, color=None):
     parallel = bool(True)
     BRepMesh_IncrementalMesh(shape, deflection, isRelative, angle, parallel)
     display.DisplayShape(shape, color=color)
+
 
 def display_with_high_res(display, shape, color=None):
     # For backward compatibility, just call smoother_display

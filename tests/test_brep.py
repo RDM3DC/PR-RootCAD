@@ -1,5 +1,5 @@
-from adaptivecad.linalg import Vec3
 from adaptivecad.geom import EulerBRep
+from adaptivecad.linalg import Vec3
 
 
 def test_euler_tetrahedron():

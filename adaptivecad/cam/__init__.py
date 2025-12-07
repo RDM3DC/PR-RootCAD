@@ -24,6 +24,4 @@ def adaptive_clearing_5axis(shape, tool_radius: float = 3.0):
         NotImplementedError: Always, until the kernel stack is stable.
     """
 
-    raise NotImplementedError(
-        "Adaptive clearing for 5-axis machines is not implemented yet"
-    )
+    raise NotImplementedError("Adaptive clearing for 5-axis machines is not implemented yet")

@@ -1,6 +1,8 @@
 import base64
-from atc.encoder import encode
+
 from atc.decoder import decode
+from atc.encoder import encode
+
 
 def test_atc_roundtrip():
     cases = [

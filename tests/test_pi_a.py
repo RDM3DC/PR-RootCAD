@@ -1,5 +1,6 @@
 import math
-from adaptivecad.geom import geodesic_distance, HyperbolicConstraint
+
+from adaptivecad.geom import HyperbolicConstraint, geodesic_distance
 
 
 def test_geodesic_distance_origin():
@@ -13,6 +14,4 @@ def test_constraint_update():
     cons = HyperbolicConstraint((1.0, 0.0, 0.0), 1.0)
     p = (0.0, 0.0, 0.0)
     p_new = cons.update(p, step=0.5)
-    assert geodesic_distance(p_new, cons.target, 1.0) < geodesic_distance(
-        p, cons.target, 1.0
-    )
+    assert geodesic_distance(p_new, cons.target, 1.0) < geodesic_distance(p, cons.target, 1.0)

@@ -11,20 +11,18 @@ if not os.path.exists(backup_path):
     exit(1)
 
 # Read the backup file to get the full content
-with open(backup_path, 'r', encoding='utf-8') as f:
+with open(backup_path, "r", encoding="utf-8") as f:
     content = f.read()
 
 # Make a backup of our current minimal version
-minimal_backup = playground_path + '.minimal'
-with open(playground_path, 'r', encoding='utf-8') as f:
+minimal_backup = playground_path + ".minimal"
+with open(playground_path, "r", encoding="utf-8") as f:
     minimal_content = f.read()
 
-with open(minimal_backup, 'w', encoding='utf-8') as f:
+with open(minimal_backup, "w", encoding="utf-8") as f:
     f.write(minimal_content)
 
 # Extract feature definitions and create proper playground.py
-import re
-from adaptivecad.command_defs import Feature
 
 # Create a new version with both MainWindow properly defined and SuperellipseFeature included
 new_playground = '''"""Simplified GUI playground with optional dependencies."""
@@ -260,7 +258,7 @@ if __name__ == "__main__":
 '''
 
 # Write the new playground file
-with open(playground_path, 'w', encoding='utf-8') as f:
+with open(playground_path, "w", encoding="utf-8") as f:
     f.write(new_playground)
 
 print(f"Created proper playground.py with Superellipse feature at {playground_path}")

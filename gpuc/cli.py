@@ -1,6 +1,10 @@
-import argparse, numpy as np
-from .quant import quantize, dequantize
-from .zeros import zerosuppress, unsuppress
+import argparse
+
+import numpy as np
+
+from .quant import dequantize, quantize
+from .zeros import unsuppress, zerosuppress
+
 
 def quantize_main(argv=None):
     ap = argparse.ArgumentParser(description="GPUC quantize (CPU-safe)")
@@ -13,9 +17,15 @@ def quantize_main(argv=None):
     pkt = quantize(x, bits=args.bits, block=args.block)
     # save arrays cleanly
     if "q" in pkt and isinstance(pkt["q"], np.ndarray):
-        np.savez_compressed(args.out, **{k: v for k, v in pkt.items() if isinstance(v, (np.ndarray, int, float, tuple, list))})
+        np.savez_compressed(
+            args.out,
+            **{
+                k: v for k, v in pkt.items() if isinstance(v, (np.ndarray, int, float, tuple, list))
+            },
+        )
     else:
         np.savez_compressed(args.out, **pkt)
+
 
 def dequantize_main(argv=None):
     ap = argparse.ArgumentParser(description="GPUC dequantize")
@@ -25,9 +35,11 @@ def dequantize_main(argv=None):
     data = np.load(args.infile, allow_pickle=True)
     pkt = {k: data[k] for k in data.files}
     # ensure python types
-    if "shape" in pkt: pkt["shape"] = tuple(pkt["shape"])
+    if "shape" in pkt:
+        pkt["shape"] = tuple(pkt["shape"])
     y = dequantize(pkt)
     np.save(args.out, y)
+
 
 def zerosuppress_main(argv=None):
     ap = argparse.ArgumentParser(description="GPUC zero-suppress")
@@ -39,9 +51,12 @@ def zerosuppress_main(argv=None):
     pkt = zerosuppress(x, eps=args.eps)
     np.savez_compressed(args.out, **pkt)
 
+
 def unsuppress_main(argv=None):
     ap = argparse.ArgumentParser(description="GPUC unsuppress")
-    ap.add_argument("--in", dest="infile", required=True, help="Input .npz produced by zerosuppress")
+    ap.add_argument(
+        "--in", dest="infile", required=True, help="Input .npz produced by zerosuppress"
+    )
     ap.add_argument("--out", required=True, help="Output .npy")
     args = ap.parse_args(argv)
     data = np.load(args.infile, allow_pickle=True)

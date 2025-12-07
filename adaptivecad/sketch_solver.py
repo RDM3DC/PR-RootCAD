@@ -1,9 +1,11 @@
 """Simple sketch solver using Gauss-Newton least-squares."""
+
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List
-import math
+
 import numpy as np
 
 
@@ -29,10 +31,12 @@ class FixedConstraint(Constraint):
     target: Vec2
 
     def residual(self, x: np.ndarray) -> np.ndarray:
-        return np.array([
-            x[2 * self.idx] - self.target.x,
-            x[2 * self.idx + 1] - self.target.y,
-        ])
+        return np.array(
+            [
+                x[2 * self.idx] - self.target.x,
+                x[2 * self.idx + 1] - self.target.y,
+            ]
+        )
 
     def jacobian(self, x: np.ndarray) -> np.ndarray:
         n = len(x)
@@ -119,9 +123,7 @@ def export_dxf(sketch: Sketch, path: str) -> None:
                     )
                 )
         for p in sketch.points:
-            f.write(
-                "0\nPOINT\n8\n0\n10\n{:.6f}\n20\n{:.6f}\n30\n0.0\n".format(p.x, p.y)
-            )
+            f.write("0\nPOINT\n8\n0\n10\n{:.6f}\n20\n{:.6f}\n30\n0.0\n".format(p.x, p.y))
         f.write("0\nENDSEC\n0\nEOF\n")
 
 

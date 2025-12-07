@@ -1,7 +1,7 @@
-import math
 import importlib
+import math
 
-from adaptivecad.geom import full_turn_deg, rotate_cmd, pi_a_over_pi
+from adaptivecad.geom import full_turn_deg, pi_a_over_pi, rotate_cmd
 
 
 def test_full_turn_deg():
@@ -38,4 +38,3 @@ def test_math_sinh_not_monkeypatched():
     importlib.reload(hyperbolic)
     assert math.sinh is original
     assert math.isclose(hyperbolic._stable_sinh(0.5), original(0.5))
-

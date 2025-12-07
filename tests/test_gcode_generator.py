@@ -1,11 +1,13 @@
-import unittest
-import os
 import json
-import zipfile
+import os
 import tempfile
-from adaptivecad.gcode_generator import generate_gcode_from_ama_file, generate_gcode_from_ama_data
+import unittest
+import zipfile
+
+from adaptivecad.gcode_generator import generate_gcode_from_ama_data, generate_gcode_from_ama_file
 from adaptivecad.io.ama_reader import AMAFile, AMAPart
-from adaptivecad.io.gcode_generator import ama_to_gcode, WaterlineMilling
+from adaptivecad.io.gcode_generator import WaterlineMilling, ama_to_gcode
+
 
 class TestGCodeGenerator(unittest.TestCase):
 
@@ -18,17 +20,15 @@ class TestGCodeGenerator(unittest.TestCase):
         manifest_data = {
             "version": "1.0",
             "author": "TestGCodeGenerator",
-            "parts": [
-                {"name": self.part_name, "material": "Aluminum"}
-            ]
+            "parts": [{"name": self.part_name, "material": "Aluminum"}],
         }
         part_brep_data = b"Simulated BREP data for G-code test part"
         part_metadata = {"process": "milling", "tolerance": "0.01mm"}
 
-        with zipfile.ZipFile(self.test_ama_file_path, 'w') as zf:
-            zf.writestr('manifest.json', json.dumps(manifest_data))
-            zf.writestr(f'parts/{self.part_name}.brep', part_brep_data)
-            zf.writestr(f'parts/{self.part_name}.json', json.dumps(part_metadata))
+        with zipfile.ZipFile(self.test_ama_file_path, "w") as zf:
+            zf.writestr("manifest.json", json.dumps(manifest_data))
+            zf.writestr(f"parts/{self.part_name}.brep", part_brep_data)
+            zf.writestr(f"parts/{self.part_name}.json", json.dumps(part_metadata))
 
     def tearDown(self):
         """Clean up temporary files and directory."""
@@ -45,15 +45,15 @@ class TestGCodeGenerator(unittest.TestCase):
         """Test G-code generation from a valid AMA file."""
         output_gcode_path = os.path.join(self.temp_dir, "output.gcode")
         gcode = generate_gcode_from_ama_file(self.test_ama_file_path, output_gcode_path)
-        
+
         self.assertIsNotNone(gcode)
         self.assertTrue(os.path.exists(output_gcode_path))
         self.assertIn(f"; G-code generated for {self.part_name}", gcode)
         self.assertIn("G21       ; Set units to mm", gcode)
         self.assertIn("G28       ; Home all axes", gcode)
-        self.assertIn("G0 Z15.000", gcode) # Example command
+        self.assertIn("G0 Z15.000", gcode)  # Example command
 
-        with open(output_gcode_path, 'r') as f:
+        with open(output_gcode_path, "r") as f:
             file_content = f.read()
         self.assertEqual(gcode, file_content)
 
@@ -72,9 +72,9 @@ class TestGCodeGenerator(unittest.TestCase):
         """Test G-code generation when AMA file has no parts."""
         empty_ama_path = os.path.join(self.temp_dir, "empty.ama")
         manifest_data = {"version": "1.0", "author": "TestEmpty", "parts": []}
-        with zipfile.ZipFile(empty_ama_path, 'w') as zf:
-            zf.writestr('manifest.json', json.dumps(manifest_data))
-        
+        with zipfile.ZipFile(empty_ama_path, "w") as zf:
+            zf.writestr("manifest.json", json.dumps(manifest_data))
+
         gcode = generate_gcode_from_ama_file(empty_ama_path)
         self.assertIsNotNone(gcode)
         self.assertIn("; No parts found in AMA file to process.", gcode)
@@ -82,7 +82,7 @@ class TestGCodeGenerator(unittest.TestCase):
     def test_generate_gcode_nonexistent_ama_file(self):
         """Test G-code generation with a non-existent AMA file path."""
         gcode = generate_gcode_from_ama_file("nonexistent.ama")
-        self.assertIsNone(gcode) # Expecting None as the file can't be read
+        self.assertIsNone(gcode)  # Expecting None as the file can't be read
 
     def test_waterline_strategy(self):
         """Ensure WaterlineMilling strategy generates a file."""
@@ -94,5 +94,6 @@ class TestGCodeGenerator(unittest.TestCase):
             gcode = f.read()
         self.assertIn("Waterline milling operation", gcode)
 
-if __name__ == '__main__':
-    unittest.main(argv=['first-arg-is-ignored'], exit=False)
+
+if __name__ == "__main__":
+    unittest.main(argv=["first-arg-is-ignored"], exit=False)

@@ -18,56 +18,67 @@ Options:
     --tool-diameter     Tool diameter in mm (default: 3.0)
 """
 
+import argparse
 import os
 import sys
-import argparse
-from adaptivecad.io import ama_to_gcode, SimpleMilling, WaterlineMilling
+
+from adaptivecad.io import SimpleMilling, WaterlineMilling, ama_to_gcode
+
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Convert AMA file to G-code')
-    parser.add_argument('input', help='Input AMA file path')
-    parser.add_argument('output', nargs='?', default=None, help='Output G-code file path (default: input filename with .gcode extension)')
-    parser.add_argument('--strategy', default='simple', choices=['simple', 'waterline'], help='Milling strategy')
-    parser.add_argument('--safe-height', type=float, default=10.0, help='Safe height for rapid movements in mm')
-    parser.add_argument('--cut-depth', type=float, default=1.0, help='Depth of cut in mm')
-    parser.add_argument('--feed-rate', type=float, default=100.0, help='Feed rate in mm/min')
-    parser.add_argument('--tool-diameter', type=float, default=3.0, help='Tool diameter in mm')
-    
+    parser = argparse.ArgumentParser(description="Convert AMA file to G-code")
+    parser.add_argument("input", help="Input AMA file path")
+    parser.add_argument(
+        "output",
+        nargs="?",
+        default=None,
+        help="Output G-code file path (default: input filename with .gcode extension)",
+    )
+    parser.add_argument(
+        "--strategy", default="simple", choices=["simple", "waterline"], help="Milling strategy"
+    )
+    parser.add_argument(
+        "--safe-height", type=float, default=10.0, help="Safe height for rapid movements in mm"
+    )
+    parser.add_argument("--cut-depth", type=float, default=1.0, help="Depth of cut in mm")
+    parser.add_argument("--feed-rate", type=float, default=100.0, help="Feed rate in mm/min")
+    parser.add_argument("--tool-diameter", type=float, default=3.0, help="Tool diameter in mm")
+
     args = parser.parse_args()
-    
+
     # Check if input file exists
     if not os.path.isfile(args.input):
         print(f"Error: Input file '{args.input}' not found.", file=sys.stderr)
         sys.exit(1)
-    
+
     # Determine output file path if not specified
     output_path = args.output
     if output_path is None:
         base_name = os.path.splitext(os.path.basename(args.input))[0]
         output_path = os.path.join(os.path.dirname(args.input), f"{base_name}.gcode")
-    
+
     # Create strategy based on arguments
-    if args.strategy == 'simple':
+    if args.strategy == "simple":
         strategy = SimpleMilling(
             safe_height=args.safe_height,
             cut_depth=args.cut_depth,
             feed_rate=args.feed_rate,
-            tool_diameter=args.tool_diameter
+            tool_diameter=args.tool_diameter,
         )
-    elif args.strategy == 'waterline':
+    elif args.strategy == "waterline":
         strategy = WaterlineMilling(
             safe_height=args.safe_height,
             step_down=args.cut_depth,
             total_depth=args.cut_depth,
             feed_rate=args.feed_rate,
-            tool_diameter=args.tool_diameter
+            tool_diameter=args.tool_diameter,
         )
     else:
         # This should not happen due to choices in argparse
         print(f"Error: Unknown strategy '{args.strategy}'.", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         # Generate G-code
         output_file = ama_to_gcode(args.input, output_path, strategy)
@@ -76,6 +87,7 @@ def main():
     except Exception as e:
         print(f"Error generating G-code: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

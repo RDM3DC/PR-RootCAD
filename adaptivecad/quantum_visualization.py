@@ -1,8 +1,9 @@
-import numpy as np
 import math
-from typing import Any, List, Tuple, Optional
 from dataclasses import dataclass
-from scipy.special import sph_harm, assoc_laguerre, hermite
+from typing import Any, List, Tuple
+
+import numpy as np
+from scipy.special import assoc_laguerre, hermite, sph_harm
 
 try:
     from typing import Complex
@@ -10,7 +11,6 @@ except ImportError:  # Python <3.9
     Complex = complex
 
 from .ndfield import NDField
-from .spacetime import Event
 
 
 @dataclass
@@ -52,14 +52,16 @@ class WavefunctionVisualizer:
 
     def hydrogen_wavefunction(self, n: int, l: int, m: int) -> NDField:
         if not (0 <= l < n and -l <= m <= l):
-            raise ValueError("Invalid quantum numbers: must have 0 \u2264 l < n and -l \u2264 m \u2264 l")
+            raise ValueError(
+                "Invalid quantum numbers: must have 0 \u2264 l < n and -l \u2264 m \u2264 l"
+            )
 
         nx, ny, nz = self.grid_size
         x_vals = np.linspace(*self.x_range, nx)
         y_vals = np.linspace(*self.y_range, ny)
         z_vals = np.linspace(*self.z_range, nz)
         x, y, z = np.meshgrid(x_vals, y_vals, z_vals, indexing="ij")
-        r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+        r = np.sqrt(x**2 + y**2 + z**2)
         theta = np.arccos(np.divide(z, r, out=np.zeros_like(z), where=r > 1e-10))
         phi = np.arctan2(y, x)
 
@@ -71,9 +73,11 @@ class WavefunctionVisualizer:
     def _radial_function(self, n: int, l: int, r: np.ndarray) -> np.ndarray:
         a0 = 1.0
         rho = 2 * r / (n * a0)
-        pref = math.sqrt((2 / (n * a0)) ** 3 * math.factorial(n - l - 1) / (2 * n * math.factorial(n + l)))
+        pref = math.sqrt(
+            (2 / (n * a0)) ** 3 * math.factorial(n - l - 1) / (2 * n * math.factorial(n + l))
+        )
         lag = assoc_laguerre(rho, n - l - 1, 2 * l + 1)
-        return pref * rho ** l * np.exp(-rho / 2) * lag
+        return pref * rho**l * np.exp(-rho / 2) * lag
 
     def quantum_harmonic_oscillator(self, n: int, omega: float = 1.0) -> NDField:
         if n < 0:
@@ -92,10 +96,10 @@ class WavefunctionVisualizer:
         return NDField(self.grid_size, psi.flatten())
 
     def _harmonic_oscillator_1d(self, n: int, x: np.ndarray, omega: float) -> np.ndarray:
-        norm = (omega / np.pi) ** 0.25 / math.sqrt(2 ** n * math.factorial(n))
+        norm = (omega / np.pi) ** 0.25 / math.sqrt(2**n * math.factorial(n))
         xi = np.sqrt(omega) * x
         Hn = hermite(n)(xi)
-        return norm * Hn * np.exp(-xi ** 2 / 2)
+        return norm * Hn * np.exp(-(xi**2) / 2)
 
 
 class EntanglementVisualizer:
@@ -169,7 +173,7 @@ class QuantumFieldVisualizer:
         px, py, pz = momentum
         r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2)
         phase = px * x + py * y + pz * z
-        amp = np.exp(-r ** 2 / (2 * mass)) * np.exp(1j * phase)
+        amp = np.exp(-(r**2) / (2 * mass)) * np.exp(1j * phase)
         return NDField(self.field_size, amp.flatten())
 
 
@@ -183,7 +187,7 @@ class QuantumVisualizationCmd:
         try:
             wf_viz = WavefunctionVisualizer()
             ent_viz = EntanglementVisualizer()
-            hydrogen = wf_viz.hydrogen_wavefunction(1, 0, 0)
+            wf_viz.hydrogen_wavefunction(1, 0, 0)
             bell = ent_viz.create_bell_state("phi_plus")
             entropy = ent_viz.calculate_entanglement_entropy(bell)
             qf_viz = QuantumFieldVisualizer()

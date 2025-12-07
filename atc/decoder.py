@@ -1,8 +1,13 @@
-import argparse, base64, json, sys
-from typing import Dict, List
-from .utils import unpack_style_bytes, parse_style_byte, CODE2PUNCT
+import argparse
+import base64
+import json
+import sys
+from typing import Dict
+
+from .utils import CODE2PUNCT, parse_style_byte, unpack_style_bytes
 
 ZERO_WIDTH = "\u200b"
+
 
 def decode(pkg: Dict[str, str]) -> str:
     carriers = pkg["carriers"]
@@ -21,12 +26,16 @@ def decode(pkg: Dict[str, str]) -> str:
             out.append(punct)
     return "".join(out)
 
+
 def main():
     ap = argparse.ArgumentParser(description="ATC decoder")
     ap.add_argument("--in", dest="infile", type=str, default="-", help="JSON input path or '-'")
     args = ap.parse_args()
-    pkg = json.load(sys.stdin if args.infile in ("-", None) else open(args.infile, "r", encoding="utf-8"))
+    pkg = json.load(
+        sys.stdin if args.infile in ("-", None) else open(args.infile, "r", encoding="utf-8")
+    )
     print(decode(pkg))
+
 
 if __name__ == "__main__":
     main()

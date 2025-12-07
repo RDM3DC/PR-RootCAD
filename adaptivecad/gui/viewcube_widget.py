@@ -1,6 +1,7 @@
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRect, QPoint
-from PySide6.QtGui import QPainter, QColor, QFont
+
 
 class ViewCubeWidget(QWidget):
     def __init__(self, occ_display, parent=None):
@@ -25,7 +26,7 @@ class ViewCubeWidget(QWidget):
         qp.setFont(QFont("Arial", 9, QFont.Bold))
         for label, (x, y) in self.views.items():
             qp.setPen(QColor("#37e8ff") if label == "Home" else QColor("#fff"))
-            qp.drawText(QRect(x-16, y-10, 32, 20), Qt.AlignCenter, label)
+            qp.drawText(QRect(x - 16, y - 10, 32, 20), Qt.AlignCenter, label)
 
     def mousePressEvent(self, event):
         pos = event.pos()

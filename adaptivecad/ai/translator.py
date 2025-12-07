@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import sympy as sp
 from dataclasses import dataclass
 from typing import Any, Dict, List
+
+import sympy as sp
 
 from adaptivecad.geom.bspline import BSplineCurve
 from adaptivecad.linalg import Vec3
@@ -22,7 +23,9 @@ def _num(val: Any) -> float:
 class ImplicitSurface:
     """Minimal implicit surface placeholder."""
 
-    def __init__(self, expression: str | sp.Expr, domain: Dict[str, List[float]], iso_level: float = 0.0) -> None:
+    def __init__(
+        self, expression: str | sp.Expr, domain: Dict[str, List[float]], iso_level: float = 0.0
+    ) -> None:
         self.expression = sp.sympify(expression)
         self.domain = domain
         self.iso_level = iso_level

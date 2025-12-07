@@ -1,6 +1,7 @@
-from adaptivecad.sketch_solver import Sketch, FixedConstraint, DistanceConstraint, export_dxf
 import math
-import os
+
+from adaptivecad.sketch_solver import DistanceConstraint, FixedConstraint, Sketch, export_dxf
+
 
 def test_simple_triangle(tmp_path):
     sketch = Sketch()
@@ -15,8 +16,12 @@ def test_simple_triangle(tmp_path):
 
     sketch.solve_least_squares()
 
-    d0 = math.hypot(sketch.points[p0].x - sketch.points[p2].x, sketch.points[p0].y - sketch.points[p2].y)
-    d1 = math.hypot(sketch.points[p1].x - sketch.points[p2].x, sketch.points[p1].y - sketch.points[p2].y)
+    d0 = math.hypot(
+        sketch.points[p0].x - sketch.points[p2].x, sketch.points[p0].y - sketch.points[p2].y
+    )
+    d1 = math.hypot(
+        sketch.points[p1].x - sketch.points[p2].x, sketch.points[p1].y - sketch.points[p2].y
+    )
     assert math.isclose(d0, 1.0, abs_tol=1e-6)
     assert math.isclose(d1, 1.0, abs_tol=1e-6)
 

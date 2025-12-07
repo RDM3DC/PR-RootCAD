@@ -8,15 +8,15 @@ AMA archive ready for downstream toolpaths.
 
 import argparse
 
-from adaptivecad.commands.import_conformal import (
-    import_mesh_shape,
-    extract_bspline_faces,
-    conform_bspline_surface,
-)
-from adaptivecad.command_defs import Feature
-from adaptivecad.io import write_ama
-
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+from adaptivecad.command_defs import Feature
+from adaptivecad.commands.import_conformal import (
+    conform_bspline_surface,
+    extract_bspline_faces,
+    import_mesh_shape,
+)
+from adaptivecad.io import write_ama
 
 
 def main() -> None:
@@ -24,9 +24,7 @@ def main() -> None:
         description="Import an STL file and convert it to Adaptive \u03c0 geometry"
     )
     parser.add_argument("stl", help="Path to the STL file to import")
-    parser.add_argument(
-        "-o", "--output", default="converted.ama", help="Destination AMA file"
-    )
+    parser.add_argument("-o", "--output", default="converted.ama", help="Destination AMA file")
     parser.add_argument(
         "-k", "--kappa", type=float, default=1.0, help="\u03ba parameter for \u03c0\u2090 scaling"
     )

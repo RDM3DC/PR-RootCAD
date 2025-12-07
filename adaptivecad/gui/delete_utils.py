@@ -1,4 +1,5 @@
-from adaptivecad.command_defs import DOCUMENT, rebuild_scene
+from adaptivecad.command_defs import DOCUMENT
+
 
 def delete_selected_feature(selected_feature):
     """Delete the selected feature from DOCUMENT and update the scene."""

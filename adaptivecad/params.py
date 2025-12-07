@@ -1,5 +1,7 @@
 import math
+
 import numpy as np
+
 
 class ParamEnv:
     """Registry for named parameters and math constants."""
@@ -8,15 +10,17 @@ class ParamEnv:
         self.vars = {}
         self.constants = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
         # Common math shorthands
-        self.constants.update({
-            'pi': math.pi,
-            'e': math.e,
-            'sin': math.sin,
-            'cos': math.cos,
-            'tan': math.tan,
-            'sqrt': math.sqrt,
-        })
-        self.constants.update({'np': np})
+        self.constants.update(
+            {
+                "pi": math.pi,
+                "e": math.e,
+                "sin": math.sin,
+                "cos": math.cos,
+                "tan": math.tan,
+                "sqrt": math.sqrt,
+            }
+        )
+        self.constants.update({"np": np})
 
     def set(self, name, value):
         self.vars[name] = value

@@ -1,7 +1,10 @@
 import importlib
+
 import pytest
+
 try:
     from PySide6.QtWidgets import QApplication
+
     HAS_QT = True
 except Exception:
     HAS_QT = False
@@ -19,6 +22,7 @@ def test_playground_import():
 def test_view_mode_methods_present():
     """Test that view mode methods are present in MainWindow."""
     import sys
+
     # Check if QApplication already exists
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -37,8 +41,6 @@ def test_view_mode_methods_present():
 
 def test_playground_missing_deps(monkeypatch):
     import builtins
-
-    calls = []
 
     def fake_import(name, *args, **kwargs):
         if name.startswith("PySide6") or name.startswith("OCC"):

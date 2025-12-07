@@ -1,5 +1,7 @@
 import numpy as np
+
 from .base import BaseCmd
+
 
 class MoveWithSnapCmd(BaseCmd):
     title = "Move (Snap)"

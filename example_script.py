@@ -1,6 +1,5 @@
-from adaptivecad.linalg import Vec3
 from adaptivecad.geom import BezierCurve
-import numpy as np
+from adaptivecad.linalg import Vec3
 
 # Create a Bezier curve
 control_points = [Vec3(0.0, 0.0, 0.0), Vec3(1.0, 2.0, 0.0), Vec3(2.0, 0.0, 0.0)]
@@ -23,8 +22,7 @@ for p in right.control_points:
     print(f"  ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
 
 # Import other components to show them working
-from adaptivecad.geom import BSplineCurve
-from adaptivecad.geom import full_turn_deg, rotate_cmd, pi_a_over_pi
+from adaptivecad.geom import full_turn_deg, pi_a_over_pi
 
 print("\nDemonstrating hyperbolic geometry functions:")
 r = 0.5

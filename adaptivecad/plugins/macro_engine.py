@@ -1,14 +1,23 @@
 from __future__ import annotations
+
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-import re
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout, QWidget,
-    QLabel, QDoubleSpinBox, QSpinBox, QLineEdit, QCheckBox
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QLineEdit,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 # --------- Macro schema ---------
+
 
 @dataclass
 class MacroParam:
@@ -19,10 +28,12 @@ class MacroParam:
     min: Optional[float] = None
     max: Optional[float] = None
 
+
 @dataclass
 class MacroStep:
     call: str
     args: Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class MacroDef:
@@ -35,16 +46,20 @@ class MacroDef:
     steps: List[MacroStep] = field(default_factory=list)
     ui: Dict[str, Any] = field(default_factory=dict)  # e.g. {"icon_text":"CH", "pinned": True}
 
+
 # --------- Param substitution ---------
 
 _VAR = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
+
 def _substitute(obj: Any, values: Dict[str, Any]) -> Any:
     """Recursively substitute ${param} in strings using provided values."""
     if isinstance(obj, str):
+
         def repl(m):
             key = m.group(1)
             return str(values.get(key, m.group(0)))
+
         return _VAR.sub(repl, obj)
     if isinstance(obj, list):
         return [_substitute(x, values) for x in obj]
@@ -52,7 +67,9 @@ def _substitute(obj: Any, values: Dict[str, Any]) -> Any:
         return {k: _substitute(v, values) for k, v in obj.items()}
     return obj
 
+
 # --------- Simple parameter dialog ---------
+
 
 class ParamDialog(QDialog):
     def __init__(self, params: List[MacroParam], parent: Optional[QWidget] = None):
@@ -80,8 +97,10 @@ class ParamDialog(QDialog):
                 w = QDoubleSpinBox(self)
                 w.setDecimals(6)
                 w.setRange(-1e9, 1e9)
-                if p.min is not None: w.setMinimum(p.min)
-                if p.max is not None: w.setMaximum(p.max)
+                if p.min is not None:
+                    w.setMinimum(p.min)
+                if p.max is not None:
+                    w.setMaximum(p.max)
                 if isinstance(p.default, (int, float)):
                     w.setValue(float(p.default))
             self._widgets[p.name] = w
@@ -100,21 +119,24 @@ class ParamDialog(QDialog):
         for p in self._params:
             w = self._widgets[p.name]
             if p.type == "int":
-                out[p.name] = int(w.value())          # type: ignore
+                out[p.name] = int(w.value())  # type: ignore
             elif p.type == "bool":
-                out[p.name] = bool(w.isChecked())     # type: ignore
+                out[p.name] = bool(w.isChecked())  # type: ignore
             elif p.type == "string":
-                out[p.name] = str(w.text())           # type: ignore
+                out[p.name] = str(w.text())  # type: ignore
             else:
-                out[p.name] = float(w.value())        # type: ignore
+                out[p.name] = float(w.value())  # type: ignore
         return out
 
+
 # --------- Engine ---------
+
 
 class MacroEngine:
     """
     Executes a MacroDef against a 'bus' (a CADActionBus-like object with .call(name, **kwargs)).
     """
+
     def __init__(self, bus):
         self.bus = bus
 
@@ -133,5 +155,6 @@ class MacroEngine:
             res = self.bus.call(step.call, **args)
             results.append(res)
         return results
+
 
 # Note: the type hint Widget is only used in a kwarg comment; PySide6 QWidget will be provided at call‑site.

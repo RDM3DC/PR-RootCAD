@@ -2,13 +2,14 @@
 """
 CLI: apply Adaptive-π compensation to G-code arcs (G2/G3 with R mode).
 """
-import argparse, sys
+import argparse
+
 from adaptivecad.cam.pia_compensation import PiAParams, compensate_gcode_lines
 
-if __name__=="__main__":
+if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="input G-code file")
-    ap.add_argument("-o","--output", default="out.gcode")
+    ap.add_argument("-o", "--output", default="out.gcode")
     ap.add_argument("--beta", type=float, default=0.2)
     ap.add_argument("--s0", type=float, default=1.0)
     ap.add_argument("--clamp", type=float, default=0.3)

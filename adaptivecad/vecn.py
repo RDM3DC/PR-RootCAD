@@ -1,5 +1,6 @@
 import math
 
+
 class VecN:
     def __init__(self, coords):
         self.coords = list(coords)
@@ -28,12 +29,13 @@ class VecN:
     def __repr__(self):
         return f"VecN({self.coords})"
 
+
 class BSplineCurveN:
     def __init__(self, control_points, degree, knots):
         self.control_points = control_points  # list of VecN
-        self.degree = degree                  # integer p
-        self.knots = knots                    # list/array of floats
-        self.n = len(control_points) - 1      # number of control points - 1
+        self.degree = degree  # integer p
+        self.knots = knots  # list/array of floats
+        self.n = len(control_points) - 1  # number of control points - 1
 
         # Sanity check for valid knot vector
         expected_knots = self.n + self.degree + 2

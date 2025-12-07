@@ -6,8 +6,8 @@ This script has been updated to use the new version with advanced shapes.
 For the most complete experience, use run_advanced_playground.py instead.
 """
 
-import sys
 import os
+import sys
 
 # Add the repository root to Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))

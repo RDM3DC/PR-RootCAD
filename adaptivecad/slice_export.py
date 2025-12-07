@@ -1,4 +1,5 @@
 """Utilities to export cross-section slices from AMA files."""
+
 from __future__ import annotations
 
 import os
@@ -6,13 +7,18 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from .io.ama_reader import read_ama
 from .analytic_slicer import slice_brep_for_layer
+from .io.ama_reader import read_ama
 
 __all__ = ["export_slices_from_ama"]
 
 
-def export_slices_from_ama(ama_path: str | os.PathLike, z_values: Iterable[float], out_dir: str | os.PathLike = "slices", fmt: str = "brep") -> list[Path]:
+def export_slices_from_ama(
+    ama_path: str | os.PathLike,
+    z_values: Iterable[float],
+    out_dir: str | os.PathLike = "slices",
+    fmt: str = "brep",
+) -> list[Path]:
     """Export cross-section slices from an AMA file.
 
     Parameters
