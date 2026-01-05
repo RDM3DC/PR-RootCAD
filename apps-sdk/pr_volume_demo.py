@@ -9,8 +9,17 @@ Examples:
     # Higher resolution with spectral band-pass
     python pr_volume_demo.py --size 48 --geom-mode spectral_band --freq-low 0.03 --freq-high 0.12 --out volume_spectral.ama
 
-    # Extract isosurface at specific level
-    python pr_volume_demo.py --size 32 --iso 0.2 --out volume_iso.ama --plot
+    # Torus geometry
+    python pr_volume_demo.py --size 48 --geom-mode torus --torus-R 0.35 --torus-r 0.12 --out torus.ama
+
+    # Torus knot (2,3 trefoil)
+    python pr_volume_demo.py --size 48 --geom-mode torus_knot --torus-p 2 --torus-q 3 --out trefoil.ama
+
+    # Gyroid minimal surface
+    python pr_volume_demo.py --size 48 --geom-mode gyroid --out gyroid.ama
+
+    # Add noise overlay to any geometry
+    python pr_volume_demo.py --size 48 --geom-mode torus --noise 0.2 --out torus_noisy.ama
 """
 from __future__ import annotations
 
@@ -25,11 +34,17 @@ def main():
     ap.add_argument("--dt", type=float, default=0.15, help="Time step")
     ap.add_argument("--diffusion", type=float, default=0.35, help="Diffusion rate")
     ap.add_argument("--coupling", type=float, default=0.20, help="Geometry coupling")
-    ap.add_argument("--geom-mode", choices=["smooth_noise", "spectral_band"], default="smooth_noise")
+    ap.add_argument("--geom-mode", choices=["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid"], default="smooth_noise")
     ap.add_argument("--geom-smooth-iters", type=int, default=4)
     ap.add_argument("--freq-low", type=float, default=0.02)
     ap.add_argument("--freq-high", type=float, default=0.15)
     ap.add_argument("--freq-power", type=float, default=1.0)
+    ap.add_argument("--torus-R", type=float, default=0.35, help="Torus major radius (fraction of grid)")
+    ap.add_argument("--torus-r", type=float, default=0.15, help="Torus minor radius (fraction of grid)")
+    ap.add_argument("--torus-p", type=int, default=2, help="Torus knot winding p")
+    ap.add_argument("--torus-q", type=int, default=3, help="Torus knot winding q")
+    ap.add_argument("--noise", type=float, default=0.0, help="Noise overlay amplitude (0=none)")
+    ap.add_argument("--noise-smooth", type=int, default=2, help="Noise smoothing iterations")
     ap.add_argument("--phase-space", choices=["unwrapped", "wrapped"], default="unwrapped")
     ap.add_argument("--iso", type=float, default=0.0, help="Isosurface level")
     ap.add_argument("--scale", type=float, default=10.0, help="Output scale (mm)")
@@ -52,6 +67,12 @@ def main():
         geom_freq_low=args.freq_low,
         geom_freq_high=args.freq_high,
         geom_freq_power=args.freq_power,
+        torus_R=args.torus_R,
+        torus_r=args.torus_r,
+        torus_p=args.torus_p,
+        torus_q=args.torus_q,
+        noise_amplitude=args.noise,
+        noise_smoothing=args.noise_smooth,
         phase_space=args.phase_space,
         iso_level=args.iso,
         seed=args.seed,
@@ -61,6 +82,12 @@ def main():
     print(f"  Grid: {cfg.size}³ = {cfg.size**3:,} voxels")
     print(f"  Steps: {cfg.steps}, dt={cfg.dt}, diffusion={cfg.diffusion}, coupling={cfg.coupling}")
     print(f"  Geom mode: {cfg.geom_mode}")
+    if cfg.geom_mode in ("torus", "torus_knot"):
+        print(f"    Torus R={cfg.torus_R}, r={cfg.torus_r}")
+        if cfg.geom_mode == "torus_knot":
+            print(f"    Knot ({cfg.torus_p},{cfg.torus_q})")
+    if cfg.noise_amplitude > 0:
+        print(f"  Noise: amplitude={cfg.noise_amplitude}, smooth={cfg.noise_smoothing}")
     print(f"  Iso level: {cfg.iso_level}")
     print()
 

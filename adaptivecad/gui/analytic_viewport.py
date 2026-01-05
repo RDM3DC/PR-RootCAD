@@ -1840,7 +1840,7 @@ class AnalyticViewport(QOpenGLWidget):
         fov = np.radians(45.0)
         f = 1.0 / np.tan(0.5 * fov)
         near = 0.1
-        far = float(max(1.0, getattr(self, 'far_plane', 200.0)))
+        far = float(max(self.distance * 3.0, getattr(self, 'far_plane', 2000.0)))
         proj = np.zeros((4, 4), dtype=np.float32)
         proj[0, 0] = f / aspect
         proj[1, 1] = f
@@ -1993,7 +1993,7 @@ class AnalyticViewport(QOpenGLWidget):
         }
         return overlay
 
-    def add_mesh_overlay(self, mesh, *, source_path: str | None = None, replace_existing: bool = True) -> tuple[bool, str | None]:
+    def add_mesh_overlay(self, mesh, *, source_path: str | None = None, replace_existing: bool = True, auto_fit_camera: bool = True) -> tuple[bool, str | None]:
         if self._mesh_prog is None:
             return False, "Mesh overlay shader unavailable"
         if mesh is None:
@@ -2009,6 +2009,29 @@ class AnalyticViewport(QOpenGLWidget):
                 self._clear_mesh_overlays_locked()
             overlay = self._build_mesh_overlay(mesh, source_path=source_path)
             self._mesh_overlays.append(overlay)
+            
+            # Auto-fit camera to mesh bounding box
+            if auto_fit_camera:
+                try:
+                    verts = np.asarray(mesh.vertices, dtype=np.float32)
+                    if verts.size > 0:
+                        bbox_min = verts.min(axis=0)
+                        bbox_max = verts.max(axis=0)
+                        bbox_size = np.linalg.norm(bbox_max - bbox_min)
+                        center = (bbox_min + bbox_max) / 2.0
+                        
+                        # Set camera distance to 1.5x the bounding sphere (fits nicely)
+                        new_dist = float(max(bbox_size * 1.5, 5.0))
+                        self.distance = new_dist
+                        
+                        # Adjust far plane to see the whole mesh
+                        self.far_plane = float(max(new_dist * 3.0, 500.0))
+                        
+                        # Center the camera target on the mesh center
+                        self.cam_target = center.tolist()
+                        self._update_camera()
+                except Exception:
+                    pass
         except Exception as exc:
             return False, str(exc)
         finally:
@@ -2045,6 +2068,9 @@ class AnalyticViewport(QOpenGLWidget):
         glUniform3fv(self._mesh_uniforms['u_cam_pos'], 1, cam_pos)
         glUniform3fv(self._mesh_uniforms['u_light_dir'], 1, light_dir)
 
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glClear(GL_DEPTH_BUFFER_BIT)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
@@ -2067,6 +2093,7 @@ class AnalyticViewport(QOpenGLWidget):
 
         glBindVertexArray(0)
         glDisable(GL_BLEND)
+        glDisable(GL_DEPTH_TEST)
         glUseProgram(0)
 
     def _draw_frame(self, debug_override=None):  # retained for other callers
@@ -2886,7 +2913,7 @@ class AnalyticViewport(QOpenGLWidget):
         zoom_factor = 1.0 - delta * 0.1
         zoom_factor = max(0.1, min(2.0, zoom_factor))
         self.distance *= zoom_factor
-        self.distance = float(np.clip(self.distance, 0.5, 200.0))
+        self.distance = float(np.clip(self.distance, 0.5, 1000.0))
         self._update_camera()
         super().wheelEvent(event)
 

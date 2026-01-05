@@ -26,11 +26,21 @@ class PRVolumeConfig:
     coupling_mode: Literal["none", "geom_target"] = "geom_target"
     
     # Geometry proxy synthesis
-    geom_mode: Literal["smooth_noise", "spectral_band"] = "smooth_noise"
+    geom_mode: Literal["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid"] = "smooth_noise"
     geom_smooth_iters: int = 4
     geom_freq_low: float = 0.02
     geom_freq_high: float = 0.15
     geom_freq_power: float = 1.0
+    
+    # Torus parameters (for geom_mode="torus" or "torus_knot")
+    torus_R: float = 0.35  # major radius (fraction of grid)
+    torus_r: float = 0.15  # minor radius (fraction of grid)
+    torus_p: int = 2       # knot winding (longitudinal)
+    torus_q: int = 3       # knot winding (meridional)
+    
+    # Noise overlay (adds noise on top of any geometry)
+    noise_amplitude: float = 0.0  # 0 = no noise overlay
+    noise_smoothing: int = 2      # smoothing iterations for noise
     
     # Phase space
     phase_dim: int = 1  # scalar phase for volume (keeps it simple)
@@ -111,6 +121,118 @@ def _make_geom_proxy_spectral_3d(
     return geom
 
 
+def _make_geom_proxy_torus_3d(N: int, R: float, r: float) -> np.ndarray:
+    """
+    Generate torus-shaped SDF as geometry proxy.
+    
+    The torus is centered in the grid with:
+    - R: major radius (distance from center to tube center)
+    - r: minor radius (tube radius)
+    
+    Values are normalized [0,1] with 1 inside the torus shell.
+    """
+    # Create coordinate grid [-0.5, 0.5]^3
+    x = np.linspace(-0.5, 0.5, N, dtype=np.float32)
+    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+    
+    # Distance from z-axis
+    rho = np.sqrt(X**2 + Y**2)
+    
+    # Torus SDF: distance to tube surface
+    # d = sqrt((rho - R)^2 + z^2) - r
+    sdf = np.sqrt((rho - R)**2 + Z**2) - r
+    
+    # Convert SDF to smooth interior mask (1 inside, 0 outside)
+    # Using sigmoid-like smooth transition
+    thickness = 0.02
+    geom = 0.5 - 0.5 * np.tanh(sdf / thickness)
+    
+    return geom.astype(np.float32)
+
+
+def _make_geom_proxy_torus_knot_3d(N: int, R: float, r: float, p: int, q: int) -> np.ndarray:
+    """
+    Generate torus knot SDF as geometry proxy.
+    
+    A (p,q)-torus knot winds p times around the torus longitudinally
+    and q times meridionally.
+    """
+    x = np.linspace(-0.5, 0.5, N, dtype=np.float32)
+    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+    
+    # Sample points along the knot curve
+    n_samples = 512
+    t = np.linspace(0, 2 * np.pi, n_samples, dtype=np.float32)
+    
+    # Torus knot parametric curve
+    # x(t) = (R + r*cos(q*t)) * cos(p*t)
+    # y(t) = (R + r*cos(q*t)) * sin(p*t)
+    # z(t) = r * sin(q*t)
+    curve_x = (R + r * 0.5 * np.cos(q * t)) * np.cos(p * t)
+    curve_y = (R + r * 0.5 * np.cos(q * t)) * np.sin(p * t)
+    curve_z = r * 0.5 * np.sin(q * t)
+    
+    # Compute minimum distance from each grid point to the curve
+    # (vectorized over curve samples)
+    sdf = np.full((N, N, N), np.inf, dtype=np.float32)
+    tube_r = r * 0.4  # tube thickness
+    
+    for i in range(n_samples):
+        dist = np.sqrt((X - curve_x[i])**2 + (Y - curve_y[i])**2 + (Z - curve_z[i])**2)
+        sdf = np.minimum(sdf, dist)
+    
+    sdf = sdf - tube_r  # offset to tube surface
+    
+    # Convert to smooth mask
+    thickness = 0.02
+    geom = 0.5 - 0.5 * np.tanh(sdf / thickness)
+    
+    return geom.astype(np.float32)
+
+
+def _make_geom_proxy_gyroid_3d(N: int, scale: float = 4.0) -> np.ndarray:
+    """
+    Generate gyroid minimal surface as geometry proxy.
+    
+    Gyroid: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) ≈ 0
+    """
+    t = np.linspace(0, scale * 2 * np.pi, N, dtype=np.float32)
+    X, Y, Z = np.meshgrid(t, t, t, indexing='ij')
+    
+    # Gyroid implicit surface
+    gyroid = np.sin(X) * np.cos(Y) + np.sin(Y) * np.cos(Z) + np.sin(Z) * np.cos(X)
+    
+    # Normalize to [0, 1]
+    geom = (gyroid - gyroid.min()) / (gyroid.max() - gyroid.min() + 1e-9)
+    
+    return geom.astype(np.float32)
+
+
+def _add_noise_overlay(geom: np.ndarray, rng: np.random.Generator, amplitude: float, smooth_iters: int) -> np.ndarray:
+    """Add smoothed noise overlay to existing geometry."""
+    if amplitude <= 0:
+        return geom
+    
+    N = geom.shape[0]
+    noise = rng.uniform(-1, 1, (N, N, N)).astype(np.float32)
+    
+    # Smooth the noise
+    for _ in range(smooth_iters):
+        noise = (
+            np.roll(noise, 1, axis=0) + np.roll(noise, -1, axis=0) +
+            np.roll(noise, 1, axis=1) + np.roll(noise, -1, axis=1) +
+            np.roll(noise, 1, axis=2) + np.roll(noise, -1, axis=2) +
+            noise
+        ) / 7.0
+    
+    # Normalize and blend
+    noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-9) - 0.5
+    result = geom + amplitude * noise
+    result = np.clip(result, 0, 1)
+    
+    return result.astype(np.float32)
+
+
 def relax_phase_volume(cfg: PRVolumeConfig) -> tuple[dict, PRVolumeState]:
     """
     Run 3D phase field relaxation.
@@ -131,8 +253,18 @@ def relax_phase_volume(cfg: PRVolumeConfig) -> tuple[dict, PRVolumeState]:
     # Build geometry proxy
     if cfg.geom_mode == "spectral_band":
         geom = _make_geom_proxy_spectral_3d(N, rng, cfg.geom_freq_low, cfg.geom_freq_high, cfg.geom_freq_power)
+    elif cfg.geom_mode == "torus":
+        geom = _make_geom_proxy_torus_3d(N, cfg.torus_R, cfg.torus_r)
+    elif cfg.geom_mode == "torus_knot":
+        geom = _make_geom_proxy_torus_knot_3d(N, cfg.torus_R, cfg.torus_r, cfg.torus_p, cfg.torus_q)
+    elif cfg.geom_mode == "gyroid":
+        geom = _make_geom_proxy_gyroid_3d(N)
     else:
         geom = _make_geom_proxy_smooth_3d(N, rng, cfg.geom_smooth_iters)
+    
+    # Add noise overlay if requested
+    if cfg.noise_amplitude > 0:
+        geom = _add_noise_overlay(geom, rng, cfg.noise_amplitude, cfg.noise_smoothing)
     
     # Relaxation loop
     history_delta = []
@@ -211,6 +343,10 @@ def extract_isosurface(
         verts, faces, normals, values = measure.marching_cubes(
             phi, level=level, spacing=(scale, scale, scale)
         )
+        # Center the mesh around origin
+        if len(verts) > 0:
+            center = (verts.min(axis=0) + verts.max(axis=0)) / 2.0
+            verts = verts - center
         return verts.astype(np.float32), faces.astype(np.int32)
     except Exception:
         # Field might be entirely above/below level
