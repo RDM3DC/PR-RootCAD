@@ -5,14 +5,14 @@ Heavier optional pieces (like the SymPy-based translator) are imported lazily
 so that the GUI can start even when those dependencies aren't installed.
 """
 
+from .intent_router import CADActionBus, build_tool_schema, chat_with_tools
 from .openai_bridge import call_openai
-from .intent_router import CADActionBus, chat_with_tools, build_tool_schema
 from .openai_client import get_client
 
 # Try to expose translator helpers if their optional dependency (sympy) exists.
 # If unavailable, we simply omit those names from the public API to keep startup fast.
 try:  # optional dependency guard
-    from .translator import build_geometry, ImplicitSurface, ExtrudedSolid  # type: ignore
+    from .translator import ExtrudedSolid, ImplicitSurface, build_geometry  # type: ignore
 except Exception:  # pragma: no cover - environment may lack sympy
     build_geometry = None  # type: ignore
     ImplicitSurface = None  # type: ignore

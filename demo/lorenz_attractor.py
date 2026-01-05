@@ -31,13 +31,11 @@ from PIL import Image
 
 
 # ---------- Lorenz system and integrator ----------
-def lorenz_deriv(p: np.ndarray, sigma: float = 10.0, rho: float = 28.0, beta: float = 8.0/3.0) -> np.ndarray:
+def lorenz_deriv(
+    p: np.ndarray, sigma: float = 10.0, rho: float = 28.0, beta: float = 8.0 / 3.0
+) -> np.ndarray:
     x, y, z = p
-    return np.array([
-        sigma * (y - x),
-        x * (rho - z) - y,
-        x * y - beta * z
-    ], dtype=np.float64)
+    return np.array([sigma * (y - x), x * (rho - z) - y, x * y - beta * z], dtype=np.float64)
 
 
 def rk4_step(p: np.ndarray, dt: float, fn) -> np.ndarray:
@@ -55,7 +53,7 @@ def integrate_lorenz(
     burn_in: int = 1000,
     sigma: float = 10.0,
     rho: float = 28.0,
-    beta: float = 8.0/3.0,
+    beta: float = 8.0 / 3.0,
 ) -> np.ndarray:
     p = np.array(p0, dtype=np.float64)
     out = []
@@ -80,7 +78,7 @@ def build_tube(traj_pts: np.ndarray, radius: float = 0.25, ring_segments: int = 
     T[1:-1] = P[2:] - P[:-2]
     T[0] = P[1] - P[0]
     T[-1] = P[-1] - P[-2]
-    T /= (np.linalg.norm(T, axis=1, keepdims=True) + 1e-12)
+    T /= np.linalg.norm(T, axis=1, keepdims=True) + 1e-12
 
     up = np.array([0.0, 0.0, 1.0])
     rings = []
@@ -88,9 +86,9 @@ def build_tube(traj_pts: np.ndarray, radius: float = 0.25, ring_segments: int = 
         t = T[i]
         ref = up if abs(np.dot(t, up)) < 0.95 else np.array([0.0, 1.0, 0.0])
         n = np.cross(t, ref)
-        n /= (np.linalg.norm(n) + 1e-12)
+        n /= np.linalg.norm(n) + 1e-12
         b = np.cross(t, n)
-        b /= (np.linalg.norm(b) + 1e-12)
+        b /= np.linalg.norm(b) + 1e-12
         angles = np.linspace(0, 2 * np.pi, ring_segments, endpoint=False)
         ring = np.array([P[i] + radius * (np.cos(a) * n + np.sin(a) * b) for a in angles])
         rings.append(ring)
@@ -117,7 +115,7 @@ def write_ascii_stl(path: str, triangles: np.ndarray, name: str = "lorenz_tube")
         for tri in triangles:
             v0, v1, v2 = tri
             n = np.cross(v1 - v0, v2 - v0)
-            n /= (np.linalg.norm(n) + 1e-18)
+            n /= np.linalg.norm(n) + 1e-18
             f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n")
             f.write("    outer loop\n")
             f.write(f"      vertex {v0[0]:.6e} {v0[1]:.6e} {v0[2]:.6e}\n")
@@ -129,7 +127,9 @@ def write_ascii_stl(path: str, triangles: np.ndarray, name: str = "lorenz_tube")
 
 
 # ---------- GIF rendering via matplotlib ----------
-def render_gif(traj: np.ndarray, out_path: str, frames: int = 180, size: int = 640, duration_ms: int = 60) -> None:
+def render_gif(
+    traj: np.ndarray, out_path: str, frames: int = 180, size: int = 640, duration_ms: int = 60
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -196,7 +196,9 @@ def main() -> None:
     ap.add_argument("--duration", type=int, default=60)
     ap.add_argument("--out-gif", type=str, default="lorenz_attractor.gif")
     ap.add_argument("--out-stl", type=str, default="lorenz_tube.stl")
-    ap.add_argument("--tube-radius", type=float, default=0.02, help="Tube radius as fraction of bbox")
+    ap.add_argument(
+        "--tube-radius", type=float, default=0.02, help="Tube radius as fraction of bbox"
+    )
     ap.add_argument("--ring-segments", type=int, default=16)
     args = ap.parse_args()
 

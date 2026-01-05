@@ -1,6 +1,7 @@
 import json
-import zipfile
 import os
+import zipfile
+
 
 class AMAPart:
     def __init__(self, name, brep_data, metadata):
@@ -11,13 +12,15 @@ class AMAPart:
     def __repr__(self):
         return f"AMAPart(name='{self.name}', metadata={self.metadata})"
 
+
 class AMAFile:
     def __init__(self, manifest, parts):
         self.manifest = manifest
-        self.parts = parts # List of AMAPart objects
+        self.parts = parts  # List of AMAPart objects
 
     def __repr__(self):
         return f"AMAFile(manifest={self.manifest}, parts_count={len(self.parts)})"
+
 
 def read_ama(file_path):
     """
@@ -39,24 +42,26 @@ def read_ama(file_path):
     manifest = None
 
     try:
-        with zipfile.ZipFile(file_path, 'r') as ama_zip:
-            if 'manifest.json' not in ama_zip.namelist():
+        with zipfile.ZipFile(file_path, "r") as ama_zip:
+            if "manifest.json" not in ama_zip.namelist():
                 print(f"Error: 'manifest.json' not found in {file_path}")
                 return None
-            
-            with ama_zip.open('manifest.json') as mf_file:
+
+            with ama_zip.open("manifest.json") as mf_file:
                 manifest_data = json.load(mf_file)
-            
-            manifest = manifest_data # Store the raw manifest dict
 
-            if 'parts' not in manifest_data:
+            manifest = manifest_data  # Store the raw manifest dict
+
+            if "parts" not in manifest_data:
                 print(f"Error: 'parts' key not found in manifest.json of {file_path}")
-                return AMAFile(manifest, []) # Return with manifest but no parts if parts list is missing
+                return AMAFile(
+                    manifest, []
+                )  # Return with manifest but no parts if parts list is missing
 
-            for part_entry in manifest_data.get('parts', []):
-                part_name = part_entry.get('name')
+            for part_entry in manifest_data.get("parts", []):
+                part_name = part_entry.get("name")
                 if not part_name:
-                    print(f"Warning: Part entry in manifest is missing a name. Skipping.")
+                    print("Warning: Part entry in manifest is missing a name. Skipping.")
                     continue
 
                 brep_file_name = f"parts/{part_name}.brep"
@@ -69,16 +74,21 @@ def read_ama(file_path):
                     with ama_zip.open(brep_file_name) as bf:
                         brep_data = bf.read()
                 else:
-                    print(f"Warning: BREP file '{brep_file_name}' not found for part '{part_name}'.")
-                
+                    print(
+                        f"Warning: BREP file '{brep_file_name}' not found for part '{part_name}'."
+                    )
+
                 if meta_file_name in ama_zip.namelist():
                     with ama_zip.open(meta_file_name) as pf_meta:
                         part_metadata = json.load(pf_meta)
                 else:
-                    print(f"Warning: Metadata file '{meta_file_name}' not found for part '{part_name}'.")
-                
+                    print(
+                        f"Warning: Metadata file '{meta_file_name}' "
+                        f"not found for part '{part_name}'."
+                    )
+
                 parts.append(AMAPart(name=part_name, brep_data=brep_data, metadata=part_metadata))
-        
+
         return AMAFile(manifest=manifest, parts=parts)
 
     except FileNotFoundError:
@@ -94,59 +104,58 @@ def read_ama(file_path):
         print(f"An unexpected error occurred while reading {file_path}: {e}")
         return None
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # Example usage:
     # Create a dummy AMA file for testing
-    if not os.path.exists('parts'):
-        os.makedirs('parts')
+    if not os.path.exists("parts"):
+        os.makedirs("parts")
 
     dummy_manifest = {
         "version": "1.0",
         "author": "Test Script",
-        "parts": [
-            {"name": "part1", "material": "PLA"},
-            {"name": "part2", "material": "ABS"}
-        ]
+        "parts": [{"name": "part1", "material": "PLA"}, {"name": "part2", "material": "ABS"}],
     }
-    with open('manifest.json', 'w') as f:
+    with open("manifest.json", "w") as f:
         json.dump(dummy_manifest, f, indent=4)
-    
-    with open('parts/part1.brep', 'wb') as f:
+
+    with open("parts/part1.brep", "wb") as f:
         f.write(b"This is dummy BREP data for part1.")
-    
+
     dummy_part1_meta = {"material": "PLA", "process": "FDM"}
-    with open('parts/part1.json', 'w') as f:
+    with open("parts/part1.json", "w") as f:
         json.dump(dummy_part1_meta, f, indent=4)
 
-    with open('parts/part2.brep', 'wb') as f:
+    with open("parts/part2.brep", "wb") as f:
         f.write(b"This is dummy BREP data for part2.")
-    
+
     dummy_part2_meta = {"material": "ABS", "process": "SLA"}
-    with open('parts/part2.json', 'w') as f:
+    with open("parts/part2.json", "w") as f:
         json.dump(dummy_part2_meta, f, indent=4)
 
-    with zipfile.ZipFile('test.ama', 'w') as zf:
-        zf.write('manifest.json')
-        zf.write('parts/part1.brep', 'parts/part1.brep')
-        zf.write('parts/part1.json', 'parts/part1.json')
-        zf.write('parts/part2.brep', 'parts/part2.brep')
-        zf.write('parts/part2.json', 'parts/part2.json')
+    with zipfile.ZipFile("test.ama", "w") as zf:
+        zf.write("manifest.json")
+        zf.write("parts/part1.brep", "parts/part1.brep")
+        zf.write("parts/part1.json", "parts/part1.json")
+        zf.write("parts/part2.brep", "parts/part2.brep")
+        zf.write("parts/part2.json", "parts/part2.json")
 
     # Test reading the dummy AMA file
-    ama_content = read_ama('test.ama')
+    ama_content = read_ama("test.ama")
     if ama_content:
         print("Successfully read AMA file.")
         print(f"Manifest: {ama_content.manifest}")
         for part in ama_content.parts:
-            print(f"Part: {part.name}, Metadata: {part.metadata}, BREP length: {len(part.brep_data) if part.brep_data else 0}")
+            brep_len = len(part.brep_data) if part.brep_data else 0
+            print(f"Part: {part.name}, Metadata: {part.metadata}, " f"BREP length: {brep_len}")
     else:
         print("Failed to read AMA file.")
 
     # Clean up dummy files
-    os.remove('manifest.json')
-    os.remove('parts/part1.brep')
-    os.remove('parts/part1.json')
-    os.remove('parts/part2.brep')
-    os.remove('parts/part2.json')
-    os.rmdir('parts')
-    os.remove('test.ama')
+    os.remove("manifest.json")
+    os.remove("parts/part1.brep")
+    os.remove("parts/part1.json")
+    os.remove("parts/part2.brep")
+    os.remove("parts/part2.json")
+    os.rmdir("parts")
+    os.remove("test.ama")

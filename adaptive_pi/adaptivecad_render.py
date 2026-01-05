@@ -1,40 +1,46 @@
 # Render \u03c1 on a genus-3 mesh via your AdaptiveCAD kernel as a PNG.
 # Supports mode="tempered" (\u03c1 \u2248 1 + cK) and mode="exact" (sinh/sin laws).
 
-import math, json
+import json
+import math
+
 import numpy as np
 
 # ==== USER PARAMS (adjust as you like) ====
-MODE   = "tempered"           # "tempered" or "exact"
-R_V    = 2.09                 # for exact mode or to derive c
-R_F    = 0.80
-C_CONST= -0.623               # used when MODE=="tempered"
-R_MODEL= 1.30                 # radius used in K(r) mapping
-K0     = -26.8                # K(r) = K0 + \u03b2 r^2
-BETA   = 12.5
+MODE = "tempered"  # "tempered" or "exact"
+R_V = 2.09  # for exact mode or to derive c
+R_F = 0.80
+C_CONST = -0.623  # used when MODE=="tempered"
+R_MODEL = 1.30  # radius used in K(r) mapping
+K0 = -26.8  # K(r) = K0 + \u03b2 r^2
+BETA = 12.5
 OUTPNG = "outputs/adaptivecad_rho.png"
 # ==========================================
 
+
 # ---- exact \u03c1(K; r_v, r_f) ----
 def rho_exact(K, rv, rf):
-    if abs(K) < 1e-14: return 1.0
+    if abs(K) < 1e-14:
+        return 1.0
     if K > 0:
         t = math.sqrt(K)
-        num = math.sin(t*rv)/(t*rv)
-        den = math.sin(t*rf)/(t*rf)
+        num = math.sin(t * rv) / (t * rv)
+        den = math.sin(t * rf) / (t * rf)
     else:
         t = math.sqrt(-K)
-        num = math.sinh(t*rv)/(t*rv)
-        den = math.sinh(t*rf)/(t*rf)
-    return num/den
+        num = math.sinh(t * rv) / (t * rv)
+        den = math.sinh(t * rf) / (t * rf)
+    return num / den
+
 
 def rho_value(K, mode="tempered", rv=R_V, rf=R_F, c=C_CONST):
     if mode == "tempered":
         if c is None:
-            c = (rf*rf - rv*rv)/6.0
-        return 1.0 + c*K
+            c = (rf * rf - rv * rv) / 6.0
+        return 1.0 + c * K
     else:
         return rho_exact(K, rv, rf)
+
 
 def main():
     # === 1) Load mesh from AdaptiveCAD ===
@@ -48,7 +54,9 @@ def main():
         raise_if_todo = True
 
     if raise_if_todo:
-        raise RuntimeError("TODO: Implement load_mesh_from_adaptivecad() to return V,F,A from your kernel.")
+        raise RuntimeError(
+            "TODO: Implement load_mesh_from_adaptivecad() to return V,F,A from your kernel."
+        )
 
     V = np.asarray(V, float)
     F = np.asarray(F, int)
@@ -74,21 +82,35 @@ def main():
     # TODO: replace with your kernel’s render call (PBR/Phong etc.)
     # adaptivecad.render_face_scalar(V, F, rho_face, outfile=OUTPNG, title=f"\u03c1 ({MODE})")
     try:
-        render_face_scalar_png(V, F, rho_face, OUTPNG, title=f"\u03c1 ({MODE})")  # your kernel function
+        render_face_scalar_png(
+            V, F, rho_face, OUTPNG, title=f"\u03c1 ({MODE})"
+        )  # your kernel function
     except NameError:
-        raise RuntimeError("TODO: Implement render_face_scalar_png(V,F,values,outfile,...) using your AdaptiveCAD kernel.")
+        raise RuntimeError(
+            "TODO: Implement render_face_scalar_png(V,F,values,outfile,...) using your AdaptiveCAD kernel."
+        )
 
     # === 6) Save a tiny JSON with stats so we can sanity-check ===
     stats = {
-        "mode": MODE, "r_v": R_V, "r_f": R_F, "c": C_CONST,
-        "r_scale": r_scale, "GB_scale": s,
-        "GB_sum_KA": float((K_face*A).sum()), "GB_target": target,
-        "K_min": float(K_face.min()), "K_max": float(K_face.max()), "K_mean": float(K_face.mean()),
-        "rho_min": float(rho_face.min()), "rho_max": float(rho_face.max()), "rho_mean": float(rho_face.mean())
+        "mode": MODE,
+        "r_v": R_V,
+        "r_f": R_F,
+        "c": C_CONST,
+        "r_scale": r_scale,
+        "GB_scale": s,
+        "GB_sum_KA": float((K_face * A).sum()),
+        "GB_target": target,
+        "K_min": float(K_face.min()),
+        "K_max": float(K_face.max()),
+        "K_mean": float(K_face.mean()),
+        "rho_min": float(rho_face.min()),
+        "rho_max": float(rho_face.max()),
+        "rho_mean": float(rho_face.mean()),
     }
-    with open(OUTPNG.replace(".png","_stats.json"), "w") as f:
+    with open(OUTPNG.replace(".png", "_stats.json"), "w") as f:
         json.dump(stats, f, indent=2)
     print("Wrote:", OUTPNG)
+
 
 # --- placeholders you wire to your kernel ---
 def load_mesh_from_adaptivecad():
@@ -100,6 +122,7 @@ def load_mesh_from_adaptivecad():
     """
     raise NameError
 
+
 def render_face_scalar_png(V, F, values, outfile, title=""):
     """
     Replace with something like:
@@ -107,6 +130,7 @@ def render_face_scalar_png(V, F, values, outfile, title=""):
       # optionally set camera, shading, colormap, etc.
     """
     raise NameError
+
 
 if __name__ == "__main__":
     main()

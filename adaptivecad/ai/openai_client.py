@@ -22,7 +22,8 @@ def get_client() -> OpenAI:
     global _client
     if OpenAI is None:
         raise RuntimeError(
-            "The 'openai' package is not installed. Run 'pip install openai' to enable the AI copilot."
+            "The 'openai' package is not installed. "
+            "Run 'pip install openai' to enable the AI copilot."
         ) from _OPENAI_IMPORT_ERROR
 
     if _client is None:

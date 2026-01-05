@@ -9,16 +9,23 @@ passes events through unless the pointer is over the ring.
 """
 
 from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import (
-    Qt, QRectF, QPointF, QTimer, Signal, QObject, QEvent, QElapsedTimer
-)
+from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QWheelEvent,
-    QMouseEvent, QPaintEvent, QRadialGradient, QGuiApplication, QCursor
+    QBrush,
+    QColor,
+    QCursor,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QRadialGradient,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -52,11 +59,11 @@ class RadialToolWheel(QWidget):
         parent: Optional[QWidget] = None,
         tools: Optional[List[ToolSpec]] = None,
         *,
-        outer_radius_ratio: float = 0.46,   # fraction of min(width, height)/2 when not fitting to edge
-        thickness_ratio: float = 0.09,      # ring thickness fraction of min(wh)/2
+        outer_radius_ratio: float = 0.46,  # fraction of min(width, height)/2 when not fitting to edge
+        thickness_ratio: float = 0.09,  # ring thickness fraction of min(wh)/2
         fade_full_at_center_ratio: float = 0.05,  # <= this distance => fully transparent
-        fade_full_at_edge_ratio: float = 0.45,    # >= this distance => fully opaque
-    idle_rotate_deg_per_sec: float = 0.0,
+        fade_full_at_edge_ratio: float = 0.45,  # >= this distance => fully opaque
+        idle_rotate_deg_per_sec: float = 0.0,
         hover_glow: QColor = QColor(0, 255, 255, 180),  # cyan-ish glow
         base_ring_color: QColor = QColor(0, 200, 255, 95),
         segment_line_color: QColor = QColor(0, 255, 255, 140),
@@ -74,7 +81,7 @@ class RadialToolWheel(QWidget):
         min_visible_alpha: float = 0.18,
     ):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # toggled dynamically
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # toggled dynamically
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
@@ -182,7 +189,11 @@ class RadialToolWheel(QWidget):
 
         def coerce(item) -> ToolSpec:
             if isinstance(item, ToolSpec):
-                return item.clone() if hasattr(item, 'clone') else ToolSpec(item.label, item.tool_id, list(item.children))
+                return (
+                    item.clone()
+                    if hasattr(item, "clone")
+                    else ToolSpec(item.label, item.tool_id, list(item.children))
+                )
             if isinstance(item, tuple):
                 label = item[0]
                 tool_id = None
@@ -264,7 +275,13 @@ class RadialToolWheel(QWidget):
         if obj is self.parent():
             if ev.type() in (QEvent.Resize, QEvent.Move):
                 self._attach_to_parent()
-            elif ev.type() in (QEvent.MouseMove, QEvent.HoverMove, QEvent.Enter, QEvent.Leave, QEvent.Wheel):
+            elif ev.type() in (
+                QEvent.MouseMove,
+                QEvent.HoverMove,
+                QEvent.Enter,
+                QEvent.Leave,
+                QEvent.Wheel,
+            ):
                 self._mark_dirty()
         return super().eventFilter(obj, ev)
 
@@ -350,10 +367,10 @@ class RadialToolWheel(QWidget):
         new_hover_outer = self._hover_index
         new_hover_inner = self._hover_sub_index
 
-        if ring == 'outer':
+        if ring == "outer":
             new_hover_outer = idx
             new_hover_inner = -1
-        elif ring == 'inner':
+        elif ring == "inner":
             new_hover_outer = self._active_group
             new_hover_inner = idx
         else:
@@ -406,8 +423,8 @@ class RadialToolWheel(QWidget):
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.Antialiasing, True)
-            render_hints = getattr(QPainter, 'RenderHint', None)
-            for hint_name in ('HighQualityAntialiasing', 'SmoothPixmapTransform'):
+            render_hints = getattr(QPainter, "RenderHint", None)
+            for hint_name in ("HighQualityAntialiasing", "SmoothPixmapTransform"):
                 hint = None
                 if render_hints is not None and hasattr(render_hints, hint_name):
                     hint = getattr(render_hints, hint_name)
@@ -427,10 +444,16 @@ class RadialToolWheel(QWidget):
             c1.setAlphaF(0.0)
             grad.setColorAt(0.70, c0)
             grad.setColorAt(1.00, c1)
-            outer_rect = QRectF(cx - radius_outer, cy - radius_outer, radius_outer * 2, radius_outer * 2)
-            inner_rect = QRectF(cx - radius_inner, cy - radius_inner, radius_inner * 2, radius_inner * 2)
-            ring_outer = QPainterPath(); ring_outer.addEllipse(outer_rect)
-            ring_inner = QPainterPath(); ring_inner.addEllipse(inner_rect)
+            outer_rect = QRectF(
+                cx - radius_outer, cy - radius_outer, radius_outer * 2, radius_outer * 2
+            )
+            inner_rect = QRectF(
+                cx - radius_inner, cy - radius_inner, radius_inner * 2, radius_inner * 2
+            )
+            ring_outer = QPainterPath()
+            ring_outer.addEllipse(outer_rect)
+            ring_inner = QPainterPath()
+            ring_inner.addEllipse(inner_rect)
             ring_path = ring_outer.subtracted(ring_inner)
             p.setBrush(QBrush(grad))
             p.setPen(Qt.NoPen)
@@ -446,8 +469,10 @@ class RadialToolWheel(QWidget):
             p.translate(cx, cy)
             p.rotate(self._rotation_deg)
             p.translate(-cx, -cy)
-            clip_outer = QPainterPath(); clip_outer.addEllipse(outer_rect)
-            clip_inner = QPainterPath(); clip_inner.addEllipse(inner_rect)
+            clip_outer = QPainterPath()
+            clip_outer.addEllipse(outer_rect)
+            clip_inner = QPainterPath()
+            clip_inner.addEllipse(inner_rect)
             p.setClipPath(clip_outer.subtracted(clip_inner))
 
             hover_outer = self._hover_index
@@ -530,23 +555,31 @@ class RadialToolWheel(QWidget):
             if self._submenu_open and self._submenu_tools:
                 sub_outer, sub_inner = self._submenu_radii(radius_inner, thickness)
                 if sub_outer - sub_inner > 2.0 and len(self._submenu_tools) > 0:
-                    sub_outer_rect = QRectF(cx - sub_outer, cy - sub_outer, sub_outer * 2, sub_outer * 2)
-                    sub_inner_rect = QRectF(cx - sub_inner, cy - sub_inner, sub_inner * 2, sub_inner * 2)
+                    sub_outer_rect = QRectF(
+                        cx - sub_outer, cy - sub_outer, sub_outer * 2, sub_outer * 2
+                    )
+                    sub_inner_rect = QRectF(
+                        cx - sub_inner, cy - sub_inner, sub_inner * 2, sub_inner * 2
+                    )
                     sub_span = 360.0 / max(1.0, float(len(self._submenu_tools)))
 
                     p.save()
                     p.translate(cx, cy)
                     p.rotate(self._rotation_deg)
                     p.translate(-cx, -cy)
-                    sub_clip_outer = QPainterPath(); sub_clip_outer.addEllipse(sub_outer_rect)
-                    sub_clip_inner = QPainterPath(); sub_clip_inner.addEllipse(sub_inner_rect)
+                    sub_clip_outer = QPainterPath()
+                    sub_clip_outer.addEllipse(sub_outer_rect)
+                    sub_clip_inner = QPainterPath()
+                    sub_clip_inner.addEllipse(sub_inner_rect)
                     p.setClipPath(sub_clip_outer.subtracted(sub_clip_inner))
 
                     hover_inner = self._hover_sub_index
                     dpr = max(1.0, self.devicePixelRatioF())
                     for j, spec in enumerate(self._submenu_tools):
                         start_deg = j * sub_span
-                        path_seg = self._arc_segment_path(QPointF(cx, cy), sub_inner, sub_outer, start_deg, sub_span)
+                        path_seg = self._arc_segment_path(
+                            QPointF(cx, cy), sub_inner, sub_outer, start_deg, sub_span
+                        )
 
                         fill_color = QColor(self._base_color)
                         fill_alpha = 0.78 if hover_inner == j else 0.55
@@ -648,7 +681,7 @@ class RadialToolWheel(QWidget):
                 a = (ang - self._rotation_deg) % 360.0
                 seg = int((a / 360.0) * len(self._submenu_tools))
                 seg = max(0, min(len(self._submenu_tools) - 1, seg))
-                return ('inner', seg)
+                return ("inner", seg)
 
         if dist < r_inner or dist > r_outer:
             return (None, -1)
@@ -658,7 +691,7 @@ class RadialToolWheel(QWidget):
         a = (ang - self._rotation_deg) % 360.0
         seg = int((a / 360.0) * len(self._tools))
         seg = max(0, min(len(self._tools) - 1, seg))
-        return ('outer', seg)
+        return ("outer", seg)
 
     def mousePressEvent(self, ev: QMouseEvent) -> None:  # noqa: D401
         self._ensure_timer()
@@ -695,7 +728,7 @@ class RadialToolWheel(QWidget):
         if self._dragging:
             a_now = self._angle_at(ev.position())
             if self._drag_last_angle is not None and a_now is not None:
-                da = (a_now - self._drag_last_angle)
+                da = a_now - self._drag_last_angle
                 self._rotation_deg = (self._rotation_deg + da) % 360.0
                 self._drag_last_angle = a_now
                 self._mark_dirty()
@@ -720,18 +753,18 @@ class RadialToolWheel(QWidget):
             if pressed_ring is None:
                 ev.ignore()
                 return
-            if pressed_ring == 'outer':
-                if ring == 'inner' and self._submenu_open and idx >= 0:
+            if pressed_ring == "outer":
+                if ring == "inner" and self._submenu_open and idx >= 0:
                     self._activate_inner(idx)
                     ev.accept()
                     return
-                if ring == 'outer' and idx == pressed_idx:
+                if ring == "outer" and idx == pressed_idx:
                     self._activate_outer(idx)
                     ev.accept()
                     return
                 ev.ignore()
                 return
-            if pressed_ring == 'inner' and ring == 'inner' and idx == pressed_idx:
+            if pressed_ring == "inner" and ring == "inner" and idx == pressed_idx:
                 self._activate_inner(idx)
                 ev.accept()
                 return
@@ -764,4 +797,3 @@ class RadialToolWheelOverlay(RadialToolWheel):
     def __init__(self, viewport_widget: QWidget, tools: Optional[List[ToolSpec]] = None, **kwargs):
         super().__init__(viewport_widget, tools=tools, **kwargs)
         self._attach_to_parent()
-

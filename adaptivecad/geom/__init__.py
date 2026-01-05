@@ -1,10 +1,10 @@
 """Geometry utilities for AdaptiveCAD."""
 
-from .curve import Curve
 from .bezier import BezierCurve
+from .brep import Edge, EulerBRep, Face, Solid, Vertex
 from .bspline import BSplineCurve
-from .hyperbolic import full_turn_deg, rotate_cmd, pi_a_over_pi
-from .brep import EulerBRep, Vertex, Edge, Face, Solid
+from .curve import Curve
+from .hyperbolic import full_turn_deg, pi_a_over_pi, rotate_cmd
 
 __all__ = [
     "BezierCurve",
@@ -19,7 +19,7 @@ __all__ = [
     "Face",
     "Solid",
 ]
-from .hyperbolic import geodesic_distance, move_towards, HyperbolicConstraint
+from .hyperbolic import HyperbolicConstraint, geodesic_distance, move_towards
 
 __all__.extend(
     [

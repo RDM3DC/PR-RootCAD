@@ -1,17 +1,15 @@
 """Fix the playground.py file to properly define the MainWindow class at the module level."""
 
-import os
-
 # Path definitions
 playground_path = r"d:\SuperCAD\AdaptiveCAD\adaptivecad\gui\playground.py"
-backup_path = playground_path + '.original'
+backup_path = playground_path + ".original"
 
 # First, make a backup of the current file
 print(f"Creating backup of current file at {backup_path}")
-with open(playground_path, 'r', encoding='utf-8') as f:
+with open(playground_path, "r", encoding="utf-8") as f:
     current_content = f.read()
-    
-with open(backup_path, 'w', encoding='utf-8') as f:
+
+with open(backup_path, "w", encoding="utf-8") as f:
     f.write(current_content)
 
 # Replace the problematic structure with this fix
@@ -454,17 +452,18 @@ else:
 
 # Find where the actual MainWindow class starts in the original file after the feature class definitions
 import re
-main_window_content_match = re.search(r'else:\s+class MainWindow:', current_content)
+
+main_window_content_match = re.search(r"else:\s+class MainWindow:", current_content)
 if main_window_content_match:
     # Extract everything after the MainWindow class definition
     main_window_index = main_window_content_match.end()
     main_window_content = current_content[main_window_index:]
-    
+
     # Complete the fixed content with the MainWindow class implementation
     fixed_content += main_window_content
-    
+
     # Write the fixed content to the file
-    with open(playground_path, 'w', encoding='utf-8') as f:
+    with open(playground_path, "w", encoding="utf-8") as f:
         f.write(fixed_content)
     print(f"Successfully fixed {playground_path}")
 else:

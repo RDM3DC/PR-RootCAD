@@ -1,13 +1,20 @@
 # adaptivecad/io/ama_writer.py
-import json, time, zipfile, tempfile, shutil, os, uuid
+import json
+import shutil
+import tempfile
+import time
+import uuid
+import zipfile
 from pathlib import Path
-from OCC.Core.BRep import BRep_Builder
+
 from OCC.Core.BRepTools import breptools_Write
 
 __all__ = ["write_ama"]
 
+
 def _timestamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
 
 def write_ama(document, path, units="mm", defl=0.05):
     """
@@ -43,6 +50,7 @@ def write_ama(document, path, units="mm", defl=0.05):
 
     # 2. write simple feature graph JSON (one node per Feature, linear)
     import numpy as np
+
     graph = []
     (tmp / "model").mkdir(exist_ok=True)
     (tmp / "fields").mkdir(exist_ok=True)
@@ -51,19 +59,20 @@ def write_ama(document, path, units="mm", defl=0.05):
             "id": f"f{idx:03d}",
             "type": feat.name,
             "params": feat.params,
-            "dim": getattr(feat, 'dim', None) or feat.params.get('dim'),
+            "dim": getattr(feat, "dim", None) or feat.params.get("dim"),
             "geom": f"s{idx:03d}.brep",
             "inputs": [f"f{idx-1:03d}"] if idx else [],
         }
         # Export local_transform if present
-        if hasattr(feat, 'local_transform') and feat.local_transform is not None:
+        if hasattr(feat, "local_transform") and feat.local_transform is not None:
             import numpy as np
+
             node["local_transform"] = np.asarray(feat.local_transform).tolist()
         # NDField data export (optional)
         if feat.name == "NDField":
             # Try to get the values array from the feature
-            values = getattr(feat, 'values', None)
-            if values is None and hasattr(feat, 'shape') and hasattr(feat.shape, 'values'):
+            values = getattr(feat, "values", None)
+            if values is None and hasattr(feat, "shape") and hasattr(feat.shape, "values"):
                 values = feat.shape.values
             if values is not None:
                 np.save(tmp / "fields" / f"f{idx:03d}_field.npy", values)

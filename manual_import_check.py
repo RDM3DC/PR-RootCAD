@@ -4,8 +4,9 @@
 #    For cmd: call start_adaptivecad.bat
 
 # Make sure NumPy, PySide6 and PythonOCC are installed
-import sys
 import importlib.util
+import sys
+
 
 def check_module(module_name):
     """Check if a module is installed and print its status"""
@@ -14,6 +15,7 @@ def check_module(module_name):
     status_msg = "available" if is_available else "NOT INSTALLED"
     print(f"{status} {module_name} is {status_msg}")
     return is_available
+
 
 # Check required modules
 print("Checking required modules:")
@@ -29,9 +31,8 @@ if not all([numpy_ok, pyside_ok, occ_ok]):
 
 # Import adaptivecad modules
 print("\nImporting AdaptiveCAD modules:")
-import adaptivecad
-from adaptivecad.gui import playground
 from adaptivecad.commands.import_conformal import ImportConformalCmd
+from adaptivecad.gui import playground
 
 # Create a test instance of the import command
 print("\nTesting ImportConformalCmd:")

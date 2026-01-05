@@ -1,5 +1,7 @@
-import adsk.core, adsk.fusion, traceback
-from typing import Dict, Any
+from typing import Any, Dict
+
+import adsk.core
+import adsk.fusion
 
 
 def build_sliders(cmd_inputs: adsk.core.CommandInputs, spec: Dict[str, Any]):
@@ -15,7 +17,8 @@ def build_sliders(cmd_inputs: adsk.core.CommandInputs, spec: Dict[str, Any]):
 
         id_ = f"slider_{key}"
         slider = cmd_inputs.addFloatSliderCommandInput(
-            id_, f"{key.capitalize()}",
+            id_,
+            f"{key.capitalize()}",
             "mm",
             adsk.core.ValueInput.createByReal(cfg.get("min", cfg["value"] * 0.1)),
             adsk.core.ValueInput.createByReal(cfg.get("max", cfg["value"] * 10)),

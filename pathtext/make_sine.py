@@ -1,16 +1,19 @@
-
-import argparse, math, json
+import argparse
+import json
+import math
 from pathlib import Path
 
+
 def sine_path(width=800, height=300, cycles=2.5, amp=40, n=200):
-    y0 = height/2
+    y0 = height / 2
     anchors = []
     for i in range(n):
-        x = i*(width-40)/(n-1) + 20
-        t = i/(n-1)
-        y = y0 + amp*math.sin(2*math.pi*cycles*t)
-        anchors.append([x,y])
+        x = i * (width - 40) / (n - 1) + 20
+        t = i / (n - 1)
+        y = y0 + amp * math.sin(2 * math.pi * cycles * t)
+        anchors.append([x, y])
     return anchors
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -22,9 +25,10 @@ def main():
     ap.add_argument("--n", type=int, default=200)
     args = ap.parse_args()
     anchors = sine_path(args.width, args.height, args.cycles, args.amp, args.n)
-    obj = {"paths": [{"id":"p0", "anchors": anchors}]}
+    obj = {"paths": [{"id": "p0", "anchors": anchors}]}
     Path(args.out).write_text(json.dumps(obj), encoding="utf-8")
     print(f"Wrote {args.out}")
+
 
 if __name__ == "__main__":
     main()

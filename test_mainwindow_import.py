@@ -1,7 +1,7 @@
 """Test that MainWindow can be imported and run."""
 
-import sys
 import os
+import sys
 
 # Add project root to path
 script_dir = os.path.abspath(os.path.dirname(__file__))
@@ -10,6 +10,7 @@ sys.path.insert(0, script_dir)
 print("Importing MainWindow from adaptivecad.gui.playground...")
 try:
     from adaptivecad.gui.playground import MainWindow
+
     print("✅ MainWindow imported successfully")
 except ImportError as e:
     print(f"❌ Error importing MainWindow: {e}")
@@ -25,5 +26,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Error running MainWindow: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(2)

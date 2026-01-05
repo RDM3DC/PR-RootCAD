@@ -31,7 +31,9 @@ class ConstraintSolver:
         self.max_iterations: int = policy.max_iterations
         self.convergence: float = policy.linear
 
-    def add_variable(self, name: str, value: float = 0.0, *, locked: bool = False) -> SolverVariable:
+    def add_variable(
+        self, name: str, value: float = 0.0, *, locked: bool = False
+    ) -> SolverVariable:
         var = SolverVariable(name=name, value=value, locked=locked)
         self.variables[name] = var
         return var

@@ -1,12 +1,15 @@
+from typing import Any, Dict, Tuple
+
 import numpy as np
-from typing import Dict, Any, Tuple
+
 
 def _quant_params(arr: np.ndarray, bits: int = 8) -> Tuple[float, float]:
     # symmetric quantization: scale only
     maxv = float(np.max(np.abs(arr))) + 1e-12
-    qmax = (2**(bits-1) - 1)
+    qmax = 2 ** (bits - 1) - 1
     scale = maxv / qmax
     return scale, 0.0
+
 
 def quantize(arr: np.ndarray, bits: int = 8, block: int = 0) -> Dict[str, Any]:
     arr = np.asarray(arr, dtype=np.float32)
@@ -19,15 +22,25 @@ def quantize(arr: np.ndarray, bits: int = 8, block: int = 0) -> Dict[str, Any]:
         scales = []
         for i in range(0, h, bh):
             for j in range(0, w, bw):
-                tile = arr[..., i:i+bh, j:j+bw]
+                tile = arr[..., i : i + bh, j : j + bw]
                 s, _ = _quant_params(tile, bits=bits)
                 scales.append(s)
-                q[..., i:i+bh, j:j+bw] = np.clip(np.round(tile / s), -127, 127).astype(np.int8)
-        return {"mode": "quant", "bits": bits, "shape": arr.shape, "q": q, "scales": np.array(scales, dtype=np.float32), "block": (bh, bw)}
+                q[..., i : i + bh, j : j + bw] = np.clip(np.round(tile / s), -127, 127).astype(
+                    np.int8
+                )
+        return {
+            "mode": "quant",
+            "bits": bits,
+            "shape": arr.shape,
+            "q": q,
+            "scales": np.array(scales, dtype=np.float32),
+            "block": (bh, bw),
+        }
     else:
         s, _ = _quant_params(arr, bits=8)
         q = np.clip(np.round(arr / s), -127, 127).astype(np.int8)
         return {"mode": "quant", "bits": bits, "shape": arr.shape, "q": q, "scale": s}
+
 
 def dequantize(pkt: Dict[str, Any]) -> np.ndarray:
     if pkt["mode"] != "quant":
@@ -44,6 +57,7 @@ def dequantize(pkt: Dict[str, Any]) -> np.ndarray:
         idx = 0
         for i in range(0, h, bh):
             for j in range(0, w, bw):
-                s = float(scales[idx]); idx += 1
-                out[..., i:i+bh, j:j+bw] = q[..., i:i+bh, j:j+bw] * s
+                s = float(scales[idx])
+                idx += 1
+                out[..., i : i + bh, j : j + bw] = q[..., i : i + bh, j : j + bw] * s
         return out

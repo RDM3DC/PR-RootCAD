@@ -11,6 +11,7 @@ print(f"Project root: {project_root}")
 try:
     print("Attempting to import adaptivecad...")
     import adaptivecad
+
     print("Successfully imported adaptivecad")
 except ImportError as e:
     print(f"Error importing adaptivecad: {e}")
@@ -20,19 +21,21 @@ except ImportError as e:
 
 # Test importing the required modules
 try:
-    from adaptivecad.gui import playground
     from adaptivecad.commands.import_conformal import ImportConformalCmd
+    from adaptivecad.gui import playground
+
     print("Successfully imported required modules")
 except ImportError as e:
     print(f"Error importing required modules: {e}")
     sys.exit(1)
+
 
 # Create a simple STL file if needed for testing
 def create_test_stl():
     try:
         from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
         from OCC.Core.StlAPI import StlAPI_Writer
-        
+
         test_stl_path = os.path.join(project_root, "test_cube.stl")
         box = BRepPrimAPI_MakeBox(10, 10, 10).Shape()
         writer = StlAPI_Writer()
@@ -43,18 +46,19 @@ def create_test_stl():
         print(f"Error creating test STL: {e}")
         return None
 
+
 # Directly test the import functionality
 def test_import():
     stl_path = create_test_stl()
     if not stl_path:
         print("Skipping import test as test STL couldn't be created")
         return
-    
+
     try:
         print("\nTesting import functionality directly...")
-        cmd = ImportConformalCmd()
+        ImportConformalCmd()
         print("Created ImportConformalCmd instance successfully")
-        
+
         # Load window to test the GUI interaction
         print("\nStarting playground window...")
         window = playground.MainWindow()
@@ -65,11 +69,13 @@ def test_import():
         print("Showing window - you can now click the Debug Import button")
         print("or use the Import πₐ button in the toolbar")
         window.app.exec()
-        
+
     except Exception as e:
         import traceback
+
         print(f"Error testing import: {e}")
         print(traceback.format_exc())
+
 
 if __name__ == "__main__":
     test_import()

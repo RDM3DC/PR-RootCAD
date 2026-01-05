@@ -1,7 +1,7 @@
-from PySide6.QtWidgets import QDockWidget, QCheckBox, QVBoxLayout, QWidget
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCheckBox, QDockWidget, QVBoxLayout, QWidget
 
 from adaptivecad.snap_points import SNAP_TYPES
+
 
 class SnapMenu(QDockWidget):
     """Dock widget with check boxes to toggle snap types."""
@@ -28,4 +28,5 @@ class SnapMenu(QDockWidget):
             SNAP_TYPES[name] = bool(state)
             if hasattr(self.mainwin, "update_snap_points_display"):
                 self.mainwin.update_snap_points_display()
+
         return f

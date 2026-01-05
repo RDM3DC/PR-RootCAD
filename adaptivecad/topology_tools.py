@@ -7,15 +7,16 @@ are used if available for more accurate homology calculations.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
-import math
-from typing import Any, Dict, Iterable, List, Tuple, Set, Optional
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import numpy as np
 
 try:
     from .ndfield import NDField
+
     HAS_DEPENDENCIES = True
 except Exception:  # pragma: no cover - optional dependency missing
     HAS_DEPENDENCIES = False
@@ -61,9 +62,9 @@ class HomologyCalculator:
             rips_complex = gudhi.RipsComplex(points=point_cloud)
             simplex_tree = rips_complex.create_simplex_tree(max_dimension=2)
             persistence = simplex_tree.persistence()
-            betti_0 = len([p for p in persistence if p[0] == 0 and p[1][1] == float('inf')])
-            betti_1 = len([p for p in persistence if p[0] == 1 and p[1][1] == float('inf')])
-            betti_2 = len([p for p in persistence if p[0] == 2 and p[1][1] == float('inf')])
+            betti_0 = len([p for p in persistence if p[0] == 0 and p[1][1] == float("inf")])
+            betti_1 = len([p for p in persistence if p[0] == 1 and p[1][1] == float("inf")])
+            betti_2 = len([p for p in persistence if p[0] == 2 and p[1][1] == float("inf")])
             return [betti_0, betti_1, betti_2]
         except Exception:  # pragma: no cover - optional path
             return self._simplified_betti_numbers(point_cloud)
@@ -92,7 +93,9 @@ class HomologyCalculator:
                 self._dfs_component(i, points, threshold, visited)
         return max(1, components)
 
-    def _dfs_component(self, start_idx: int, points: np.ndarray, threshold: float, visited: Set[int]) -> None:
+    def _dfs_component(
+        self, start_idx: int, points: np.ndarray, threshold: float, visited: Set[int]
+    ) -> None:
         """Depth-first traversal for component detection."""
         visited.add(start_idx)
         for i in range(len(points)):
@@ -214,11 +217,13 @@ class HomotopyAnalyzer:
                 if norm_r12 > 1e-6:
                     cross_prod = np.cross(dr1, dr2)
                     dot_prod = float(np.dot(cross_prod, r12))
-                    linking_sum += dot_prod / (norm_r12 ** 3)
+                    linking_sum += dot_prod / (norm_r12**3)
         linking_number = linking_sum / (4 * math.pi)
         return int(round(linking_number))
 
-    def generate_linked_curves(self, num_points: int = 100) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    def generate_linked_curves(
+        self, num_points: int = 100
+    ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """Return two simple linked curves for testing."""
         t = np.linspace(0.0, 2.0 * math.pi, num_points)
         curve1 = np.array([np.cos(t), np.sin(t), np.zeros_like(t)]).T
@@ -276,14 +281,18 @@ class ManifoldAnalyzer:
         """Yield unique edges from the triangle mesh."""
         edges: List[Tuple[int, int]] = []
         for tri in triangulation:
-            edges.extend([
-                (min(tri[0], tri[1]), max(tri[0], tri[1])),
-                (min(tri[1], tri[2]), max(tri[1], tri[2])),
-                (min(tri[2], tri[0]), max(tri[2], tri[0])),
-            ])
+            edges.extend(
+                [
+                    (min(tri[0], tri[1]), max(tri[0], tri[1])),
+                    (min(tri[1], tri[2]), max(tri[1], tri[2])),
+                    (min(tri[2], tri[0]), max(tri[2], tri[0])),
+                ]
+            )
         return edges
 
-    def detect_topological_defects(self, field: NDField, defect_type: str = "vortex") -> List[Dict[str, Any]]:
+    def detect_topological_defects(
+        self, field: NDField, defect_type: str = "vortex"
+    ) -> List[Dict[str, Any]]:
         """Detect simple topological defects in a complex field."""
         if not HAS_DEPENDENCIES or field.ndim < 2:
             return []
@@ -306,31 +315,42 @@ class ManifoldAnalyzer:
             for j in range(1, nx - 1):
                 circ = self._calculate_circulation_2d(field_2d, i, j)
                 if abs(circ) > 2 * math.pi * 0.8:
-                    vortices.append({
-                        "position": (i, j),
-                        "strength": round(circ / (2 * math.pi)),
-                        "circulation": circ,
-                    })
+                    vortices.append(
+                        {
+                            "position": (i, j),
+                            "strength": round(circ / (2 * math.pi)),
+                            "circulation": circ,
+                        }
+                    )
         return vortices
 
     def _calculate_circulation_2d(self, field: np.ndarray, i: int, j: int) -> float:
         """Calculate discrete circulation around ``(i, j)``."""
         points = [
-            (i - 1, j), (i - 1, j + 1), (i, j + 1), (i + 1, j + 1),
-            (i + 1, j), (i + 1, j - 1), (i, j - 1), (i - 1, j - 1), (i - 1, j)
+            (i - 1, j),
+            (i - 1, j + 1),
+            (i, j + 1),
+            (i + 1, j + 1),
+            (i + 1, j),
+            (i + 1, j - 1),
+            (i, j - 1),
+            (i - 1, j - 1),
+            (i - 1, j),
         ]
         circ = 0.0
         for k in range(len(points) - 1):
             p1 = points[k]
             p2 = points[k + 1]
             if (
-                0 <= p1[0] < field.shape[0] and 0 <= p1[1] < field.shape[1] and
-                0 <= p2[0] < field.shape[0] and 0 <= p2[1] < field.shape[1]
+                0 <= p1[0] < field.shape[0]
+                and 0 <= p1[1] < field.shape[1]
+                and 0 <= p2[0] < field.shape[0]
+                and 0 <= p2[1] < field.shape[1]
             ):
                 v1 = field[p1]
                 v2 = field[p2]
-                ph1 = math.atan2(v1.imag, v1.real) if hasattr(v1, 'imag') else float(v1)
-                ph2 = math.atan2(v2.imag, v2.real) if hasattr(v2, 'imag') else float(v2)
+                ph1 = math.atan2(v1.imag, v1.real) if hasattr(v1, "imag") else float(v1)
+                ph2 = math.atan2(v2.imag, v2.real) if hasattr(v2, "imag") else float(v2)
                 dp = ph2 - ph1
                 if dp > math.pi:
                     dp -= 2 * math.pi
@@ -358,6 +378,7 @@ class TopologyExplorationCmd:
         """Execute the command."""
         if not HAS_DEPENDENCIES:
             from PySide6.QtWidgets import QMessageBox
+
             QMessageBox.warning(
                 mw.win,
                 "Missing Dependencies",
@@ -379,6 +400,7 @@ class TopologyExplorationCmd:
 
             try:
                 import gudhi  # noqa: F401
+
                 betti_numbers = homology_calc.calculate_betti_numbers(torus_points)
                 betti_source = "gudhi"
             except Exception:
@@ -390,7 +412,7 @@ class TopologyExplorationCmd:
             )
 
             field_size = (32, 32)
-            y_coords, x_coords = np.mgrid[0:field_size[0], 0:field_size[1]]
+            y_coords, x_coords = np.mgrid[0 : field_size[0], 0 : field_size[1]]
             cx, cy = field_size[0] // 2, field_size[1] // 2
             dx = x_coords - cx
             dy = y_coords - cy
@@ -411,4 +433,5 @@ class TopologyExplorationCmd:
             )
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
+
             QMessageBox.critical(mw.win, "Error", f"Topology exploration error: {exc}")

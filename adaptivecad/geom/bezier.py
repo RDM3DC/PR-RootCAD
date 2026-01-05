@@ -1,8 +1,9 @@
 """Bezier curve utilities."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import List
 
 from ..linalg import Vec3
 from .curve import Curve
@@ -43,10 +44,7 @@ class BezierCurve(Curve):
         n = len(self.control_points) - 1
         if n <= 0:
             return Vec3(0.0, 0.0, 0.0)
-        deriv_ctrl = [
-            n * (self.control_points[i + 1] - self.control_points[i])
-            for i in range(n)
-        ]
+        deriv_ctrl = [n * (self.control_points[i + 1] - self.control_points[i]) for i in range(n)]
         tmp = [p for p in deriv_ctrl]
         for r in range(1, n):
             for i in range(n - r):

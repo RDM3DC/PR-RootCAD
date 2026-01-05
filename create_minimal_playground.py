@@ -4,14 +4,14 @@ import os
 
 # Create a minimal playground.py file that will run
 playground_path = r"d:\SuperCAD\AdaptiveCAD\adaptivecad\gui\playground.py"
-backup_path = playground_path + '.minimal_backup'
+backup_path = playground_path + ".minimal_backup"
 
 print(f"Creating backup at {backup_path}...")
 if os.path.exists(playground_path):
-    with open(playground_path, 'r', encoding='utf-8') as f:
+    with open(playground_path, "r", encoding="utf-8") as f:
         original = f.read()
-    
-    with open(backup_path, 'w', encoding='utf-8') as f:
+
+    with open(backup_path, "w", encoding="utf-8") as f:
         f.write(original)
 
 minimal_playground = '''"""Simplified GUI playground with optional dependencies."""
@@ -58,7 +58,7 @@ if __name__ == "__main__":  # pragma: no cover - manual execution only
     main()
 '''
 
-with open(playground_path, 'w', encoding='utf-8') as f:
+with open(playground_path, "w", encoding="utf-8") as f:
     f.write(minimal_playground)
 
 print(f"Created minimal playground.py at {playground_path}")

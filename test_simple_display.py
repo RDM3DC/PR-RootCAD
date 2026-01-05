@@ -1,13 +1,16 @@
 """
 Simple test to verify shape display functionality.
 """
-import sys
-sys.path.insert(0, r'd:\SuperCAD\AdaptiveCAD')
 
-from PySide6.QtWidgets import QApplication
-from adaptivecad.gui.playground import MainWindow
+import sys
+
+sys.path.insert(0, r"d:\SuperCAD\AdaptiveCAD")
+
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
-from adaptivecad.command_defs import Feature, DOCUMENT
+from PySide6.QtWidgets import QApplication
+
+from adaptivecad.command_defs import DOCUMENT, Feature
+from adaptivecad.gui.playground import MainWindow
 
 print("🧪 Testing basic shape display...")
 

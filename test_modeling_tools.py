@@ -13,7 +13,6 @@ If all operations complete without errors, the playground is working correctly.
 
 import os
 import sys
-import time
 
 # Ensure adaptivecad is in the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,51 +29,48 @@ except ImportError:
 
 try:
     # Import required modules
+    from adaptivecad.command_defs import DOCUMENT, Feature, MoveCmd, NewBoxCmd, UnionCmd
     from adaptivecad.gui.playground import MainWindow
-    from adaptivecad.command_defs import (
-        DOCUMENT, Feature,
-        NewBoxCmd, MoveCmd, UnionCmd
-    )
-    
+
     print("Setting up test for modeling tools...")
-    
+
     # Create a MainWindow instance
     window = MainWindow()
-    
+
     # Create a box
     print("Creating a box...")
     box_cmd = NewBoxCmd()
     box_cmd.run(window)  # This will prompt for dimensions, use defaults
-    
+
     # Verify box was created
     if len(DOCUMENT) > 0:
         print(f"Box created successfully: {DOCUMENT[-1].name}")
     else:
         print("Failed to create box")
         sys.exit(1)
-    
+
     # Create a second box for boolean operations
     print("Creating second box...")
     box_cmd = NewBoxCmd()
     box_cmd.run(window)
-    
+
     # Move the second box
     print("Moving second box...")
     move_cmd = MoveCmd()
     move_cmd.run(window)  # This will prompt for move parameters
-    
+
     # Perform union operation
     print("Performing union operation...")
     union_cmd = UnionCmd()
     union_cmd.run(window)  # This will prompt for shapes to union
-    
+
     print("All operations completed successfully!")
     print("Modeling tools are working correctly.")
-    
+
     # Run the main event loop
     print("Starting main window. Close the window to exit.")
     window.run()
-    
+
 except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure you have all dependencies installed.")
@@ -82,5 +78,6 @@ except ImportError as e:
 except Exception as e:
     print(f"Error during test: {e}")
     import traceback
+
     traceback.print_exc()
     sys.exit(1)

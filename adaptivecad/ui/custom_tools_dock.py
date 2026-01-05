@@ -1,16 +1,27 @@
 from __future__ import annotations
+
 from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QHBoxLayout, QPushButton, QMessageBox, QCheckBox
+    QCheckBox,
+    QDockWidget,
+    QHBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from adaptivecad.plugins.tool_registry import ToolRegistry
 
+
 class CustomToolsDock(QDockWidget):
-    def __init__(self, registry: ToolRegistry, *, parent: Optional[QWidget] = None, run_cb=None, pin_cb=None):
+    def __init__(
+        self, registry: ToolRegistry, *, parent: Optional[QWidget] = None, run_cb=None, pin_cb=None
+    ):
         super().__init__("Custom Tools", parent)
         self.registry = registry
         self.run_cb = run_cb
@@ -84,7 +95,10 @@ class CustomToolsDock(QDockWidget):
         tid = self._current_id()
         if not tid:
             return
-        if QMessageBox.question(self, "Delete Tool", f"Delete custom tool '{tid}'?") == QMessageBox.Yes:
+        if (
+            QMessageBox.question(self, "Delete Tool", f"Delete custom tool '{tid}'?")
+            == QMessageBox.Yes
+        ):
             self.registry.remove(tid)
 
     def _on_pin(self, checked: bool):

@@ -1,12 +1,15 @@
 import numpy as np
 
+
 def identity4():
     return np.eye(4)
+
 
 def translation(dx, dy, dz):
     T = identity4()
     T[:3, 3] = [dx, dy, dz]
     return T
+
 
 def rotation_matrix(axis, angle):
     axis = np.asarray(axis)
@@ -14,20 +17,25 @@ def rotation_matrix(axis, angle):
     x, y, z = axis
     c, s = np.cos(angle), np.sin(angle)
     C = 1 - c
-    R = np.array([
-        [c + x*x*C, x*y*C - z*s, x*z*C + y*s, 0],
-        [y*x*C + z*s, c + y*y*C, y*z*C - x*s, 0],
-        [z*x*C - y*s, z*y*C + x*s, c + z*z*C, 0],
-        [0, 0, 0, 1]
-    ])
+    R = np.array(
+        [
+            [c + x * x * C, x * y * C - z * s, x * z * C + y * s, 0],
+            [y * x * C + z * s, c + y * y * C, y * z * C - x * s, 0],
+            [z * x * C - y * s, z * y * C + x * s, c + z * z * C, 0],
+            [0, 0, 0, 1],
+        ]
+    )
     return R
+
 
 def apply_transform(pt, mat):
     vec = np.append(pt, 1)
     return (mat @ vec)[:3]
 
+
 def identityN(n):
-    return np.eye(n+1)
+    return np.eye(n + 1)
+
 
 def translationN(offset):
     n = len(offset)
@@ -35,9 +43,11 @@ def translationN(offset):
     T[:-1, -1] = offset
     return T
 
+
 def scalingN(factor, dim):
     """Return an N-dimensional scaling matrix."""
     import numpy as np
+
     if np.isscalar(factor):
         factors = [factor] * dim
     else:
@@ -49,9 +59,11 @@ def scalingN(factor, dim):
         S[i, i] = f
     return S
 
+
 def apply_transformN(pt, mat):
     vec = np.append(pt, 1)
     return (mat @ vec)[:-1]
+
 
 def get_world_transform(feature, parent=None):
     T = feature.local_transform
@@ -76,13 +88,14 @@ def stable_pi_a_over_pi(u: float) -> float:
     """
     import math
 
-    amplitude = 0.5    # Maximum deviation from 1.0
+    amplitude = 0.5  # Maximum deviation from 1.0
     sensitivity = 0.1  # Controls slope of tanh around zero
 
     scaling = 1.0 + amplitude * math.tanh(sensitivity * u)
     if not math.isfinite(scaling):
         return 1.0
     return max(0.5, min(1.5, scaling))
+
 
 def pi_a_over_pi(r: float, kappa: float = 1.0) -> float:
     """
@@ -103,12 +116,12 @@ def pi_a_over_pi(r: float, kappa: float = 1.0) -> float:
     Edge cases r → 0 handled with 1st‑order limit.
     """
     import math
-    
+
     if abs(r) < 1e-12 or kappa == 0.0:
         return 1.0
 
     root = math.sqrt(abs(kappa)) * r
-    if kappa > 0:               # hyperbolic geometry  (κ = +|κ|)
+    if kappa > 0:  # hyperbolic geometry  (κ = +|κ|)
         return math.sinh(root) / root
-    else:                       # spherical geometry   (κ = −|κ|)
-        return math.sin(root)  / root
+    else:  # spherical geometry   (κ = −|κ|)
+        return math.sin(root) / root

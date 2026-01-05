@@ -1,12 +1,12 @@
-import os
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
 try:
     import openai  # type: ignore
-except Exception as exc:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover - optional dependency
     openai = None
 
 _MODEL = os.getenv("ADCAD_OPENAI_MODEL", "gpt-4.1-mini")
@@ -35,6 +35,7 @@ If you don't want ranges, plain numbers are fine and the UI will use ±∞.
 If the request is ambiguous, ask for clarification in JSON:
 { "need_clarification": "...question..." }
 """
+
 
 def call_openai(user_prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Call the OpenAI chat completion endpoint and return parsed JSON."""

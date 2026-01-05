@@ -5,32 +5,34 @@
 import os
 import re
 
+
 def add_superellipse_classes():
     # Path to playground.py
-    playground_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                  'gui', 'playground.py')
-    
+    playground_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "gui", "playground.py"
+    )
+
     print(f"Reading {playground_path}...")
-    
+
     # Read the file content
-    with open(playground_path, 'r', encoding='utf-8') as file:
+    with open(playground_path, "r", encoding="utf-8") as file:
         content = file.read()
-    
+
     # Check if already patched
     if "class SuperellipseFeature(Feature):" in content:
         print("File is already patched with SuperellipseFeature class.")
         return
-    
+
     # Find a suitable spot to insert our code - after the PiCurveShellCmd class
     pattern = r'class NewPiCurveShellCmd:.*?mw\.win\.statusBar\(\)\.showMessage\(f"Pi Curve Shell created: r={base_radius}, h={height}, freq={freq}, amp={amp}", 3000\)'
-    
+
     # Use re.DOTALL to match across multiple lines
     match = re.search(pattern, content, re.DOTALL)
-    
+
     if not match:
         print("Could not find insertion point. Patch aborted.")
         return
-    
+
     # The actual code to add
     superellipse_code = """
 
@@ -143,16 +145,19 @@ def add_superellipse_classes():
                 mw.view._display.DisplayShape(feat.shape, update=True)
                 mw.view._display.FitAll()
                 mw.win.statusBar().showMessage(f"Superellipse created: rx={rx}, ry={ry}, n={n}", 3000)"""
-    
+
     # Insert the superellipse code after the matched text
-    new_content = content[:match.end()] + superellipse_code + content[match.end():]
-    
+    new_content = content[: match.end()] + superellipse_code + content[match.end() :]
+
     # Write back to the file
-    with open(playground_path, 'w', encoding='utf-8') as file:
+    with open(playground_path, "w", encoding="utf-8") as file:
         file.write(new_content)
-    
-    print("Successfully patched playground.py with SuperellipseFeature and NewSuperellipseCmd classes.")
+
+    print(
+        "Successfully patched playground.py with SuperellipseFeature and NewSuperellipseCmd classes."
+    )
     print("You can now run the playground with 'python run_playground.py'")
+
 
 if __name__ == "__main__":
     add_superellipse_classes()

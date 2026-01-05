@@ -60,5 +60,3 @@ def stable_average(values: Iterable[float]) -> float:
     if count == 0:
         raise ValueError("stable_average requires at least one value")
     return total / count
-
-

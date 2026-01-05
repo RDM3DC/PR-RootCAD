@@ -1,7 +1,9 @@
-
-import json, argparse
+import argparse
+import json
 from pathlib import Path
+
 from .binfmt import pack_binary
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -12,6 +14,7 @@ def main():
     blob = pack_binary(obj)
     Path(args.out).write_bytes(blob)
     print(f"Wrote {args.out} ({len(blob)} bytes)")
+
 
 if __name__ == "__main__":
     main()

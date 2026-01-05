@@ -33,10 +33,7 @@ acs-gpuc-unsuppress = "gpuc.cli:unsuppress_main"
 [tool.black]
 line-length = 100
 target-version = ["py38", "py39", "py310", "py311", "py312"]
-extend-exclude = [
-	"^blender_addons/",
-	"^freecad/",
-]
+extend-exclude = "^blender_addons/|^freecad/"
 
 [tool.isort]
 profile = "black"
