@@ -81,6 +81,11 @@ def run_pr_relaxation(args: argparse.Namespace) -> Dict[str, Any]:
         diffusion=float(args.diffusion),
         coupling=float(args.coupling),
         coupling_mode=str(args.coupling_mode),
+        geom_mode=str(getattr(args, "geom_mode", "smooth_noise")),
+        geom_smooth_iters=int(getattr(args, "geom_smooth_iters", 6)),
+        geom_freq_low=float(getattr(args, "geom_freq_low", 0.02)),
+        geom_freq_high=float(getattr(args, "geom_freq_high", 0.12)),
+        geom_freq_power=float(getattr(args, "geom_freq_power", 1.0)),
         phase_dim=int(args.phase_dim),
         phase_space=str(args.phase_space),
         seed=None if args.seed is None else int(args.seed),
@@ -103,6 +108,11 @@ def run_pr_and_export_stl(args: argparse.Namespace) -> Dict[str, Any]:
         diffusion=float(args.diffusion),
         coupling=float(args.coupling),
         coupling_mode=str(args.coupling_mode),
+        geom_mode=str(getattr(args, "geom_mode", "smooth_noise")),
+        geom_smooth_iters=int(getattr(args, "geom_smooth_iters", 6)),
+        geom_freq_low=float(getattr(args, "geom_freq_low", 0.02)),
+        geom_freq_high=float(getattr(args, "geom_freq_high", 0.12)),
+        geom_freq_power=float(getattr(args, "geom_freq_power", 1.0)),
         phase_dim=int(args.phase_dim),
         phase_space=str(args.phase_space),
         seed=None if args.seed is None else int(args.seed),
@@ -141,6 +151,11 @@ def run_pr_and_export_ama(args: argparse.Namespace) -> Dict[str, Any]:
         diffusion=float(args.diffusion),
         coupling=float(args.coupling),
         coupling_mode=str(args.coupling_mode),
+        geom_mode=str(getattr(args, "geom_mode", "smooth_noise")),
+        geom_smooth_iters=int(getattr(args, "geom_smooth_iters", 6)),
+        geom_freq_low=float(getattr(args, "geom_freq_low", 0.02)),
+        geom_freq_high=float(getattr(args, "geom_freq_high", 0.12)),
+        geom_freq_power=float(getattr(args, "geom_freq_power", 1.0)),
         phase_dim=int(args.phase_dim),
         phase_space=str(args.phase_space),
         seed=None if args.seed is None else int(args.seed),
@@ -304,6 +319,23 @@ def gen_blackholes_ama(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def pr_augment_ama(args: argparse.Namespace) -> Dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[1]  # .../AdaptiveCAD
+    sys.path.insert(0, str(repo_root))
+
+    from adaptivecad.pr import augment_ama_with_derived_fields
+
+    return augment_ama_with_derived_fields(
+        args.ama,
+        out_path=args.out,
+        include=tuple(args.include),
+        smooth_iters=int(args.smooth_iters),
+        scale_xy=float(args.scale_xy),
+        scale_z=float(args.scale_z),
+        units=str(args.units),
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="adaptivecad_bridge", add_help=True)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -329,6 +361,11 @@ def parse_args() -> argparse.Namespace:
     pr.add_argument("--coupling-mode", dest="coupling_mode", choices=("none", "geom_target"), default="geom_target")
     pr.add_argument("--phase-dim", dest="phase_dim", type=int, default=2)
     pr.add_argument("--phase-space", dest="phase_space", choices=("unwrapped", "wrapped"), default="unwrapped")
+    pr.add_argument("--geom-mode", dest="geom_mode", choices=("smooth_noise", "spectral_band"), default="smooth_noise")
+    pr.add_argument("--geom-smooth-iters", dest="geom_smooth_iters", type=int, default=6)
+    pr.add_argument("--geom-freq-low", dest="geom_freq_low", type=float, default=0.02)
+    pr.add_argument("--geom-freq-high", dest="geom_freq_high", type=float, default=0.12)
+    pr.add_argument("--geom-freq-power", dest="geom_freq_power", type=float, default=1.0)
     pr.add_argument("--seed", type=int, default=0)
 
     pr_stl = sub.add_parser("run_pr_and_export_stl", help="Run PR relaxation and export as STL heightmap")
@@ -340,6 +377,11 @@ def parse_args() -> argparse.Namespace:
     pr_stl.add_argument("--coupling-mode", dest="coupling_mode", choices=("none", "geom_target"), default="geom_target")
     pr_stl.add_argument("--phase-dim", dest="phase_dim", type=int, default=2)
     pr_stl.add_argument("--phase-space", dest="phase_space", choices=("unwrapped", "wrapped"), default="unwrapped")
+    pr_stl.add_argument("--geom-mode", dest="geom_mode", choices=("smooth_noise", "spectral_band"), default="smooth_noise")
+    pr_stl.add_argument("--geom-smooth-iters", dest="geom_smooth_iters", type=int, default=6)
+    pr_stl.add_argument("--geom-freq-low", dest="geom_freq_low", type=float, default=0.02)
+    pr_stl.add_argument("--geom-freq-high", dest="geom_freq_high", type=float, default=0.12)
+    pr_stl.add_argument("--geom-freq-power", dest="geom_freq_power", type=float, default=1.0)
     pr_stl.add_argument("--scale-xy", dest="scale_xy", type=float, default=1.0)
     pr_stl.add_argument("--scale-z", dest="scale_z", type=float, default=1.0)
     pr_stl.add_argument("--seed", type=int, default=0)
@@ -353,6 +395,11 @@ def parse_args() -> argparse.Namespace:
     pr_ama.add_argument("--coupling-mode", dest="coupling_mode", choices=("none", "geom_target"), default="geom_target")
     pr_ama.add_argument("--phase-dim", dest="phase_dim", type=int, default=2)
     pr_ama.add_argument("--phase-space", dest="phase_space", choices=("unwrapped", "wrapped"), default="unwrapped")
+    pr_ama.add_argument("--geom-mode", dest="geom_mode", choices=("smooth_noise", "spectral_band"), default="smooth_noise")
+    pr_ama.add_argument("--geom-smooth-iters", dest="geom_smooth_iters", type=int, default=6)
+    pr_ama.add_argument("--geom-freq-low", dest="geom_freq_low", type=float, default=0.02)
+    pr_ama.add_argument("--geom-freq-high", dest="geom_freq_high", type=float, default=0.12)
+    pr_ama.add_argument("--geom-freq-power", dest="geom_freq_power", type=float, default=1.0)
     pr_ama.add_argument("--scale-xy", dest="scale_xy", type=float, default=1.0)
     pr_ama.add_argument("--scale-z", dest="scale_z", type=float, default=1.0)
     pr_ama.add_argument("--units", type=str, default="mm")
@@ -364,6 +411,23 @@ def parse_args() -> argparse.Namespace:
     bh.add_argument("--size", type=int, default=128)
     bh.add_argument("--scale-xy", dest="scale_xy", type=float, default=1.0)
     bh.add_argument("--scale-z", dest="scale_z", type=float, default=1.0)
+
+    pr_aug = sub.add_parser(
+        "pr_augment_ama",
+        help="Augment an existing AMA with PR derived layers (writes a new AMA by default)",
+    )
+    pr_aug.add_argument("ama", help="Path to input .ama")
+    pr_aug.add_argument("--out", default=None, help="Output .ama path (default: *_aug.ama next to input)")
+    pr_aug.add_argument(
+        "--include",
+        nargs="+",
+        default=["gradmag", "laplacian", "curvature", "smooth"],
+        help="Derived layers to add",
+    )
+    pr_aug.add_argument("--smooth-iters", dest="smooth_iters", type=int, default=4)
+    pr_aug.add_argument("--scale-xy", dest="scale_xy", type=float, default=1.0)
+    pr_aug.add_argument("--scale-z", dest="scale_z", type=float, default=1.0)
+    pr_aug.add_argument("--units", type=str, default="mm")
 
     return parser.parse_args()
 
@@ -384,6 +448,8 @@ def main() -> None:
         result = run_pr_and_export_ama(args)
     elif args.cmd == "gen_blackholes_ama":
         result = gen_blackholes_ama(args)
+    elif args.cmd == "pr_augment_ama":
+        result = pr_augment_ama(args)
     else:
         raise RuntimeError(f"Unknown command: {args.cmd}")
 

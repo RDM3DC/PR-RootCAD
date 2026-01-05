@@ -98,10 +98,10 @@ def _coherence_metric(phi: np.ndarray) -> float:
     return float(1.0 / (1.0 + e))
 
 
-def _make_geom_proxy(N: int, rng: np.random.Generator) -> np.ndarray:
+def _make_geom_proxy_smooth(N: int, rng: np.random.Generator, *, iters: int) -> np.ndarray:
     # A smooth-ish scalar field: low-frequency noise via repeated averaging.
     g = rng.standard_normal((N, N)).astype(float)
-    for _ in range(6):
+    for _ in range(max(0, int(iters))):
         g = 0.5 * g + 0.5 * (
             np.roll(g, 1, axis=0)
             + np.roll(g, -1, axis=0)
@@ -111,6 +111,80 @@ def _make_geom_proxy(N: int, rng: np.random.Generator) -> np.ndarray:
     g -= float(np.mean(g))
     g /= float(np.std(g) + 1e-9)
     return g
+
+
+def _make_geom_proxy_spectral_band(
+    N: int,
+    rng: np.random.Generator,
+    *,
+    f_low: float,
+    f_high: float,
+    power: float,
+) -> np.ndarray:
+    """Band-pass filtered noise in 2D FFT space.
+
+    Frequencies are radial magnitudes in cycles-per-sample.
+    """
+
+    f_low = float(f_low)
+    f_high = float(f_high)
+    if f_low < 0.0:
+        f_low = 0.0
+    if f_high <= 0.0:
+        f_high = 0.0
+    if f_high < f_low:
+        f_low, f_high = f_high, f_low
+
+    # Real noise -> complex spectrum.
+    g0 = rng.standard_normal((N, N)).astype(np.float32)
+    G = np.fft.fft2(g0)
+
+    fx = np.fft.fftfreq(N)  # [-0.5..0.5)
+    fy = np.fft.fftfreq(N)
+    FX, FY = np.meshgrid(fx, fy)
+    R = np.sqrt(FX * FX + FY * FY)
+
+    # Smooth-ish band mask.
+    mask = (R >= f_low) & (R <= f_high)
+    w = np.zeros_like(R, dtype=np.float32)
+    w[mask] = 1.0
+
+    # Optional spectral shaping inside band.
+    p = float(power)
+    if not np.isfinite(p):
+        p = 1.0
+    if abs(p - 1.0) > 1e-6:
+        # Normalize radius to [0..1] inside band.
+        denom = max(1e-9, f_high - f_low)
+        u = np.clip((R - f_low) / denom, 0.0, 1.0)
+        w = w * np.power(u, p).astype(np.float32)
+
+    Gf = G * w
+    g = np.fft.ifft2(Gf).real.astype(np.float32)
+
+    g -= float(np.mean(g))
+    g /= float(np.std(g) + 1e-9)
+    return g
+
+
+def _geom_spectral_metrics(geom: np.ndarray) -> Dict[str, float]:
+    try:
+        g = np.asarray(geom, dtype=np.float32)
+        N = int(g.shape[0])
+        if g.ndim != 2 or N < 4:
+            return {}
+
+        G = np.fft.fft2(g)
+        P = (np.abs(G) ** 2).astype(np.float64)
+        fx = np.fft.fftfreq(N)
+        fy = np.fft.fftfreq(N)
+        FX, FY = np.meshgrid(fx, fy)
+        R = np.sqrt(FX * FX + FY * FY).astype(np.float64)
+        tot = float(np.sum(P) + 1e-12)
+        centroid = float(np.sum(R * P) / tot)
+        return {"geom_spectral_centroid": centroid}
+    except Exception:
+        return {}
 
 
 def relax_phase_field(cfg: PRFieldConfig) -> Tuple[Dict[str, Any], PRFieldState]:
@@ -149,7 +223,24 @@ def relax_phase_field(cfg: PRFieldConfig) -> Tuple[Dict[str, Any], PRFieldState]
     phi = rng.standard_normal((N, N, phase_dim)).astype(float)
     if phase_space == "wrapped":
         phi = _wrap_to_pi(phi)
-    geom = _make_geom_proxy(N, rng)
+    geom_mode = str(getattr(cfg, "geom_mode", "smooth_noise"))
+    if geom_mode not in {"smooth_noise", "spectral_band"}:
+        geom_mode = "smooth_noise"
+
+    if geom_mode == "spectral_band":
+        geom = _make_geom_proxy_spectral_band(
+            N,
+            rng,
+            f_low=float(getattr(cfg, "geom_freq_low", 0.02)),
+            f_high=float(getattr(cfg, "geom_freq_high", 0.12)),
+            power=float(getattr(cfg, "geom_freq_power", 1.0)),
+        )
+    else:
+        geom = _make_geom_proxy_smooth(
+            N,
+            rng,
+            iters=int(getattr(cfg, "geom_smooth_iters", 6)),
+        )
 
     coupling_mode = str(cfg.coupling_mode)
     if coupling_mode not in {"none", "geom_target"}:
@@ -214,6 +305,7 @@ def relax_phase_field(cfg: PRFieldConfig) -> Tuple[Dict[str, Any], PRFieldState]
         "phi_std": float(np.std(phi)),
         "geom_mean": float(np.mean(geom)),
         "geom_std": float(np.std(geom)),
+        "geom_mode": geom_mode,
         "falsifier_mean": float(np.mean(falsifier)),
         "falsifier_max": float(np.max(falsifier)),
         "history": {
@@ -222,6 +314,9 @@ def relax_phase_field(cfg: PRFieldConfig) -> Tuple[Dict[str, Any], PRFieldState]
             "coherence": history_coherence,
         },
     }
+
+    # Add best-effort spectral summary so runs are comparable when tuning frequency bands.
+    metrics.update(_geom_spectral_metrics(geom))
 
     return metrics, PRFieldState(phi=phi, geom=geom, falsifier_residual=falsifier)
 

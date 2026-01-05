@@ -16,6 +16,8 @@ import zipfile
 
 import numpy as np
 
+from .derived import compute_derived_fields
+
 
 def _write_stl_binary(vertices: np.ndarray, triangles: np.ndarray) -> bytes:
     """Write STL binary format.
@@ -295,10 +297,9 @@ def export_phase_field_as_ama(
         # Analytic-only AMA (OCC-free).
         vals = np.asarray(phi_2d, dtype=np.float32)
         try:
-            gy, gx = np.gradient(vals)
-            gradmag = np.sqrt(gx * gx + gy * gy).astype(np.float32)
+            derived = compute_derived_fields(vals)
         except Exception:
-            gradmag = None
+            derived = {}
 
         residual = None
         if falsifier_residual is not None:
@@ -328,7 +329,7 @@ def export_phase_field_as_ama(
                 },
             ],
         }
-        if gradmag is not None:
+        if isinstance(derived.get("gradmag"), np.ndarray):
             analytic_manifest["fields"].append(
                 {
                     "id": "gradmag",
@@ -336,6 +337,36 @@ def export_phase_field_as_ama(
                     "dtype": "float32",
                     "shape": [Nf, Nf],
                     "meaning": "|∇field|",
+                }
+            )
+        if isinstance(derived.get("laplacian"), np.ndarray):
+            analytic_manifest["fields"].append(
+                {
+                    "id": "laplacian",
+                    "path": "fields/laplacian.npy",
+                    "dtype": "float32",
+                    "shape": [Nf, Nf],
+                    "meaning": "Δ field",
+                }
+            )
+        if isinstance(derived.get("curvature"), np.ndarray):
+            analytic_manifest["fields"].append(
+                {
+                    "id": "curvature",
+                    "path": "fields/curvature.npy",
+                    "dtype": "float32",
+                    "shape": [Nf, Nf],
+                    "meaning": "mean_curvature(heightmap)",
+                }
+            )
+        if isinstance(derived.get("smooth"), np.ndarray):
+            analytic_manifest["fields"].append(
+                {
+                    "id": "smooth",
+                    "path": "fields/smooth.npy",
+                    "dtype": "float32",
+                    "shape": [Nf, Nf],
+                    "meaning": "smoothed(field)",
                 }
             )
         if residual is not None and residual.shape[:2] == (Nf, Nf):
@@ -369,13 +400,44 @@ def export_phase_field_as_ama(
             "scales": {"xy": float(scale_xy), "z": float(scale_z)},
             "units": str(units),
         }
-        if gradmag is not None:
+        if isinstance(derived.get("gradmag"), np.ndarray):
             analytic_scene["layers"].append(
                 {
                     "id": "gradmag",
+                    "label": "Gradient Magnitude",
                     "kind": "field",
                     "field_ref": "fields/gradmag.npy",
                     "colormap": "viridis",
+                }
+            )
+        if isinstance(derived.get("laplacian"), np.ndarray):
+            analytic_scene["layers"].append(
+                {
+                    "id": "laplacian",
+                    "label": "Laplacian",
+                    "kind": "field",
+                    "field_ref": "fields/laplacian.npy",
+                    "colormap": "diverge",
+                }
+            )
+        if isinstance(derived.get("curvature"), np.ndarray):
+            analytic_scene["layers"].append(
+                {
+                    "id": "curvature",
+                    "label": "Mean Curvature",
+                    "kind": "field",
+                    "field_ref": "fields/curvature.npy",
+                    "colormap": "diverge",
+                }
+            )
+        if isinstance(derived.get("smooth"), np.ndarray):
+            analytic_scene["layers"].append(
+                {
+                    "id": "smooth",
+                    "label": "Smoothed Field",
+                    "kind": "field",
+                    "field_ref": "fields/smooth.npy",
+                    "colormap": "plasma",
                 }
             )
         if residual is not None and residual.shape[:2] == (Nf, Nf):
@@ -410,10 +472,22 @@ def export_phase_field_as_ama(
             np.save(buf, vals)
             z.writestr("fields/f000_field.npy", buf.getvalue())
 
-            if gradmag is not None:
+            if isinstance(derived.get("gradmag"), np.ndarray):
                 buf = BytesIO()
-                np.save(buf, gradmag)
+                np.save(buf, np.asarray(derived["gradmag"], dtype=np.float32))
                 z.writestr("fields/gradmag.npy", buf.getvalue())
+            if isinstance(derived.get("laplacian"), np.ndarray):
+                buf = BytesIO()
+                np.save(buf, np.asarray(derived["laplacian"], dtype=np.float32))
+                z.writestr("fields/laplacian.npy", buf.getvalue())
+            if isinstance(derived.get("curvature"), np.ndarray):
+                buf = BytesIO()
+                np.save(buf, np.asarray(derived["curvature"], dtype=np.float32))
+                z.writestr("fields/curvature.npy", buf.getvalue())
+            if isinstance(derived.get("smooth"), np.ndarray):
+                buf = BytesIO()
+                np.save(buf, np.asarray(derived["smooth"], dtype=np.float32))
+                z.writestr("fields/smooth.npy", buf.getvalue())
 
             if residual is not None and residual.shape[:2] == (Nf, Nf):
                 buf = BytesIO()
@@ -476,10 +550,9 @@ def export_phase_field_as_ama(
             # Derived fields (best-effort): grad magnitude for a second layer.
             vals = np.asarray(phi_2d, dtype=np.float32)
             try:
-                gy, gx = np.gradient(vals)
-                gradmag = np.sqrt(gx * gx + gy * gy).astype(np.float32)
+                derived = compute_derived_fields(vals)
             except Exception:
-                gradmag = None
+                derived = {}
 
             residual = None
             if falsifier_residual is not None:
@@ -509,7 +582,7 @@ def export_phase_field_as_ama(
                     },
                 ],
             }
-            if gradmag is not None:
+            if isinstance(derived.get("gradmag"), np.ndarray):
                 analytic_manifest["fields"].append(
                     {
                         "id": "gradmag",
@@ -517,6 +590,36 @@ def export_phase_field_as_ama(
                         "dtype": "float32",
                         "shape": [Nf, Nf],
                         "meaning": "|∇field|",
+                    }
+                )
+            if isinstance(derived.get("laplacian"), np.ndarray):
+                analytic_manifest["fields"].append(
+                    {
+                        "id": "laplacian",
+                        "path": "fields/laplacian.npy",
+                        "dtype": "float32",
+                        "shape": [Nf, Nf],
+                        "meaning": "Δ field",
+                    }
+                )
+            if isinstance(derived.get("curvature"), np.ndarray):
+                analytic_manifest["fields"].append(
+                    {
+                        "id": "curvature",
+                        "path": "fields/curvature.npy",
+                        "dtype": "float32",
+                        "shape": [Nf, Nf],
+                        "meaning": "mean_curvature(heightmap)",
+                    }
+                )
+            if isinstance(derived.get("smooth"), np.ndarray):
+                analytic_manifest["fields"].append(
+                    {
+                        "id": "smooth",
+                        "path": "fields/smooth.npy",
+                        "dtype": "float32",
+                        "shape": [Nf, Nf],
+                        "meaning": "smoothed(field)",
                     }
                 )
             if residual is not None and residual.shape[:2] == (Nf, Nf):
@@ -550,13 +653,44 @@ def export_phase_field_as_ama(
                 "scales": {"xy": float(scale_xy), "z": float(scale_z)},
                 "units": str(units),
             }
-            if gradmag is not None:
+            if isinstance(derived.get("gradmag"), np.ndarray):
                 analytic_scene["layers"].append(
                     {
                         "id": "gradmag",
+                        "label": "Gradient Magnitude",
                         "kind": "field",
                         "field_ref": "fields/gradmag.npy",
                         "colormap": "viridis",
+                    }
+                )
+            if isinstance(derived.get("laplacian"), np.ndarray):
+                analytic_scene["layers"].append(
+                    {
+                        "id": "laplacian",
+                        "label": "Laplacian",
+                        "kind": "field",
+                        "field_ref": "fields/laplacian.npy",
+                        "colormap": "diverge",
+                    }
+                )
+            if isinstance(derived.get("curvature"), np.ndarray):
+                analytic_scene["layers"].append(
+                    {
+                        "id": "curvature",
+                        "label": "Mean Curvature",
+                        "kind": "field",
+                        "field_ref": "fields/curvature.npy",
+                        "colormap": "diverge",
+                    }
+                )
+            if isinstance(derived.get("smooth"), np.ndarray):
+                analytic_scene["layers"].append(
+                    {
+                        "id": "smooth",
+                        "label": "Smoothed Field",
+                        "kind": "field",
+                        "field_ref": "fields/smooth.npy",
+                        "colormap": "plasma",
                     }
                 )
             if residual is not None and residual.shape[:2] == (Nf, Nf):
@@ -574,10 +708,22 @@ def export_phase_field_as_ama(
                     z.writestr("meta/cosmo_meta.json", cosmo_bytes)
                     z.writestr("meta/cosmo_header.json", json.dumps(cosmo_header, indent=2))
                 # Append derived field(s)
-                if gradmag is not None:
+                if isinstance(derived.get("gradmag"), np.ndarray):
                     buf = BytesIO()
-                    np.save(buf, gradmag)
+                    np.save(buf, np.asarray(derived["gradmag"], dtype=np.float32))
                     z.writestr("fields/gradmag.npy", buf.getvalue())
+                if isinstance(derived.get("laplacian"), np.ndarray):
+                    buf = BytesIO()
+                    np.save(buf, np.asarray(derived["laplacian"], dtype=np.float32))
+                    z.writestr("fields/laplacian.npy", buf.getvalue())
+                if isinstance(derived.get("curvature"), np.ndarray):
+                    buf = BytesIO()
+                    np.save(buf, np.asarray(derived["curvature"], dtype=np.float32))
+                    z.writestr("fields/curvature.npy", buf.getvalue())
+                if isinstance(derived.get("smooth"), np.ndarray):
+                    buf = BytesIO()
+                    np.save(buf, np.asarray(derived["smooth"], dtype=np.float32))
+                    z.writestr("fields/smooth.npy", buf.getvalue())
                 if residual is not None and residual.shape[:2] == (Nf, Nf):
                     buf = BytesIO()
                     np.save(buf, residual)

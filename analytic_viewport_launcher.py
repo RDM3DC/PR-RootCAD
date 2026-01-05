@@ -33,9 +33,9 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from adaptivecad.gui.analytic_viewport import AnalyticViewportPanel
+    from adaptivecad.gui.analytic_viewport import AnalyticViewportDashboardWindow, AnalyticViewportPanel
 except Exception as e:
-    print("Failed to import AnalyticViewportPanel:", e)
+    print("Failed to import Analytic Viewer:", e)
     sys.exit(1)
 
 
@@ -50,11 +50,16 @@ def main() -> int:
     args = parser.parse_args()
 
     app = QApplication.instance() or QApplication(sys.argv)
-    win = QMainWindow()
-    win.setWindowTitle("AdaptiveCAD – Analytic Viewport Panel")
-    panel = AnalyticViewportPanel(win)
-    win.setCentralWidget(panel)
-    win.resize(1100, 750)
+    try:
+        win = AnalyticViewportDashboardWindow()
+        panel = win.panel
+    except Exception:
+        win = QMainWindow()
+        win.setWindowTitle("AdaptiveCAD – Analytic Viewport Panel")
+        panel = AnalyticViewportPanel(win)
+        win.setCentralWidget(panel)
+
+    win.resize(1300, 850)
     win.show()
 
     def _notify_scene_changed() -> None:

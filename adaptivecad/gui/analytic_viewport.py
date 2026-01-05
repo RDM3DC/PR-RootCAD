@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QComboBox, QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
     QScrollArea, QSizePolicy, QInputDialog, QToolButton, QGridLayout,
     QTextEdit, QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
-    QMessageBox, QProgressDialog
+    QMessageBox, QProgressDialog,
+    QMainWindow, QDockWidget, QTabWidget, QPlainTextEdit,
+    QTableWidget, QTableWidgetItem
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QPen, QColor
@@ -26,6 +28,7 @@ from adaptivecad.aacore.sdf import (
     KIND_MOBIUS, KIND_SUPERELLIPSOID, KIND_QUASICRYSTAL, KIND_TORUS4D, KIND_MANDELBULB, KIND_KLEIN, KIND_MENGER, KIND_HYPERBOLIC, KIND_GYROID, KIND_TREFOIL, OP_SOLID, OP_SUBTRACT, MAX_PRIMS
 )
 import time, os
+import sys
 import json
 import importlib.util
 import ctypes
@@ -3259,8 +3262,9 @@ class AnalyticViewportPanel(QWidget):
 
                 self.finished.emit(False, "", "", traceback.format_exc())
 
-    def __init__(self, parent=None, aacore_scene: AACoreScene | None = None):
+    def __init__(self, parent=None, aacore_scene: AACoreScene | None = None, *, ui_layout: str = "panel"):
         super().__init__(parent)
+        self._ui_layout = str(ui_layout or "panel").strip().lower()
         # Radial wheel defaults (updated before controls are created)
         self._wheel_enabled: bool = True
         self._wheel_edge_fit: bool = True
@@ -3366,6 +3370,13 @@ class AnalyticViewportPanel(QWidget):
         self._field_clip_chk: QCheckBox | None = None
         self._field_clip_spin: QDoubleSpinBox | None = None
 
+        # Dashboard (docked layout) widgets
+        self._dock_left_scroll: QScrollArea | None = None
+        self._dock_right_scroll: QScrollArea | None = None
+        self._dock_bottom_widget: QWidget | None = None
+        self._dashboard_console: QPlainTextEdit | None = None
+        self._dashboard_metrics: QTableWidget | None = None
+
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
         self._sketch_on: bool = False
@@ -3392,7 +3403,7 @@ class AnalyticViewportPanel(QWidget):
         self._btn_sketch_dim = None
         self._chk_sketch_midpoint = None
         self._build_ui()
-        self.setWindowTitle("Analytic Viewport (Panel)")
+        self.setWindowTitle("Analytic Viewport" if self._ui_layout == "docked" else "Analytic Viewport (Panel)")
         self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Ensure the analytic panel is visible on at least one screen.
         # Run after a short delay so top-level windows have a chance to map.
@@ -3471,16 +3482,32 @@ class AnalyticViewportPanel(QWidget):
         self._setup_ai()
 
     def _build_ui(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(4,4,4,4)
-        root.addWidget(self.view, 1)
+        docked = bool(getattr(self, "_ui_layout", "panel") == "docked")
+        root = None
+        if not docked:
+            root = QHBoxLayout(self)
+            root.setContentsMargins(4, 4, 4, 4)
+            root.addWidget(self.view, 1)
         # Put the side controls into a dedicated widget so we can wrap
         # them with a QScrollArea to provide vertical scrolling when
         # the panel is taller than the available window height.
-        side_widget = QWidget()
-        side = QVBoxLayout(side_widget)
-        side.setContentsMargins(0,0,0,0)
-        side.setSpacing(6)
+        if docked:
+            left_widget = QWidget()
+            left = QVBoxLayout(left_widget)
+            left.setContentsMargins(0, 0, 0, 0)
+            left.setSpacing(6)
+
+            right_widget = QWidget()
+            right = QVBoxLayout(right_widget)
+            right.setContentsMargins(0, 0, 0, 0)
+            right.setSpacing(6)
+        else:
+            side_widget = QWidget()
+            side = QVBoxLayout(side_widget)
+            side.setContentsMargins(0, 0, 0, 0)
+            side.setSpacing(6)
+            left = side
+            right = side
 
         # Section toggles (visibility controls)
         if not hasattr(self, '_section_vis') or not isinstance(self._section_vis, dict):
@@ -3497,7 +3524,7 @@ class AnalyticViewportPanel(QWidget):
         self._section_toggle_layout = toggle_layout
         self._section_toggle_count = 0
         self._section_toggle_container = toggle_box
-        side.addWidget(toggle_box)
+        left.addWidget(toggle_box)
 
 
         # --- Debug Modes ---
@@ -3543,7 +3570,7 @@ class AnalyticViewportPanel(QWidget):
         fm.addRow(self._field_clip_chk)
         fm.addRow("Field Threshold", self._field_clip_spin)
 
-        side.addWidget(gb_modes)
+        right.addWidget(gb_modes)
         self._register_section("debug_modes", "Debug", gb_modes)
 
         # --- Compute / Export ---
@@ -3572,6 +3599,15 @@ class AnalyticViewportPanel(QWidget):
         self._tool_pr_phase_dim = QSpinBox(); self._tool_pr_phase_dim.setRange(1, 8); self._tool_pr_phase_dim.setValue(2)
         self._tool_pr_phase_space = QComboBox(); self._tool_pr_phase_space.addItems(["unwrapped", "wrapped"])
         self._tool_pr_coupling_mode = QComboBox(); self._tool_pr_coupling_mode.addItems(["geom_target", "none"])
+
+        # --- Geometry proxy tuning ("frequency" knobs) ---
+        self._tool_pr_geom_mode = QComboBox(); self._tool_pr_geom_mode.addItems(["smooth_noise", "spectral_band"])
+        self._tool_pr_geom_mode.currentIndexChanged.connect(self._on_tool_pr_geom_mode_changed)
+        self._tool_pr_geom_smooth_iters = QSpinBox(); self._tool_pr_geom_smooth_iters.setRange(0, 100); self._tool_pr_geom_smooth_iters.setValue(6)
+        self._tool_pr_geom_freq_low = QDoubleSpinBox(); self._tool_pr_geom_freq_low.setRange(0.0, 0.75); self._tool_pr_geom_freq_low.setDecimals(4); self._tool_pr_geom_freq_low.setSingleStep(0.005); self._tool_pr_geom_freq_low.setValue(0.02)
+        self._tool_pr_geom_freq_high = QDoubleSpinBox(); self._tool_pr_geom_freq_high.setRange(0.0, 0.75); self._tool_pr_geom_freq_high.setDecimals(4); self._tool_pr_geom_freq_high.setSingleStep(0.005); self._tool_pr_geom_freq_high.setValue(0.12)
+        self._tool_pr_geom_freq_power = QDoubleSpinBox(); self._tool_pr_geom_freq_power.setRange(0.01, 12.0); self._tool_pr_geom_freq_power.setDecimals(3); self._tool_pr_geom_freq_power.setSingleStep(0.1); self._tool_pr_geom_freq_power.setValue(1.0)
+
         self._tool_pr_seed = QSpinBox(); self._tool_pr_seed.setRange(-1_000_000, 1_000_000); self._tool_pr_seed.setValue(0)
         self._tool_pr_scale_xy = QDoubleSpinBox(); self._tool_pr_scale_xy.setRange(0.001, 100.0); self._tool_pr_scale_xy.setDecimals(4); self._tool_pr_scale_xy.setValue(1.0)
         self._tool_pr_scale_z = QDoubleSpinBox(); self._tool_pr_scale_z.setRange(0.001, 100.0); self._tool_pr_scale_z.setDecimals(4); self._tool_pr_scale_z.setValue(1.0)
@@ -3592,6 +3628,11 @@ class AnalyticViewportPanel(QWidget):
         ft.addRow("Phase Dim", self._tool_pr_phase_dim)
         ft.addRow("Phase Space", self._tool_pr_phase_space)
         ft.addRow("Coupling Mode", self._tool_pr_coupling_mode)
+        ft.addRow("Geom Mode", self._tool_pr_geom_mode)
+        ft.addRow("Geom Smooth Iters", self._tool_pr_geom_smooth_iters)
+        ft.addRow("Freq Low", self._tool_pr_geom_freq_low)
+        ft.addRow("Freq High", self._tool_pr_geom_freq_high)
+        ft.addRow("Freq Power", self._tool_pr_geom_freq_power)
         ft.addRow("Seed", self._tool_pr_seed)
         ft.addRow("Scale XY", self._tool_pr_scale_xy)
         ft.addRow("Scale Z", self._tool_pr_scale_z)
@@ -3599,7 +3640,12 @@ class AnalyticViewportPanel(QWidget):
         ft.addRow(self._tool_run_blackholes_btn)
         ft.addRow("Status", self._tool_status_lbl)
 
-        side.addWidget(gb_tools)
+        try:
+            self._on_tool_pr_geom_mode_changed()
+        except Exception:
+            pass
+
+        left.addWidget(gb_tools)
         self._register_section("compute_export", "Compute", gb_tools)
 
         # --- Feature Toggles ---
@@ -3608,7 +3654,7 @@ class AnalyticViewportPanel(QWidget):
         self.cb_fov = QCheckBox("Foveated Steps"); self.cb_fov.setChecked(True); self.cb_fov.stateChanged.connect(self._on_toggle)
         self.cb_toon = QCheckBox("Toon"); self.cb_toon.setChecked(False); self.cb_toon.stateChanged.connect(self._on_toggle)
         for w in (self.cb_aa, self.cb_fov, self.cb_toon): vf.addWidget(w)
-        side.addWidget(gb_feat)
+        right.addWidget(gb_feat)
         self._register_section("features", "Features", gb_feat)
 
         # --- Parameters ---
@@ -3625,7 +3671,7 @@ class AnalyticViewportPanel(QWidget):
         fs.addRow("Î² Intensity", self.slider_beta_int)
         fs.addRow("Î² Scale", self.slider_beta_scale)
         fs.addRow("Î² Colormap", self.cmap_box)
-        side.addWidget(gb_sliders)
+        right.addWidget(gb_sliders)
         self._register_section("parameters", "Parameters", gb_sliders)
 
         if _HAVE_WHEEL:
@@ -3697,30 +3743,116 @@ class AnalyticViewportPanel(QWidget):
             self._slider_wheel_spin.valueChanged.connect(self._on_wheel_spin_speed)
             fw.addRow("Spin Speed", row_spin)
 
-            side.addWidget(gb_wheel)
+            right.addWidget(gb_wheel)
             self._register_section("hud_wheel", "HUD Wheel", gb_wheel)
             self._sync_wheel_controls()
 
-        self._populate_side_panel_controls(side)
+        # Additional sections are treated as "navigator/tools" by default.
+        self._populate_side_panel_controls(left)
         if getattr(self, '_section_toggles', None):
             self._section_toggle_container.setVisible(True)
         else:
             self._section_toggle_container.setVisible(False)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setWidget(side_widget)
-        # Compute a comfortable minimum width so horizontal scrolling is unnecessary
-        try:
-            content_w = int(side_widget.sizeHint().width()) + 28
-        except Exception:
-            content_w = 480
-        # Widen clamp so horizontal scroll is unnecessary and all controls fit
-        content_w = max(420, min(content_w, 860))
-        scroll.setMinimumWidth(content_w)
-        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        root.addWidget(scroll)
+        def _make_scroll(w: QWidget) -> QScrollArea:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(w)
+            try:
+                content_w = int(w.sizeHint().width()) + 28
+            except Exception:
+                content_w = 480
+            content_w = max(320, min(content_w, 860))
+            scroll.setMinimumWidth(content_w)
+            scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            return scroll
+
+        if docked:
+            self._dock_left_scroll = _make_scroll(left_widget)
+            self._dock_right_scroll = _make_scroll(right_widget)
+            self._dock_bottom_widget = self._build_dashboard_bottom_panel()
+        else:
+            scroll = _make_scroll(side_widget)
+            root.addWidget(scroll)
         self._refresh_prim_label()
+
+    def _build_dashboard_bottom_panel(self) -> QWidget:
+        tabs = QTabWidget()
+
+        console = QPlainTextEdit()
+        console.setReadOnly(True)
+        try:
+            console.setMaximumBlockCount(4000)
+        except Exception:
+            pass
+        try:
+            from PySide6.QtGui import QFont
+
+            f = QFont("Consolas")
+            f.setStyleHint(QFont.Monospace)
+            console.setFont(f)
+        except Exception:
+            pass
+
+        metrics = QTableWidget(0, 2)
+        metrics.setHorizontalHeaderLabels(["Metric", "Value"])
+        try:
+            metrics.horizontalHeader().setStretchLastSection(True)
+            metrics.verticalHeader().setVisible(False)
+            metrics.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            metrics.setSelectionBehavior(QAbstractItemView.SelectRows)
+            metrics.setShowGrid(False)
+        except Exception:
+            pass
+
+        self._dashboard_console = console
+        self._dashboard_metrics = metrics
+
+        tabs.addTab(console, "Console")
+        tabs.addTab(metrics, "Run Metrics")
+        return tabs
+
+    def _dashboard_log(self, msg: str) -> None:
+        try:
+            if self._dashboard_console is not None:
+                self._dashboard_console.appendPlainText(str(msg))
+        except Exception:
+            pass
+
+    def _dashboard_set_metrics(self, obj: object) -> None:
+        if self._dashboard_metrics is None:
+            return
+        if not isinstance(obj, dict):
+            return
+        metrics = self._dashboard_metrics
+        try:
+            pairs = []
+            # Prefer a compact set if available.
+            for k in (
+                "geom_mode",
+                "geom_spectral_centroid",
+                "phase_energy",
+                "coupling_energy",
+                "total_energy",
+                "coherence",
+                "falsifier_mean",
+                "falsifier_max",
+            ):
+                if k in obj:
+                    pairs.append((k, obj.get(k)))
+            # Add a few extras if not present.
+            if not pairs:
+                for k, v in obj.items():
+                    if isinstance(k, str):
+                        pairs.append((k, v))
+            metrics.setRowCount(0)
+            for k, v in pairs[:80]:
+                r = metrics.rowCount()
+                metrics.insertRow(r)
+                metrics.setItem(r, 0, QTableWidgetItem(str(k)))
+                metrics.setItem(r, 1, QTableWidgetItem(str(v)))
+        except Exception:
+            pass
 
     def _on_field_clip_changed(self, *args) -> None:
         try:
@@ -3741,6 +3873,7 @@ class AnalyticViewportPanel(QWidget):
                 self._tool_status_lbl.setText(str(msg))
         except Exception:
             pass
+        self._dashboard_log(msg)
 
     def _tool_read_ama_scene_scales(self, ama_path: str) -> tuple[dict | None, float | None, float | None]:
         try:
@@ -3820,12 +3953,34 @@ class AnalyticViewportPanel(QWidget):
             "phase_dim": int(self._tool_pr_phase_dim.value()),
             "phase_space": str(self._tool_pr_phase_space.currentText()).strip(),
             "coupling_mode": str(self._tool_pr_coupling_mode.currentText()).strip(),
+            "geom_mode": str(self._tool_pr_geom_mode.currentText()).strip(),
+            "geom_smooth_iters": int(self._tool_pr_geom_smooth_iters.value()),
+            "geom_freq_low": float(self._tool_pr_geom_freq_low.value()),
+            "geom_freq_high": float(self._tool_pr_geom_freq_high.value()),
+            "geom_freq_power": float(self._tool_pr_geom_freq_power.value()),
             "scale_xy": float(self._tool_pr_scale_xy.value()),
             "scale_z": float(self._tool_pr_scale_z.value()),
             "units": "mm",
             "defl": 0.05,
             "seed": int(self._tool_pr_seed.value()),
         }
+
+    def _on_tool_pr_geom_mode_changed(self) -> None:
+        mode = ""
+        try:
+            mode = str(self._tool_pr_geom_mode.currentText()).strip()
+        except Exception:
+            mode = ""
+        is_spectral = (mode == "spectral_band")
+        try:
+            self._tool_pr_geom_smooth_iters.setEnabled(not is_spectral)
+        except Exception:
+            pass
+        for w in (self._tool_pr_geom_freq_low, self._tool_pr_geom_freq_high, self._tool_pr_geom_freq_power):
+            try:
+                w.setEnabled(is_spectral)
+            except Exception:
+                pass
 
     def _on_tool_run_pr(self) -> None:
         # Run in a background thread; then load AMA in the UI thread.
@@ -3854,20 +4009,29 @@ class AnalyticViewportPanel(QWidget):
             ama_bytes = None
             out_path = None
             err = None
+            metrics_obj = None
             try:
                 if use_api and api_url:
                     import json
                     import urllib.request
 
+                    # Backwards-compat: keep server payload stable if it does not
+                    # yet accept the advanced geometry tuning keys.
+                    payload_api = dict(payload)
+                    for k in ("geom_mode", "geom_smooth_iters", "geom_freq_low", "geom_freq_high", "geom_freq_power"):
+                        payload_api.pop(k, None)
+
                     req = urllib.request.Request(
                         api_url.rstrip("/") + "/api/pr/export_ama",
-                        data=json.dumps(payload).encode("utf-8"),
+                        data=json.dumps(payload_api).encode("utf-8"),
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
                     with urllib.request.urlopen(req, timeout=120) as resp:
                         raw = resp.read().decode("utf-8")
                     obj = json.loads(raw)
+                    if isinstance(obj, dict):
+                        metrics_obj = obj
                     if isinstance(obj, dict) and isinstance(obj.get("saved_path"), str) and obj.get("saved_path"):
                         out_path = str(obj.get("saved_path"))
                     elif isinstance(obj, dict) and isinstance(obj.get("ama_data"), str):
@@ -3882,11 +4046,17 @@ class AnalyticViewportPanel(QWidget):
                         diffusion=float(payload["diffusion"]),
                         coupling=float(payload["coupling"]),
                         coupling_mode=str(payload["coupling_mode"]),
+                        geom_mode=str(payload.get("geom_mode", "smooth_noise")),
+                        geom_smooth_iters=int(payload.get("geom_smooth_iters", 6)),
+                        geom_freq_low=float(payload.get("geom_freq_low", 0.02)),
+                        geom_freq_high=float(payload.get("geom_freq_high", 0.12)),
+                        geom_freq_power=float(payload.get("geom_freq_power", 1.0)),
                         phase_dim=int(payload["phase_dim"]),
                         phase_space=str(payload["phase_space"]),
                         seed=int(payload["seed"]),
                     )
                     _metrics, state = relax_phase_field(cfg)
+                    metrics_obj = _metrics
                     ama_bytes = export_phase_field_as_ama(
                         state.phi,
                         falsifier_residual=state.falsifier_residual,
@@ -3898,6 +4068,11 @@ class AnalyticViewportPanel(QWidget):
                             "diffusion": float(payload["diffusion"]),
                             "coupling": float(payload["coupling"]),
                             "coupling_mode": str(payload["coupling_mode"]),
+                            "geom_mode": str(payload.get("geom_mode", "smooth_noise")),
+                            "geom_smooth_iters": int(payload.get("geom_smooth_iters", 6)),
+                            "geom_freq_low": float(payload.get("geom_freq_low", 0.02)),
+                            "geom_freq_high": float(payload.get("geom_freq_high", 0.12)),
+                            "geom_freq_power": float(payload.get("geom_freq_power", 1.0)),
                             "phase_dim": int(payload["phase_dim"]),
                             "phase_space": str(payload["phase_space"]),
                             "seed": int(payload["seed"]),
@@ -3923,6 +4098,11 @@ class AnalyticViewportPanel(QWidget):
                     return
                 if out_path:
                     self._tool_set_status("Loaded PR AMA")
+                    try:
+                        if metrics_obj is not None:
+                            self._dashboard_set_metrics(metrics_obj)
+                    except Exception:
+                        pass
                     try:
                         self._tool_load_ama_into_viewer(out_path, selected=None)
                     except Exception:
@@ -7351,6 +7531,79 @@ class AnalyticViewportPanel(QWidget):
 
     # Convenience passthroughs
     def viewport(self) -> AnalyticViewport: return self.view
+
+
+def _analytic_dashboard_stylesheet() -> str:
+    # Minimal dark dashboard styling (no external deps).
+    return """
+    QMainWindow, QWidget { background-color: #0b0f16; color: #d7e2ff; }
+    QDockWidget { titlebar-close-icon: none; titlebar-normal-icon: none; }
+    QDockWidget::title { background: #101827; padding: 6px; }
+    QGroupBox { border: 1px solid #1c2a45; border-radius: 6px; margin-top: 10px; }
+    QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px 0 4px; color: #a9c1ff; }
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QTableWidget {
+        background-color: #0f1624;
+        border: 1px solid #1c2a45;
+        border-radius: 4px;
+        padding: 4px;
+        selection-background-color: #243a68;
+    }
+    QPushButton { background-color: #142238; border: 1px solid #223457; border-radius: 5px; padding: 6px 10px; }
+    QPushButton:hover { background-color: #1a2c49; }
+    QPushButton:pressed { background-color: #101b2c; }
+    QTabWidget::pane { border: 1px solid #1c2a45; }
+    QTabBar::tab { background: #0f1624; border: 1px solid #1c2a45; padding: 6px 10px; margin-right: 2px; }
+    QTabBar::tab:selected { background: #162540; }
+    """
+
+
+class AnalyticViewportDashboardWindow(QMainWindow):
+    """Dashboard-style Analytic Viewer (layout B): docks + central viewport."""
+
+    def __init__(self, parent=None, *, aacore_scene: AACoreScene | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("AdaptiveCAD – Analytic Viewer")
+
+        self.panel = AnalyticViewportPanel(self, aacore_scene=aacore_scene, ui_layout="docked")
+
+        # Central viewport
+        try:
+            self.panel.view.setParent(self)
+        except Exception:
+            pass
+        self.setCentralWidget(self.panel.view)
+
+        # Docks
+        left = QDockWidget("Navigator", self)
+        left.setObjectName("dock_navigator")
+        left.setWidget(self.panel._dock_left_scroll or QWidget())
+        left.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        right = QDockWidget("Inspector", self)
+        right.setObjectName("dock_inspector")
+        right.setWidget(self.panel._dock_right_scroll or QWidget())
+        right.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        bottom = QDockWidget("Console / Metrics", self)
+        bottom.setObjectName("dock_console")
+        bottom.setWidget(self.panel._dock_bottom_widget or QWidget())
+        bottom.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.TopDockWidgetArea)
+
+        self.addDockWidget(Qt.LeftDockWidgetArea, left)
+        self.addDockWidget(Qt.RightDockWidgetArea, right)
+        self.addDockWidget(Qt.BottomDockWidgetArea, bottom)
+
+        try:
+            self.resize(1400, 900)
+            self.resizeDocks([left, right], [360, 380], Qt.Horizontal)
+            self.resizeDocks([bottom], [260], Qt.Vertical)
+        except Exception:
+            pass
+
+        try:
+            self.setStyleSheet(_analytic_dashboard_stylesheet())
+        except Exception:
+            pass
 
 def create_analytic_viewport_with_panel(parent=None, aacore_scene: AACoreScene | None = None):
     return AnalyticViewportPanel(parent, aacore_scene=aacore_scene)
