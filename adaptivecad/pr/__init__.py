@@ -20,6 +20,14 @@ from .ribbon import (
     export_ribbon_as_ama,
     save_ribbon_ama,
 )
+from .volume import (
+    PRVolumeConfig,
+    PRVolumeState,
+    relax_phase_volume,
+    extract_isosurface,
+    export_volume_as_ama,
+    save_volume_ama,
+)
 
 __all__ = [
     "PRFieldConfig",
@@ -36,4 +44,11 @@ __all__ = [
     "generate_ribbon_mesh",
     "export_ribbon_as_ama",
     "save_ribbon_ama",
+    # Volume (3D)
+    "PRVolumeConfig",
+    "PRVolumeState",
+    "relax_phase_volume",
+    "extract_isosurface",
+    "export_volume_as_ama",
+    "save_volume_ama",
 ]
