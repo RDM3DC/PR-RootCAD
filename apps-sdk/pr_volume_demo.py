@@ -18,8 +18,17 @@ Examples:
     # Gyroid minimal surface
     python pr_volume_demo.py --size 48 --geom-mode gyroid --out gyroid.ama
 
+    # Möbius strip
+    python pr_volume_demo.py --size 48 --geom-mode mobius --mobius-twists 1 --out mobius.ama
+
+    # Klein bottle (figure-8 immersion)
+    python pr_volume_demo.py --size 64 --geom-mode klein --out klein.ama
+
     # Add noise overlay to any geometry
     python pr_volume_demo.py --size 48 --geom-mode torus --noise 0.2 --out torus_noisy.ama
+
+    # Gaussian chaos for organic/turbulent surfaces
+    python pr_volume_demo.py --size 48 --geom-mode torus --chaos 0.3 --noise-type gaussian --out torus_chaotic.ama
 """
 from __future__ import annotations
 
@@ -34,7 +43,7 @@ def main():
     ap.add_argument("--dt", type=float, default=0.15, help="Time step")
     ap.add_argument("--diffusion", type=float, default=0.35, help="Diffusion rate")
     ap.add_argument("--coupling", type=float, default=0.20, help="Geometry coupling")
-    ap.add_argument("--geom-mode", choices=["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid"], default="smooth_noise")
+    ap.add_argument("--geom-mode", choices=["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid", "mobius", "klein"], default="smooth_noise")
     ap.add_argument("--geom-smooth-iters", type=int, default=4)
     ap.add_argument("--freq-low", type=float, default=0.02)
     ap.add_argument("--freq-high", type=float, default=0.15)
@@ -43,8 +52,12 @@ def main():
     ap.add_argument("--torus-r", type=float, default=0.15, help="Torus minor radius (fraction of grid)")
     ap.add_argument("--torus-p", type=int, default=2, help="Torus knot winding p")
     ap.add_argument("--torus-q", type=int, default=3, help="Torus knot winding q")
+    ap.add_argument("--mobius-width", type=float, default=0.15, help="Möbius strip width")
+    ap.add_argument("--mobius-twists", type=int, default=1, help="Number of half-twists (1=classic Möbius)")
     ap.add_argument("--noise", type=float, default=0.0, help="Noise overlay amplitude (0=none)")
     ap.add_argument("--noise-smooth", type=int, default=2, help="Noise smoothing iterations")
+    ap.add_argument("--noise-type", choices=["uniform", "gaussian", "perlin"], default="uniform", help="Noise distribution type")
+    ap.add_argument("--chaos", type=float, default=0.0, help="Gaussian chaos/turbulence strength")
     ap.add_argument("--phase-space", choices=["unwrapped", "wrapped"], default="unwrapped")
     ap.add_argument("--iso", type=float, default=0.0, help="Isosurface level")
     ap.add_argument("--scale", type=float, default=10.0, help="Output scale (mm)")
@@ -71,8 +84,12 @@ def main():
         torus_r=args.torus_r,
         torus_p=args.torus_p,
         torus_q=args.torus_q,
+        mobius_width=args.mobius_width,
+        mobius_twists=args.mobius_twists,
         noise_amplitude=args.noise,
         noise_smoothing=args.noise_smooth,
+        noise_type=args.noise_type,
+        noise_chaos=args.chaos,
         phase_space=args.phase_space,
         iso_level=args.iso,
         seed=args.seed,
@@ -86,8 +103,10 @@ def main():
         print(f"    Torus R={cfg.torus_R}, r={cfg.torus_r}")
         if cfg.geom_mode == "torus_knot":
             print(f"    Knot ({cfg.torus_p},{cfg.torus_q})")
-    if cfg.noise_amplitude > 0:
-        print(f"  Noise: amplitude={cfg.noise_amplitude}, smooth={cfg.noise_smoothing}")
+    if cfg.geom_mode == "mobius":
+        print(f"    Möbius width={cfg.mobius_width}, twists={cfg.mobius_twists}")
+    if cfg.noise_amplitude > 0 or cfg.noise_chaos > 0:
+        print(f"  Noise: type={cfg.noise_type}, amplitude={cfg.noise_amplitude}, chaos={cfg.noise_chaos}")
     print(f"  Iso level: {cfg.iso_level}")
     print()
 

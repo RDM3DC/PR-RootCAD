@@ -26,7 +26,7 @@ class PRVolumeConfig:
     coupling_mode: Literal["none", "geom_target"] = "geom_target"
     
     # Geometry proxy synthesis
-    geom_mode: Literal["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid"] = "smooth_noise"
+    geom_mode: Literal["smooth_noise", "spectral_band", "torus", "torus_knot", "gyroid", "mobius", "klein"] = "smooth_noise"
     geom_smooth_iters: int = 4
     geom_freq_low: float = 0.02
     geom_freq_high: float = 0.15
@@ -38,9 +38,15 @@ class PRVolumeConfig:
     torus_p: int = 2       # knot winding (longitudinal)
     torus_q: int = 3       # knot winding (meridional)
     
+    # Möbius parameters
+    mobius_width: float = 0.15   # strip width (fraction of grid)
+    mobius_twists: int = 1       # number of half-twists (1 = classic Möbius)
+    
     # Noise overlay (adds noise on top of any geometry)
     noise_amplitude: float = 0.0  # 0 = no noise overlay
     noise_smoothing: int = 2      # smoothing iterations for noise
+    noise_type: Literal["uniform", "gaussian", "perlin"] = "uniform"
+    noise_chaos: float = 0.0      # gaussian chaos strength (adds turbulent detail)
     
     # Phase space
     phase_dim: int = 1  # scalar phase for volume (keeps it simple)
@@ -208,13 +214,154 @@ def _make_geom_proxy_gyroid_3d(N: int, scale: float = 4.0) -> np.ndarray:
     return geom.astype(np.float32)
 
 
-def _add_noise_overlay(geom: np.ndarray, rng: np.random.Generator, amplitude: float, smooth_iters: int) -> np.ndarray:
-    """Add smoothed noise overlay to existing geometry."""
-    if amplitude <= 0:
+def _make_geom_proxy_mobius_3d(N: int, width: float, twists: int = 1) -> np.ndarray:
+    """
+    Generate Möbius strip SDF as geometry proxy.
+    
+    A Möbius strip with configurable width and number of half-twists.
+    twists=1 gives classic single-sided Möbius, twists=2 gives cylinder-like.
+    """
+    x = np.linspace(-0.5, 0.5, N, dtype=np.float32)
+    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+    
+    # Sample points along the Möbius centerline
+    n_samples = 256
+    t = np.linspace(0, 2 * np.pi, n_samples, dtype=np.float32)
+    
+    # Major radius
+    R = 0.3
+    
+    sdf = np.full((N, N, N), np.inf, dtype=np.float32)
+    
+    # For each point along the strip, compute distance to a ribbon segment
+    for i in range(n_samples):
+        theta = t[i]
+        # Centerline point on circle
+        cx = R * np.cos(theta)
+        cy = R * np.sin(theta)
+        cz = 0.0
+        
+        # Normal direction rotates with half the speed (Möbius twist)
+        twist_angle = twists * theta / 2.0
+        
+        # Local frame: tangent, normal (twisted), binormal
+        # Normal points outward and twists
+        nx = np.cos(theta) * np.cos(twist_angle)
+        ny = np.sin(theta) * np.cos(twist_angle)
+        nz = np.sin(twist_angle)
+        
+        # Distance to this ribbon segment (approximation)
+        # Project onto the strip plane and check width
+        dx = X - cx
+        dy = Y - cy
+        dz = Z - cz
+        
+        # Distance along normal direction
+        dist_normal = dx * nx + dy * ny + dz * nz
+        
+        # Distance perpendicular to normal (in strip plane)
+        dist_perp = np.sqrt(dx**2 + dy**2 + dz**2 - dist_normal**2 + 1e-9)
+        
+        # Ribbon SDF: inside if within width along normal, close to centerline
+        strip_dist = np.sqrt(dist_perp**2 + np.maximum(np.abs(dist_normal) - width, 0)**2)
+        
+        sdf = np.minimum(sdf, strip_dist)
+    
+    # Tube thickness
+    thickness = 0.02
+    geom = 0.5 - 0.5 * np.tanh((sdf - 0.02) / thickness)
+    
+    return geom.astype(np.float32)
+
+
+def _make_geom_proxy_klein_3d(N: int) -> np.ndarray:
+    """
+    Generate Klein bottle implicit surface as geometry proxy.
+    
+    Uses the "figure-8" immersion of the Klein bottle.
+    """
+    x = np.linspace(-0.5, 0.5, N, dtype=np.float32)
+    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+    
+    # Scale to parametric domain
+    X_s = X * 4
+    Y_s = Y * 4
+    Z_s = Z * 4
+    
+    # Sample the Klein bottle surface and compute SDF
+    n_u = 64
+    n_v = 64
+    u = np.linspace(0, 2 * np.pi, n_u, dtype=np.float32)
+    v = np.linspace(0, 2 * np.pi, n_v, dtype=np.float32)
+    
+    sdf = np.full((N, N, N), np.inf, dtype=np.float32)
+    
+    # Figure-8 Klein bottle parametrization
+    for i in range(n_u):
+        for j in range(n_v):
+            ui, vj = u[i], v[j]
+            
+            # Figure-8 immersion
+            r = 0.3
+            px = (r + np.cos(ui / 2) * np.sin(vj) - np.sin(ui / 2) * np.sin(2 * vj)) * np.cos(ui)
+            py = (r + np.cos(ui / 2) * np.sin(vj) - np.sin(ui / 2) * np.sin(2 * vj)) * np.sin(ui)
+            pz = np.sin(ui / 2) * np.sin(vj) + np.cos(ui / 2) * np.sin(2 * vj)
+            
+            dist = np.sqrt((X_s - px)**2 + (Y_s - py)**2 + (Z_s - pz)**2)
+            sdf = np.minimum(sdf, dist)
+    
+    # Convert to smooth mask
+    thickness = 0.03
+    tube_r = 0.05
+    geom = 0.5 - 0.5 * np.tanh((sdf - tube_r) / thickness)
+    
+    return geom.astype(np.float32)
+
+
+def _add_noise_overlay(
+    geom: np.ndarray, 
+    rng: np.random.Generator, 
+    amplitude: float, 
+    smooth_iters: int,
+    noise_type: str = "uniform",
+    chaos: float = 0.0
+) -> np.ndarray:
+    """
+    Add noise overlay to existing geometry.
+    
+    Args:
+        geom: Base geometry field [0,1]
+        rng: Random generator
+        amplitude: Noise strength
+        smooth_iters: Smoothing passes
+        noise_type: "uniform", "gaussian", or "perlin"
+        chaos: Additional Gaussian turbulence (multi-scale chaos)
+    """
+    if amplitude <= 0 and chaos <= 0:
         return geom
     
     N = geom.shape[0]
-    noise = rng.uniform(-1, 1, (N, N, N)).astype(np.float32)
+    
+    # Base noise generation
+    if noise_type == "gaussian":
+        noise = rng.standard_normal((N, N, N)).astype(np.float32)
+    elif noise_type == "perlin":
+        # Fake Perlin via multi-octave smoothed noise
+        noise = np.zeros((N, N, N), dtype=np.float32)
+        for octave in range(4):
+            scale = 2 ** octave
+            freq_noise = rng.uniform(-1, 1, (N, N, N)).astype(np.float32)
+            # Smooth proportional to octave
+            for _ in range(4 - octave):
+                freq_noise = (
+                    np.roll(freq_noise, 1, axis=0) + np.roll(freq_noise, -1, axis=0) +
+                    np.roll(freq_noise, 1, axis=1) + np.roll(freq_noise, -1, axis=1) +
+                    np.roll(freq_noise, 1, axis=2) + np.roll(freq_noise, -1, axis=2) +
+                    freq_noise
+                ) / 7.0
+            noise += freq_noise / scale
+    else:  # uniform
+        noise = rng.uniform(-1, 1, (N, N, N)).astype(np.float32)
     
     # Smooth the noise
     for _ in range(smooth_iters):
@@ -225,11 +372,28 @@ def _add_noise_overlay(geom: np.ndarray, rng: np.random.Generator, amplitude: fl
             noise
         ) / 7.0
     
-    # Normalize and blend
+    # Normalize
     noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-9) - 0.5
-    result = geom + amplitude * noise
-    result = np.clip(result, 0, 1)
     
+    # Apply base amplitude
+    result = geom + amplitude * noise
+    
+    # Add Gaussian chaos (multi-scale turbulence)
+    if chaos > 0:
+        # Multi-frequency Gaussian turbulence
+        for freq in [1, 2, 4, 8]:
+            turb = rng.standard_normal((N, N, N)).astype(np.float32)
+            # Quick smooth based on frequency
+            for _ in range(max(1, 5 - freq)):
+                turb = (
+                    np.roll(turb, 1, axis=0) + np.roll(turb, -1, axis=0) +
+                    np.roll(turb, 1, axis=1) + np.roll(turb, -1, axis=1) +
+                    np.roll(turb, 1, axis=2) + np.roll(turb, -1, axis=2) +
+                    turb
+                ) / 7.0
+            result += (chaos / freq) * turb
+    
+    result = np.clip(result, 0, 1)
     return result.astype(np.float32)
 
 
@@ -259,12 +423,19 @@ def relax_phase_volume(cfg: PRVolumeConfig) -> tuple[dict, PRVolumeState]:
         geom = _make_geom_proxy_torus_knot_3d(N, cfg.torus_R, cfg.torus_r, cfg.torus_p, cfg.torus_q)
     elif cfg.geom_mode == "gyroid":
         geom = _make_geom_proxy_gyroid_3d(N)
+    elif cfg.geom_mode == "mobius":
+        geom = _make_geom_proxy_mobius_3d(N, cfg.mobius_width, cfg.mobius_twists)
+    elif cfg.geom_mode == "klein":
+        geom = _make_geom_proxy_klein_3d(N)
     else:
         geom = _make_geom_proxy_smooth_3d(N, rng, cfg.geom_smooth_iters)
     
     # Add noise overlay if requested
-    if cfg.noise_amplitude > 0:
-        geom = _add_noise_overlay(geom, rng, cfg.noise_amplitude, cfg.noise_smoothing)
+    if cfg.noise_amplitude > 0 or cfg.noise_chaos > 0:
+        geom = _add_noise_overlay(
+            geom, rng, cfg.noise_amplitude, cfg.noise_smoothing,
+            noise_type=cfg.noise_type, chaos=cfg.noise_chaos
+        )
     
     # Relaxation loop
     history_delta = []
