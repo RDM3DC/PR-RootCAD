@@ -13,6 +13,13 @@ from .export import (
     export_phase_field_as_obj,
     export_phase_field_as_ama,
 )
+from .ribbon import (
+    PRRibbonConfig,
+    generate_centerline,
+    generate_ribbon_mesh,
+    export_ribbon_as_ama,
+    save_ribbon_ama,
+)
 
 __all__ = [
     "PRFieldConfig",
@@ -23,4 +30,10 @@ __all__ = [
     "export_phase_field_as_heightmap_stl",
     "export_phase_field_as_obj",
     "export_phase_field_as_ama",
+    # Ribbon
+    "PRRibbonConfig",
+    "generate_centerline",
+    "generate_ribbon_mesh",
+    "export_ribbon_as_ama",
+    "save_ribbon_ama",
 ]

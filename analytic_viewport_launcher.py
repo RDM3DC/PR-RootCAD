@@ -419,40 +419,77 @@ def main() -> int:
         if ui_selected_layer is None and isinstance(ama_field, str) and ama_field:
             ui_selected_layer = ama_field
 
-        try:
-            from adaptivecad.pr.export import export_phase_field_as_heightmap_stl
-        except Exception as exc:
-            print(f"Failed to import PR STL exporter: {exc}")
-            return
-
-        scale_xy = args.scale_xy if args.scale_xy is not None else (detected_xy if detected_xy is not None else 1.0)
-        scale_z = args.scale_z if args.scale_z is not None else (detected_z if detected_z is not None else 1.0)
-
-        try:
-            stl_bytes = export_phase_field_as_heightmap_stl(np.asarray(phi), scale_xy=float(scale_xy), scale_z=float(scale_z))
-        except Exception as exc:
-            print(f"Failed to convert field to STL: {exc}")
-            return
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
-        tmp.write(stl_bytes)
-        tmp.flush()
-        tmp_path = tmp.name
-        tmp.close()
-
+        # --- Check for pre-built mesh in the AMA (e.g. ribbons, sweeps) ---
         mesh = None
+        tmp_path = None
         try:
-            mesh = trimesh.load_mesh(tmp_path)
-        except Exception as exc:
-            print(f"Failed to load STL with trimesh: {exc}")
-            return
-
-        # Normalize to a single Trimesh (load_mesh can return a Scene)
-        try:
-            if isinstance(mesh, trimesh.Scene):
-                mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+            import trimesh
+            with zipfile.ZipFile(args.ama, "r") as z:
+                mesh_candidates = []
+                if isinstance(scene_obj, dict) and isinstance(scene_obj.get("mesh"), str):
+                    mesh_candidates.append(scene_obj["mesh"])
+                mesh_candidates.extend(["mesh/ribbon.stl", "mesh/surface.stl", "mesh/model.stl"])
+                
+                for mc in mesh_candidates:
+                    if mc in z.namelist():
+                        stl_bytes = z.read(mc)
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+                        tmp.write(stl_bytes)
+                        tmp.flush()
+                        tmp_path = tmp.name
+                        tmp.close()
+                        mesh = trimesh.load_mesh(tmp_path)
+                        if isinstance(mesh, trimesh.Scene):
+                            mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+                        print(f"Loaded pre-built mesh from AMA: {mc}")
+                        break
         except Exception:
-            pass
+            mesh = None
+
+        # --- Fallback: generate heightmap from field (only for square NxN fields) ---
+        if mesh is None:
+            try:
+                from adaptivecad.pr.export import export_phase_field_as_heightmap_stl
+            except Exception as exc:
+                print(f"Failed to import PR STL exporter: {exc}")
+                return
+
+            # Only attempt heightmap conversion for square fields
+            if phi.ndim != 2 or phi.shape[0] != phi.shape[1]:
+                print(f"Field shape {phi.shape} is not square; cannot generate heightmap. Looking for pre-built mesh...")
+                return
+
+            scale_xy = args.scale_xy if args.scale_xy is not None else (detected_xy if detected_xy is not None else 1.0)
+            scale_z = args.scale_z if args.scale_z is not None else (detected_z if detected_z is not None else 1.0)
+
+            try:
+                stl_bytes = export_phase_field_as_heightmap_stl(np.asarray(phi), scale_xy=float(scale_xy), scale_z=float(scale_z))
+            except Exception as exc:
+                print(f"Failed to convert field to STL: {exc}")
+                return
+
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+            tmp.write(stl_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+            tmp.close()
+
+            try:
+                mesh = trimesh.load_mesh(tmp_path)
+            except Exception as exc:
+                print(f"Failed to load STL with trimesh: {exc}")
+                return
+
+            # Normalize to a single Trimesh (load_mesh can return a Scene)
+            try:
+                if isinstance(mesh, trimesh.Scene):
+                    mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+            except Exception:
+                pass
+        else:
+            # For pre-built meshes, use scene scales if provided
+            scale_xy = args.scale_xy if args.scale_xy is not None else (detected_xy if detected_xy is not None else 1.0)
+            scale_z = args.scale_z if args.scale_z is not None else (detected_z if detected_z is not None else 1.0)
 
         # Bake vertex colors from colormap (if any)
         try:

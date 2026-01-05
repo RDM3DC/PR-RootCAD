@@ -3911,10 +3911,15 @@ class AnalyticViewportPanel(QWidget):
     def _tool_load_ama_into_viewer(self, ama_path: str, *, selected: str | None = None) -> None:
         # Populate layers and load the chosen layer (or scene.render.source_layer).
         scene_obj, sx, sz = self._tool_read_ama_scene_scales(ama_path)
+        mesh_loaded = False
         try:
-            self.set_field_layers_from_ama(str(ama_path), scene_obj, sx, sz, selected=selected)
+            mesh_loaded = self.set_field_layers_from_ama(str(ama_path), scene_obj, sx, sz, selected=selected)
         except Exception:
             pass
+
+        # If a pre-built mesh was loaded, we're done - skip heightmap conversion.
+        if mesh_loaded:
+            return
 
         # Decide which key to load.
         key = None
@@ -4359,6 +4364,65 @@ class AnalyticViewportPanel(QWidget):
         except Exception:
             pass
 
+    def _try_load_ama_mesh(self, ama_path: str, scene_obj: dict | None) -> bool:
+        """Load a pre-built mesh from the AMA if specified in scene.json.
+        
+        Returns True if a mesh was loaded, False otherwise.
+        """
+        import zipfile
+        import tempfile
+        
+        mesh_ref = None
+        if isinstance(scene_obj, dict):
+            mesh_ref = scene_obj.get("mesh")
+        if not isinstance(mesh_ref, str) or not mesh_ref:
+            # Try common fallback paths
+            mesh_ref = None
+            try:
+                with zipfile.ZipFile(ama_path, "r") as z:
+                    for candidate in ["mesh/ribbon.stl", "mesh/surface.stl", "mesh/model.stl"]:
+                        if candidate in z.namelist():
+                            mesh_ref = candidate
+                            break
+            except Exception:
+                pass
+        
+        if not mesh_ref:
+            return False
+        
+        try:
+            import trimesh
+            with zipfile.ZipFile(ama_path, "r") as z:
+                stl_bytes = z.read(mesh_ref)
+            
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+            tmp.write(stl_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+            tmp.close()
+            
+            mesh = trimesh.load_mesh(tmp_path)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+            
+            # Apply default colormap based on scene layers
+            cmap = None
+            if isinstance(scene_obj, dict):
+                layers = scene_obj.get("layers")
+                if isinstance(layers, list) and layers:
+                    cmap = layers[0].get("colormap") if isinstance(layers[0], dict) else None
+            
+            if cmap:
+                self._apply_vertex_colormap_to_mesh(mesh, cmap)
+            
+            self._field_overlay_source_mesh = mesh
+            self._field_overlay_source_path = tmp_path
+            self._apply_field_overlay_clip()
+            return True
+        except Exception as e:
+            self._tool_set_status(f"Failed to load AMA mesh: {e}")
+            return False
+
     def set_field_layers_from_ama(
         self,
         ama_path: str,
@@ -4367,15 +4431,21 @@ class AnalyticViewportPanel(QWidget):
         scale_z: float | None,
         *,
         selected: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Populate the Field Layer dropdown from an AMA archive.
 
         Enables layer switching (e.g. `field` vs `gradmag`) without relaunch.
+        Also loads a pre-built mesh (e.g. ribbon) if present in the archive.
+        
+        Returns True if a pre-built mesh was loaded (skip heightmap conversion).
         """
 
         self._field_ama_path = str(ama_path)
         self._field_ama_scene = scene_obj if isinstance(scene_obj, dict) else None
         self._field_current_colormap = None
+
+        # --- Load pre-built mesh if specified in scene.json ---
+        mesh_loaded = self._try_load_ama_mesh(ama_path, scene_obj)
         try:
             self._field_ama_scale_xy = float(scale_xy) if scale_xy is not None else None
         except Exception:
@@ -4463,6 +4533,8 @@ class AnalyticViewportPanel(QWidget):
             except Exception:
                 pass
             self._field_layer_populating = False
+        
+        return mesh_loaded
 
     def _on_field_layer_changed(self, *args) -> None:
         if self._field_layer_populating:
@@ -4588,12 +4660,15 @@ class AnalyticViewportPanel(QWidget):
         layer = self._field_layers.get(key)
         field_ref = None
         cmap = None
+        mesh_ref = None
         if isinstance(layer, dict):
             fr = layer.get("field_ref")
             if isinstance(fr, str) and fr:
                 field_ref = fr
             if isinstance(layer.get("colormap"), str):
                 cmap = layer.get("colormap")
+            if isinstance(layer.get("mesh_ref"), str):
+                mesh_ref = layer.get("mesh_ref")
         if field_ref is None:
             field_ref = key
 
@@ -4606,39 +4681,86 @@ class AnalyticViewportPanel(QWidget):
         except Exception:
             return
 
+        # --- Try to load a pre-rendered mesh first (e.g. from ribbon/sweep) ---
+        mesh = None
+        tmp_path = None
         try:
             with zipfile.ZipFile(self._field_ama_path, "r") as z:
-                raw = z.read(str(field_ref))
+                # Check for explicit mesh_ref, then scene.json mesh, then mesh/ribbon.stl fallback
+                mesh_candidates = []
+                if mesh_ref:
+                    mesh_candidates.append(mesh_ref)
+                try:
+                    scene_raw = z.read("analytic/scene.json")
+                    scene_obj = __import__("json").loads(scene_raw.decode("utf-8"))
+                    if isinstance(scene_obj, dict) and isinstance(scene_obj.get("mesh"), str):
+                        mesh_candidates.append(scene_obj["mesh"])
+                except Exception:
+                    pass
+                mesh_candidates.extend(["mesh/ribbon.stl", "mesh/surface.stl", "mesh/model.stl"])
+                
+                for mc in mesh_candidates:
+                    try:
+                        stl_bytes = z.read(mc)
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+                        tmp.write(stl_bytes)
+                        tmp.flush()
+                        tmp_path = tmp.name
+                        tmp.close()
+                        mesh = trimesh.load_mesh(tmp_path)
+                        break
+                    except Exception:
+                        continue
         except Exception:
-            return
+            pass
 
-        try:
-            phi = np.load(BytesIO(raw))
-        except Exception:
-            return
+        # --- Fallback: generate heightmap STL from field if mesh not found ---
+        if mesh is None:
+            try:
+                with zipfile.ZipFile(self._field_ama_path, "r") as z:
+                    raw = z.read(str(field_ref))
+            except Exception as e:
+                self._tool_set_status(f"Failed to read field: {e}")
+                return
 
-        scale_xy = float(self._field_ama_scale_xy) if self._field_ama_scale_xy is not None else 1.0
-        scale_z = float(self._field_ama_scale_z) if self._field_ama_scale_z is not None else 1.0
+            try:
+                phi = np.load(BytesIO(raw))
+            except Exception as e:
+                self._tool_set_status(f"Failed to load field: {e}")
+                return
 
-        try:
-            from adaptivecad.pr.export import export_phase_field_as_heightmap_stl
-        except Exception:
-            return
+            # Only attempt heightmap conversion for square NxN fields
+            if phi.ndim != 2 or phi.shape[0] != phi.shape[1]:
+                self._tool_set_status(f"Field shape {phi.shape} is not square; skipping heightmap conversion")
+                # Still try to display whatever mesh might be present
+                return
 
-        try:
-            stl_bytes = export_phase_field_as_heightmap_stl(np.asarray(phi), scale_xy=float(scale_xy), scale_z=float(scale_z))
-        except Exception:
-            return
+            scale_xy = float(self._field_ama_scale_xy) if self._field_ama_scale_xy is not None else 1.0
+            scale_z = float(self._field_ama_scale_z) if self._field_ama_scale_z is not None else 1.0
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
-        tmp.write(stl_bytes)
-        tmp.flush()
-        tmp_path = tmp.name
-        tmp.close()
+            try:
+                from adaptivecad.pr.export import export_phase_field_as_heightmap_stl
+            except Exception:
+                return
 
-        try:
-            mesh = trimesh.load_mesh(tmp_path)
-        except Exception:
+            try:
+                stl_bytes = export_phase_field_as_heightmap_stl(np.asarray(phi), scale_xy=float(scale_xy), scale_z=float(scale_z))
+            except Exception as e:
+                self._tool_set_status(f"Failed to convert field to STL: {e}")
+                return
+
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+            tmp.write(stl_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+            tmp.close()
+
+            try:
+                mesh = trimesh.load_mesh(tmp_path)
+            except Exception:
+                return
+
+        if mesh is None:
             return
 
         try:
