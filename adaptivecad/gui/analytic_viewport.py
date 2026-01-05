@@ -3349,6 +3349,23 @@ class AnalyticViewportPanel(QWidget):
         self._mb_overlay_loaded: bool = False
         self._mb_colors_chk: QCheckBox | None = None
 
+        # Field overlay (AMA/NDField) state for viewer-side threshold clipping
+        self._field_overlay_source_mesh = None
+        self._field_overlay_source_path: str | None = None
+        self._field_layer_box: QComboBox | None = None
+        self._field_layer_populating: bool = False
+        self._field_layers: dict[str, dict[str, object]] = {}
+        self._field_ama_path: str | None = None
+        self._field_ama_scene: dict | None = None
+        self._field_ama_scale_xy: float | None = None
+        self._field_ama_scale_z: float | None = None
+        self._field_current_colormap: str | None = None
+        self._field_contour_chk: QCheckBox | None = None
+        self._field_contour_bands: QSpinBox | None = None
+        self._field_contour_width: QDoubleSpinBox | None = None
+        self._field_clip_chk: QCheckBox | None = None
+        self._field_clip_spin: QDoubleSpinBox | None = None
+
         self.view = AnalyticViewport(self, aacore_scene=aacore_scene)
         # --- Sketch layer state (overlay) ---
         self._sketch_on: bool = False
@@ -3487,8 +3504,103 @@ class AnalyticViewportPanel(QWidget):
         gb_modes = QGroupBox("Debug / Modes"); fm = QFormLayout(); gb_modes.setLayout(fm)
         self.mode_box = QComboBox(); self.mode_box.addItems(["Beauty","Normals","ID","Depth","Thickness"])
         self.mode_box.currentIndexChanged.connect(self._on_mode); fm.addRow("Mode", self.mode_box)
+
+        # Field overlay layer selector (AMA analytic payload)
+        self._field_layer_box = QComboBox()
+        self._field_layer_box.setEnabled(False)
+        self._field_layer_box.currentIndexChanged.connect(self._on_field_layer_changed)
+        fm.addRow("Field Layer", self._field_layer_box)
+
+        # Field overlay iso-contours (topographic bands)
+        self._field_contour_chk = QCheckBox("Field: Contour Bands")
+        self._field_contour_chk.setChecked(False)
+        self._field_contour_chk.stateChanged.connect(self._on_field_contour_changed)
+        self._field_contour_bands = QSpinBox()
+        self._field_contour_bands.setRange(2, 128)
+        self._field_contour_bands.setValue(12)
+        self._field_contour_bands.valueChanged.connect(self._on_field_contour_changed)
+        self._field_contour_width = QDoubleSpinBox()
+        self._field_contour_width.setRange(0.01, 0.50)
+        self._field_contour_width.setDecimals(3)
+        self._field_contour_width.setSingleStep(0.01)
+        self._field_contour_width.setValue(0.12)
+        self._field_contour_width.valueChanged.connect(self._on_field_contour_changed)
+        fm.addRow(self._field_contour_chk)
+        fm.addRow("Contour Bands", self._field_contour_bands)
+        fm.addRow("Contour Width", self._field_contour_width)
+
+        # Field overlay clip (iso-threshold style) for AMA-loaded NDField meshes
+        self._field_clip_chk = QCheckBox("Field: Clip by Height")
+        self._field_clip_chk.setChecked(False)
+        self._field_clip_chk.stateChanged.connect(self._on_field_clip_changed)
+        self._field_clip_spin = QDoubleSpinBox()
+        self._field_clip_spin.setRange(0.0, 1.0)
+        self._field_clip_spin.setDecimals(3)
+        self._field_clip_spin.setSingleStep(0.02)
+        self._field_clip_spin.setValue(0.50)
+        self._field_clip_spin.setEnabled(False)
+        self._field_clip_spin.valueChanged.connect(self._on_field_clip_changed)
+        fm.addRow(self._field_clip_chk)
+        fm.addRow("Field Threshold", self._field_clip_spin)
+
         side.addWidget(gb_modes)
         self._register_section("debug_modes", "Debug", gb_modes)
+
+        # --- Compute / Export ---
+        gb_tools = QGroupBox("Compute / Export")
+        ft = QFormLayout()
+        gb_tools.setLayout(ft)
+
+        self._tool_use_api_chk = QCheckBox("Use API Server")
+        try:
+            self._tool_use_api_chk.setChecked(False)
+        except Exception:
+            pass
+
+        self._tool_api_url = QLineEdit()
+        try:
+            default_api = os.environ.get("ADAPTIVECAD_API_URL", "http://localhost:8787")
+            self._tool_api_url.setText(str(default_api))
+        except Exception:
+            pass
+
+        self._tool_pr_size = QSpinBox(); self._tool_pr_size.setRange(8, 512); self._tool_pr_size.setValue(64)
+        self._tool_pr_steps = QSpinBox(); self._tool_pr_steps.setRange(1, 20000); self._tool_pr_steps.setValue(200)
+        self._tool_pr_dt = QDoubleSpinBox(); self._tool_pr_dt.setRange(0.001, 5.0); self._tool_pr_dt.setDecimals(4); self._tool_pr_dt.setValue(0.15)
+        self._tool_pr_diff = QDoubleSpinBox(); self._tool_pr_diff.setRange(0.0, 10.0); self._tool_pr_diff.setDecimals(4); self._tool_pr_diff.setValue(0.35)
+        self._tool_pr_coup = QDoubleSpinBox(); self._tool_pr_coup.setRange(0.0, 10.0); self._tool_pr_coup.setDecimals(4); self._tool_pr_coup.setValue(0.25)
+        self._tool_pr_phase_dim = QSpinBox(); self._tool_pr_phase_dim.setRange(1, 8); self._tool_pr_phase_dim.setValue(2)
+        self._tool_pr_phase_space = QComboBox(); self._tool_pr_phase_space.addItems(["unwrapped", "wrapped"])
+        self._tool_pr_coupling_mode = QComboBox(); self._tool_pr_coupling_mode.addItems(["geom_target", "none"])
+        self._tool_pr_seed = QSpinBox(); self._tool_pr_seed.setRange(-1_000_000, 1_000_000); self._tool_pr_seed.setValue(0)
+        self._tool_pr_scale_xy = QDoubleSpinBox(); self._tool_pr_scale_xy.setRange(0.001, 100.0); self._tool_pr_scale_xy.setDecimals(4); self._tool_pr_scale_xy.setValue(1.0)
+        self._tool_pr_scale_z = QDoubleSpinBox(); self._tool_pr_scale_z.setRange(0.001, 100.0); self._tool_pr_scale_z.setDecimals(4); self._tool_pr_scale_z.setValue(1.0)
+
+        self._tool_run_pr_btn = QPushButton("Run PR → AMA (Load)")
+        self._tool_run_pr_btn.clicked.connect(self._on_tool_run_pr)
+        self._tool_run_blackholes_btn = QPushButton("Generate Blackholes AMA (Load)")
+        self._tool_run_blackholes_btn.clicked.connect(self._on_tool_run_blackholes)
+        self._tool_status_lbl = QLabel("")
+
+        ft.addRow(self._tool_use_api_chk)
+        ft.addRow("API URL", self._tool_api_url)
+        ft.addRow("PR Size", self._tool_pr_size)
+        ft.addRow("PR Steps", self._tool_pr_steps)
+        ft.addRow("PR dt", self._tool_pr_dt)
+        ft.addRow("Diffusion", self._tool_pr_diff)
+        ft.addRow("Coupling", self._tool_pr_coup)
+        ft.addRow("Phase Dim", self._tool_pr_phase_dim)
+        ft.addRow("Phase Space", self._tool_pr_phase_space)
+        ft.addRow("Coupling Mode", self._tool_pr_coupling_mode)
+        ft.addRow("Seed", self._tool_pr_seed)
+        ft.addRow("Scale XY", self._tool_pr_scale_xy)
+        ft.addRow("Scale Z", self._tool_pr_scale_z)
+        ft.addRow(self._tool_run_pr_btn)
+        ft.addRow(self._tool_run_blackholes_btn)
+        ft.addRow("Status", self._tool_status_lbl)
+
+        side.addWidget(gb_tools)
+        self._register_section("compute_export", "Compute", gb_tools)
 
         # --- Feature Toggles ---
         gb_feat = QGroupBox("Features"); vf = QVBoxLayout(); gb_feat.setLayout(vf)
@@ -3609,6 +3721,768 @@ class AnalyticViewportPanel(QWidget):
         scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         root.addWidget(scroll)
         self._refresh_prim_label()
+
+    def _on_field_clip_changed(self, *args) -> None:
+        try:
+            enabled = bool(self._field_clip_chk is not None and self._field_clip_chk.isChecked())
+        except Exception:
+            enabled = False
+        if self._field_clip_spin is not None:
+            try:
+                self._field_clip_spin.setEnabled(enabled)
+            except Exception:
+                pass
+        self._apply_field_overlay_clip()
+
+    # --- Compute / Export tooling (local or API server) ---
+    def _tool_set_status(self, msg: str) -> None:
+        try:
+            if getattr(self, "_tool_status_lbl", None) is not None:
+                self._tool_status_lbl.setText(str(msg))
+        except Exception:
+            pass
+
+    def _tool_read_ama_scene_scales(self, ama_path: str) -> tuple[dict | None, float | None, float | None]:
+        try:
+            import zipfile
+            import json
+        except Exception:
+            return None, None, None
+
+        scene_obj = None
+        sx = None
+        sz = None
+        try:
+            with zipfile.ZipFile(str(ama_path), "r") as z:
+                if "analytic/scene.json" in z.namelist():
+                    obj = json.loads(z.read("analytic/scene.json").decode("utf-8"))
+                    if isinstance(obj, dict):
+                        scene_obj = obj
+                        scales = obj.get("scales")
+                        if isinstance(scales, dict):
+                            sx = scales.get("xy")
+                            sz = scales.get("z")
+        except Exception:
+            return None, None, None
+
+        try:
+            sx = float(sx) if sx is not None else None
+        except Exception:
+            sx = None
+        try:
+            sz = float(sz) if sz is not None else None
+        except Exception:
+            sz = None
+        return scene_obj, sx, sz
+
+    def _tool_load_ama_into_viewer(self, ama_path: str, *, selected: str | None = None) -> None:
+        # Populate layers and load the chosen layer (or scene.render.source_layer).
+        scene_obj, sx, sz = self._tool_read_ama_scene_scales(ama_path)
+        try:
+            self.set_field_layers_from_ama(str(ama_path), scene_obj, sx, sz, selected=selected)
+        except Exception:
+            pass
+
+        # Decide which key to load.
+        key = None
+        if isinstance(selected, str) and selected:
+            key = selected
+        else:
+            try:
+                render = scene_obj.get("render") if isinstance(scene_obj, dict) else None
+                if isinstance(render, dict) and isinstance(render.get("source_layer"), str):
+                    key = str(render.get("source_layer"))
+            except Exception:
+                key = None
+        if key is None:
+            # Fall back to first dropdown entry.
+            try:
+                if self._field_layer_box is not None and self._field_layer_box.count() > 0:
+                    key = self._field_layer_box.itemData(0)
+            except Exception:
+                key = None
+        if not isinstance(key, str) or not key:
+            return
+
+        try:
+            self._load_field_layer_from_ama(key)
+        except Exception:
+            pass
+
+    def _tool_run_pr_payload(self) -> dict:
+        # Mirror apps-sdk schemas (roughly) but keep viewer-side simple.
+        return {
+            "size": int(self._tool_pr_size.value()),
+            "steps": int(self._tool_pr_steps.value()),
+            "dt": float(self._tool_pr_dt.value()),
+            "diffusion": float(self._tool_pr_diff.value()),
+            "coupling": float(self._tool_pr_coup.value()),
+            "phase_dim": int(self._tool_pr_phase_dim.value()),
+            "phase_space": str(self._tool_pr_phase_space.currentText()).strip(),
+            "coupling_mode": str(self._tool_pr_coupling_mode.currentText()).strip(),
+            "scale_xy": float(self._tool_pr_scale_xy.value()),
+            "scale_z": float(self._tool_pr_scale_z.value()),
+            "units": "mm",
+            "defl": 0.05,
+            "seed": int(self._tool_pr_seed.value()),
+        }
+
+    def _on_tool_run_pr(self) -> None:
+        # Run in a background thread; then load AMA in the UI thread.
+        try:
+            import threading
+            import tempfile
+            import base64
+        except Exception:
+            return
+
+        payload = self._tool_run_pr_payload()
+        use_api = False
+        api_url = ""
+        try:
+            use_api = bool(self._tool_use_api_chk is not None and self._tool_use_api_chk.isChecked())
+        except Exception:
+            use_api = False
+        try:
+            api_url = str(self._tool_api_url.text()).strip() if self._tool_api_url is not None else ""
+        except Exception:
+            api_url = ""
+
+        self._tool_set_status("Running PR → AMA…")
+
+        def _worker() -> None:
+            ama_bytes = None
+            out_path = None
+            err = None
+            try:
+                if use_api and api_url:
+                    import json
+                    import urllib.request
+
+                    req = urllib.request.Request(
+                        api_url.rstrip("/") + "/api/pr/export_ama",
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        raw = resp.read().decode("utf-8")
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict) and isinstance(obj.get("saved_path"), str) and obj.get("saved_path"):
+                        out_path = str(obj.get("saved_path"))
+                    elif isinstance(obj, dict) and isinstance(obj.get("ama_data"), str):
+                        ama_bytes = base64.b64decode(obj.get("ama_data"))
+                else:
+                    from adaptivecad.pr import PRFieldConfig, relax_phase_field, export_phase_field_as_ama
+
+                    cfg = PRFieldConfig(
+                        size=int(payload["size"]),
+                        steps=int(payload["steps"]),
+                        dt=float(payload["dt"]),
+                        diffusion=float(payload["diffusion"]),
+                        coupling=float(payload["coupling"]),
+                        coupling_mode=str(payload["coupling_mode"]),
+                        phase_dim=int(payload["phase_dim"]),
+                        phase_space=str(payload["phase_space"]),
+                        seed=int(payload["seed"]),
+                    )
+                    _metrics, state = relax_phase_field(cfg)
+                    ama_bytes = export_phase_field_as_ama(
+                        state.phi,
+                        falsifier_residual=state.falsifier_residual,
+                        scale_xy=float(payload["scale_xy"]),
+                        scale_z=float(payload["scale_z"]),
+                        filename="viewer_pr.ama",
+                        params={
+                            "dt": float(payload["dt"]),
+                            "diffusion": float(payload["diffusion"]),
+                            "coupling": float(payload["coupling"]),
+                            "coupling_mode": str(payload["coupling_mode"]),
+                            "phase_dim": int(payload["phase_dim"]),
+                            "phase_space": str(payload["phase_space"]),
+                            "seed": int(payload["seed"]),
+                        },
+                        units="mm",
+                        defl=0.05,
+                    )
+
+                if ama_bytes is None and out_path is None:
+                    raise RuntimeError("Failed to produce AMA bytes")
+                if ama_bytes is not None:
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ama")
+                    tmp.write(ama_bytes)
+                    tmp.flush()
+                    out_path = tmp.name
+                    tmp.close()
+            except Exception as e:
+                err = str(e)
+
+            def _finish() -> None:
+                if err:
+                    self._tool_set_status(f"PR failed: {err}")
+                    return
+                if out_path:
+                    self._tool_set_status("Loaded PR AMA")
+                    try:
+                        self._tool_load_ama_into_viewer(out_path, selected=None)
+                    except Exception:
+                        pass
+
+            try:
+                QTimer.singleShot(0, _finish)
+            except Exception:
+                _finish()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_tool_run_blackholes(self) -> None:
+        try:
+            import threading
+            import tempfile
+            import base64
+        except Exception:
+            return
+
+        use_api = False
+        api_url = ""
+        try:
+            use_api = bool(self._tool_use_api_chk is not None and self._tool_use_api_chk.isChecked())
+        except Exception:
+            use_api = False
+        try:
+            api_url = str(self._tool_api_url.text()).strip() if self._tool_api_url is not None else ""
+        except Exception:
+            api_url = ""
+
+        # Reuse PR size + scales for the demo field.
+        size = int(self._tool_pr_size.value())
+        scale_xy = float(self._tool_pr_scale_xy.value())
+        scale_z = float(self._tool_pr_scale_z.value())
+
+        self._tool_set_status("Generating blackholes AMA…")
+
+        def _worker() -> None:
+            ama_bytes = None
+            out_path = None
+            err = None
+            if use_api and api_url:
+                try:
+                    import json
+                    import urllib.request
+
+                    req = urllib.request.Request(
+                        api_url.rstrip("/") + "/api/demo/blackholes",
+                        data=json.dumps({"size": size, "scale_xy": scale_xy, "scale_z": scale_z}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        raw = resp.read().decode("utf-8")
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict) and isinstance(obj.get("ama_data"), str):
+                        ama_bytes = base64.b64decode(obj.get("ama_data"))
+                except Exception:
+                    ama_bytes = None
+
+            if ama_bytes is None:
+                try:
+                    # Local generation without server: use the same logic as generate_binary_blackholes_ama.py
+                    import zipfile
+                    import json
+                    import numpy as np
+                    import hashlib
+                    from datetime import datetime, timezone
+
+                    # Build field
+                    xs = np.linspace(-1.0, 1.0, size, dtype=np.float32)
+                    ys = np.linspace(-1.0, 1.0, size, dtype=np.float32)
+                    X, Y = np.meshgrid(xs, ys, indexing="xy")
+                    eps = 0.06
+                    c1 = (-0.45, 0.00)
+                    c2 = (0.45, 0.00)
+                    r1 = np.sqrt((X - c1[0]) ** 2 + (Y - c1[1]) ** 2 + eps**2)
+                    r2 = np.sqrt((X - c2[0]) ** 2 + (Y - c2[1]) ** 2 + eps**2)
+                    pot = -1.0 / r1 - 1.0 / r2
+                    bridge = np.exp(-(Y * 5.0) ** 2) * np.exp(-(X * 1.2) ** 2)
+                    pot = pot - 0.35 * bridge
+                    pot = pot.astype(np.float32)
+                    pot = (pot - float(np.min(pot))) / max(1e-9, float(np.max(pot) - np.min(pot)))
+                    field = (1.0 - pot).astype(np.float32)
+
+                    scene = {
+                        "format": "AdaptiveCAD.AnalyticScene",
+                        "version": "0.1.0",
+                        "kind": "ndfield_heightmap",
+                        "scales": {"xy": float(scale_xy), "z": float(scale_z)},
+                        "layers": [
+                            {"id": "field", "label": "Binary Blackholes", "field_ref": "fields/f000_field.npy", "colormap": "plasma"}
+                        ],
+                        "render": {"mode": "iso", "iso": 0.55, "source_layer": "field"},
+                        "units": "mm",
+                    }
+
+                    manifest = {
+                        "format": "AdaptiveCAD.AnalyticManifest",
+                        "version": "0.1.0",
+                        "kind": "ndfield",
+                        "fields": [{"id": "field", "path": "fields/f000_field.npy", "dtype": str(field.dtype), "shape": list(field.shape)}],
+                    }
+
+                    cosmo_meta = {
+                        "ama_version": "0.1",
+                        "model": {"name": "BinaryBlackholesDemo", "pr_root": {"pi_a": "adaptive", "invariants": ["2pi_a", "w", "b", "C"]}},
+                        "run": {
+                            "solver": "viewer.blackholes",
+                            "solver_version": "0.1.0",
+                            "git_commit": "unknown",
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "seed": None,
+                            "platform": {"python": __import__("sys").version.split()[0]},
+                        },
+                        "numerics": {"grid": [int(field.shape[0]), int(field.shape[1])], "integrator": "procedural", "step_size": None},
+                        "observables": {},
+                        "tests": [],
+                    }
+                    cosmo_bytes = json.dumps(cosmo_meta, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                    cosmo_header = {
+                        "meta_format": "json",
+                        "meta_path": "meta/cosmo_meta.json",
+                        "meta_len": int(len(cosmo_bytes)),
+                        "meta_sha256": hashlib.sha256(cosmo_bytes).hexdigest(),
+                        "schema": "AdaptiveCAD.CosmoMeta",
+                        "schema_version": "0.1.0",
+                    }
+
+                    import io
+                    buf_zip = io.BytesIO()
+                    with zipfile.ZipFile(buf_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                        z.writestr("manifest.json", json.dumps({"version": "0.1.0", "parts": []}, indent=2))
+                        z.writestr("analytic/scene.json", json.dumps(scene, indent=2))
+                        z.writestr("analytic/manifest.json", json.dumps(manifest, indent=2))
+                        z.writestr("meta/cosmo_meta.json", cosmo_bytes)
+                        z.writestr("meta/cosmo_header.json", json.dumps(cosmo_header, indent=2))
+                        z.writestr("meta/info.json", json.dumps({"generator": "viewer", "size": int(field.shape[0]), "cosmo_header": "meta/cosmo_header.json"}, indent=2))
+                        bio = io.BytesIO(); np.save(bio, field); z.writestr("fields/f000_field.npy", bio.getvalue())
+                    ama_bytes = buf_zip.getvalue()
+                except Exception as e:
+                    err = str(e)
+
+            try:
+                if ama_bytes is None:
+                    raise RuntimeError("Failed to produce AMA bytes")
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ama")
+                tmp.write(ama_bytes)
+                tmp.flush()
+                out_path = tmp.name
+                tmp.close()
+            except Exception as e:
+                err = err or str(e)
+
+            def _finish() -> None:
+                if err:
+                    self._tool_set_status(f"Blackholes failed: {err}")
+                    return
+                if out_path:
+                    self._tool_set_status("Loaded blackholes AMA")
+                    try:
+                        self._tool_load_ama_into_viewer(out_path, selected=None)
+                    except Exception:
+                        pass
+
+            try:
+                QTimer.singleShot(0, _finish)
+            except Exception:
+                _finish()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_field_contour_changed(self, *args) -> None:
+        self._recolor_field_overlay_source()
+
+    def _recolor_field_overlay_source(self) -> None:
+        mesh = getattr(self, "_field_overlay_source_mesh", None)
+        if mesh is None:
+            return
+        try:
+            self._apply_vertex_colormap_to_mesh(mesh, self._field_current_colormap)
+        except Exception:
+            pass
+        self._apply_field_overlay_clip()
+
+    def _apply_field_overlay_clip(self) -> None:
+        """Rebuild the current field mesh overlay using a height/iso threshold.
+
+        This is intended for the AMA->NDField visualization path where the launcher
+        provides the source mesh as `self._field_overlay_source_mesh`.
+        """
+
+        mesh = getattr(self, "_field_overlay_source_mesh", None)
+        if mesh is None:
+            return
+
+        try:
+            import numpy as _np
+        except Exception:
+            return
+
+        # Normalize to a Trimesh instance if a Scene was provided.
+        try:
+            import trimesh as _trimesh  # type: ignore
+            if isinstance(mesh, _trimesh.Scene):
+                mesh = _trimesh.util.concatenate(tuple(mesh.dump()))
+        except Exception:
+            pass
+
+        # If clip is disabled, show the original mesh as-is.
+        try:
+            clip_on = bool(self._field_clip_chk is not None and self._field_clip_chk.isChecked())
+        except Exception:
+            clip_on = False
+        if not clip_on:
+            try:
+                self.view.add_mesh_overlay(mesh, source_path=self._field_overlay_source_path, replace_existing=True)
+            except Exception:
+                pass
+            return
+
+        # Compute threshold in world Z based on a 0..1 fraction of current Z range.
+        try:
+            frac = float(self._field_clip_spin.value()) if self._field_clip_spin is not None else 0.5
+        except Exception:
+            frac = 0.5
+        frac = max(0.0, min(1.0, frac))
+
+        try:
+            verts = _np.asarray(mesh.vertices, dtype=_np.float32)
+            faces = _np.asarray(mesh.faces, dtype=_np.int64)
+            if verts.size == 0 or faces.size == 0:
+                return
+            z = verts[:, 2]
+            zmin = float(_np.nanmin(z))
+            zmax = float(_np.nanmax(z))
+            if not _np.isfinite(zmin) or not _np.isfinite(zmax) or abs(zmax - zmin) < 1e-9:
+                return
+            zcut = zmin + frac * (zmax - zmin)
+            face_z_mean = z[faces].mean(axis=1)
+            mask = _np.asarray(face_z_mean >= zcut, dtype=bool)
+            if mask.size != faces.shape[0]:
+                return
+        except Exception:
+            return
+
+        try:
+            m2 = mesh.copy()
+            # keep faces above threshold
+            m2.update_faces(mask)
+            m2.remove_unreferenced_vertices()
+            self.view.add_mesh_overlay(m2, source_path=self._field_overlay_source_path, replace_existing=True)
+        except Exception:
+            pass
+
+    def set_field_layers_from_ama(
+        self,
+        ama_path: str,
+        scene_obj: dict | None,
+        scale_xy: float | None,
+        scale_z: float | None,
+        *,
+        selected: str | None = None,
+    ) -> None:
+        """Populate the Field Layer dropdown from an AMA archive.
+
+        Enables layer switching (e.g. `field` vs `gradmag`) without relaunch.
+        """
+
+        self._field_ama_path = str(ama_path)
+        self._field_ama_scene = scene_obj if isinstance(scene_obj, dict) else None
+        self._field_current_colormap = None
+        try:
+            self._field_ama_scale_xy = float(scale_xy) if scale_xy is not None else None
+        except Exception:
+            self._field_ama_scale_xy = None
+        try:
+            self._field_ama_scale_z = float(scale_z) if scale_z is not None else None
+        except Exception:
+            self._field_ama_scale_z = None
+
+        if self._field_layer_box is None:
+            return
+
+        import zipfile
+
+        items: list[tuple[str, str]] = []
+        layers: dict[str, dict[str, object]] = {}
+
+        # Prefer analytic/scene.json layer definitions if present.
+        if isinstance(self._field_ama_scene, dict):
+            scene_layers = self._field_ama_scene.get("layers")
+            if isinstance(scene_layers, list):
+                for layer in scene_layers:
+                    if not isinstance(layer, dict):
+                        continue
+                    lid = str(layer.get("id", "")).strip()
+                    if not lid:
+                        continue
+                    field_ref = layer.get("field_ref")
+                    if not isinstance(field_ref, str) or not field_ref.lower().endswith(".npy"):
+                        continue
+                    label = layer.get("label")
+                    display = str(label).strip() if isinstance(label, str) and str(label).strip() else lid
+                    layers[lid] = {
+                        "kind": "layer_id",
+                        "field_ref": field_ref,
+                        "colormap": layer.get("colormap"),
+                        "display": display,
+                    }
+                    items.append((display, lid))
+
+        # Fallback: include raw fields/*.npy paths as selectable entries.
+        try:
+            with zipfile.ZipFile(self._field_ama_path, "r") as z:
+                for name in sorted(z.namelist()):
+                    n = str(name)
+                    if not (n.lower().startswith("fields/") and n.lower().endswith(".npy")):
+                        continue
+                    key = n
+                    if key in layers:
+                        continue
+                    display = n.replace("fields/", "")
+                    layers[key] = {"kind": "field_path", "field_ref": n, "display": display}
+                    items.append((display, key))
+        except Exception:
+            pass
+
+        self._field_layer_populating = True
+        try:
+            self._field_layers = layers
+            self._field_layer_box.blockSignals(True)
+            self._field_layer_box.clear()
+            for display, key in items:
+                self._field_layer_box.addItem(display, key)
+            self._field_layer_box.setEnabled(len(items) > 0)
+
+            # Choose default selection.
+            pick = None
+            if isinstance(selected, str) and selected:
+                pick = selected
+            else:
+                try:
+                    render = self._field_ama_scene.get("render") if isinstance(self._field_ama_scene, dict) else None
+                    if isinstance(render, dict) and isinstance(render.get("source_layer"), str):
+                        pick = render.get("source_layer")
+                except Exception:
+                    pick = None
+
+            if pick is not None:
+                idx = self._field_layer_box.findData(pick)
+                if idx >= 0:
+                    self._field_layer_box.setCurrentIndex(idx)
+        finally:
+            try:
+                self._field_layer_box.blockSignals(False)
+            except Exception:
+                pass
+            self._field_layer_populating = False
+
+    def _on_field_layer_changed(self, *args) -> None:
+        if self._field_layer_populating:
+            return
+        if self._field_layer_box is None:
+            return
+        try:
+            key = self._field_layer_box.currentData()
+        except Exception:
+            key = None
+        if not isinstance(key, str) or not key:
+            try:
+                key = str(self._field_layer_box.currentText())
+            except Exception:
+                key = ""
+        if not key:
+            return
+        self._load_field_layer_from_ama(key)
+
+    def _apply_vertex_colormap_to_mesh(self, mesh, cmap: str | None) -> None:
+        if mesh is None:
+            return
+        try:
+            import numpy as _np
+        except Exception:
+            return
+
+        cmap = (cmap or "plasma").strip().lower()
+        try:
+            z = _np.asarray(mesh.vertices, dtype=_np.float32)[:, 2]
+            zmin = float(_np.nanmin(z))
+            zmax = float(_np.nanmax(z))
+            if not _np.isfinite(zmin) or not _np.isfinite(zmax) or abs(zmax - zmin) < 1e-9:
+                return
+            t = (z - zmin) / (zmax - zmin)
+            t = _np.clip(t, 0.0, 1.0)
+        except Exception:
+            return
+
+        # Contour settings (viewer-side)
+        try:
+            contour_on = bool(self._field_contour_chk is not None and self._field_contour_chk.isChecked())
+        except Exception:
+            contour_on = False
+        try:
+            bands = int(self._field_contour_bands.value()) if self._field_contour_bands is not None else 12
+        except Exception:
+            bands = 12
+        bands = max(2, min(256, bands))
+        try:
+            width = float(self._field_contour_width.value()) if self._field_contour_width is not None else 0.12
+        except Exception:
+            width = 0.12
+        width = max(0.01, min(0.5, width))
+
+        def _lerp(a, b, tt):
+            return a * (1.0 - tt) + b * tt
+
+        def _colormap_rgb(tt: "_np.ndarray") -> "_np.ndarray":
+            tt = _np.asarray(tt, dtype=_np.float32)
+            tt = _np.clip(tt, 0.0, 1.0)
+            if cmap == "viridis":
+                c0 = _np.array([0.267, 0.005, 0.329], _np.float32)
+                c1 = _np.array([0.283, 0.141, 0.458], _np.float32)
+                c2 = _np.array([0.254, 0.265, 0.530], _np.float32)
+                c3 = _np.array([0.207, 0.372, 0.553], _np.float32)
+                c4 = _np.array([0.164, 0.471, 0.558], _np.float32)
+                c5 = _np.array([0.128, 0.567, 0.551], _np.float32)
+                c6 = _np.array([0.135, 0.659, 0.518], _np.float32)
+                c7 = _np.array([0.267, 0.749, 0.441], _np.float32)
+                c8 = _np.array([0.478, 0.821, 0.318], _np.float32)
+                c9 = _np.array([0.741, 0.873, 0.150], _np.float32)
+                c10 = _np.array([0.993, 0.906, 0.144], _np.float32)
+                stops = _np.stack([c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10], axis=0)
+                nseg = stops.shape[0] - 1
+                u = tt * nseg
+                i = _np.clip(_np.floor(u).astype(_np.int32), 0, nseg - 1)
+                f = (u - i).astype(_np.float32)
+                return _lerp(stops[i], stops[i + 1], f[:, None])
+            # plasma-ish (also used for diverge)
+            c0 = _np.array([0.050, 0.030, 0.528], _np.float32)
+            c1 = _np.array([0.465, 0.004, 0.659], _np.float32)
+            c2 = _np.array([0.796, 0.277, 0.473], _np.float32)
+            c3 = _np.array([0.940, 0.975, 0.131], _np.float32)
+            rgb = _np.zeros((tt.shape[0], 3), _np.float32)
+            m1 = tt < 0.33
+            m2 = (tt >= 0.33) & (tt < 0.66)
+            m3 = tt >= 0.66
+            rgb[m1] = _lerp(c0, c1, (tt[m1] / 0.33)[:, None])
+            rgb[m2] = _lerp(c1, c2, ((tt[m2] - 0.33) / 0.33)[:, None])
+            rgb[m3] = _lerp(c2, c3, ((tt[m3] - 0.66) / 0.34)[:, None])
+            return rgb
+
+        if contour_on:
+            # Filled bands + dark iso-lines at the band boundaries.
+            u = t * float(bands)
+            tq = _np.floor(u) / float(bands)
+            tq = _np.clip(tq, 0.0, 1.0)
+            rgb = _colormap_rgb(tq)
+
+            # Distance to nearest band boundary in [0..0.5]
+            frac = u - _np.floor(u)
+            dist = _np.minimum(frac, 1.0 - frac)
+            edge = 1.0 - _np.clip(dist / width, 0.0, 1.0)
+            edge = edge * edge * (3.0 - 2.0 * edge)  # smoothstep
+            rgb = rgb * (1.0 - 0.70 * edge[:, None])
+        else:
+            rgb = _colormap_rgb(t)
+
+        rgba = (_np.clip(rgb, 0.0, 1.0) * 255.0).astype(_np.uint8)
+        alpha = _np.full((rgba.shape[0], 1), 255, dtype=_np.uint8)
+        try:
+            mesh.visual.vertex_colors = _np.concatenate([rgba, alpha], axis=1)
+        except Exception:
+            pass
+
+    def _load_field_layer_from_ama(self, key: str) -> None:
+        if not isinstance(key, str) or not key:
+            return
+        if not isinstance(self._field_ama_path, str) or not self._field_ama_path:
+            return
+
+        layer = self._field_layers.get(key)
+        field_ref = None
+        cmap = None
+        if isinstance(layer, dict):
+            fr = layer.get("field_ref")
+            if isinstance(fr, str) and fr:
+                field_ref = fr
+            if isinstance(layer.get("colormap"), str):
+                cmap = layer.get("colormap")
+        if field_ref is None:
+            field_ref = key
+
+        try:
+            import numpy as np
+            import trimesh  # type: ignore
+            from io import BytesIO
+            import tempfile
+            import zipfile
+        except Exception:
+            return
+
+        try:
+            with zipfile.ZipFile(self._field_ama_path, "r") as z:
+                raw = z.read(str(field_ref))
+        except Exception:
+            return
+
+        try:
+            phi = np.load(BytesIO(raw))
+        except Exception:
+            return
+
+        scale_xy = float(self._field_ama_scale_xy) if self._field_ama_scale_xy is not None else 1.0
+        scale_z = float(self._field_ama_scale_z) if self._field_ama_scale_z is not None else 1.0
+
+        try:
+            from adaptivecad.pr.export import export_phase_field_as_heightmap_stl
+        except Exception:
+            return
+
+        try:
+            stl_bytes = export_phase_field_as_heightmap_stl(np.asarray(phi), scale_xy=float(scale_xy), scale_z=float(scale_z))
+        except Exception:
+            return
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".stl")
+        tmp.write(stl_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+        tmp.close()
+
+        try:
+            mesh = trimesh.load_mesh(tmp_path)
+        except Exception:
+            return
+
+        try:
+            if isinstance(mesh, trimesh.Scene):
+                mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+        except Exception:
+            pass
+
+        try:
+            self._apply_vertex_colormap_to_mesh(mesh, cmap)
+        except Exception:
+            pass
+
+        try:
+            self._field_current_colormap = str(cmap) if isinstance(cmap, str) and cmap else None
+        except Exception:
+            self._field_current_colormap = None
+
+        try:
+            self._field_overlay_source_mesh = mesh
+            self._field_overlay_source_path = tmp_path
+            self._apply_field_overlay_clip()
+        except Exception:
+            pass
 
     # --- Tesseract helpers ---
     def _add_tesseract(self):
@@ -5555,6 +6429,25 @@ class AnalyticViewportPanel(QWidget):
 
 
     def _setup_ai(self) -> None:
+        import warnings
+
+        def _quiet_disconnect(signal, slot) -> None:
+            """Disconnect a Qt signal from a slot without noisy PySide6 RuntimeWarnings.
+
+            PySide6 can emit RuntimeWarning (not an Exception) when disconnecting a
+            not-currently-connected slot; this keeps logs clean.
+            """
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*Failed to disconnect.*",
+                        category=RuntimeWarning,
+                    )
+                    signal.disconnect(slot)
+            except Exception:
+                pass
+
         if self._ai_model_label is not None:
             try:
                 self._ai_model_label.setText(self._ai_model)
@@ -5585,17 +6478,11 @@ class AnalyticViewportPanel(QWidget):
             except Exception:
                 pass
         if self._ai_send_btn is not None:
-            try:
-                self._ai_send_btn.clicked.disconnect()
-            except Exception:
-                pass
+            _quiet_disconnect(self._ai_send_btn.clicked, self._ai_on_send)
             self._ai_send_btn.clicked.connect(self._ai_on_send)
             self._ai_send_btn.setEnabled(True)
         if self._ai_input is not None:
-            try:
-                self._ai_input.returnPressed.disconnect()
-            except Exception:
-                pass
+            _quiet_disconnect(self._ai_input.returnPressed, self._ai_on_send)
             self._ai_input.returnPressed.connect(self._ai_on_send)
             self._ai_input.setEnabled(True)
 
@@ -5621,31 +6508,19 @@ class AnalyticViewportPanel(QWidget):
             if self._ai_tools_group is not None:
                 self._ai_tools_group.setEnabled(True)
             if self._ai_tools_run_btn is not None:
-                try:
-                    self._ai_tools_run_btn.clicked.disconnect()
-                except Exception:
-                    pass
+                _quiet_disconnect(self._ai_tools_run_btn.clicked, self._ai_tools_run)
                 self._ai_tools_run_btn.clicked.connect(self._ai_tools_run)
                 self._ai_tools_run_btn.setEnabled(True)
             if self._ai_tools_delete_btn is not None:
-                try:
-                    self._ai_tools_delete_btn.clicked.disconnect()
-                except Exception:
-                    pass
+                _quiet_disconnect(self._ai_tools_delete_btn.clicked, self._ai_tools_delete)
                 self._ai_tools_delete_btn.clicked.connect(self._ai_tools_delete)
                 self._ai_tools_delete_btn.setEnabled(True)
             if self._ai_tools_pin_chk is not None:
-                try:
-                    self._ai_tools_pin_chk.toggled.disconnect()
-                except Exception:
-                    pass
+                _quiet_disconnect(self._ai_tools_pin_chk.toggled, self._ai_tools_pin)
                 self._ai_tools_pin_chk.toggled.connect(self._ai_tools_pin)
                 self._ai_tools_pin_chk.setEnabled(True)
             if self._ai_tools_list is not None:
-                try:
-                    self._ai_tools_list.itemSelectionChanged.disconnect()
-                except Exception:
-                    pass
+                _quiet_disconnect(self._ai_tools_list.itemSelectionChanged, self._ai_tools_sync_pin)
                 self._ai_tools_list.itemSelectionChanged.connect(self._ai_tools_sync_pin)
             try:
                 self._tool_registry.changed.connect(self._on_tool_registry_changed)
